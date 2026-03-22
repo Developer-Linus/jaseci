@@ -1,0 +1,15 @@
+[project]
+name = "mcp-dashboard-studio"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "jac-client>=0.3.6",
+    "jac-mcp",
+    "jaclang>=0.12.2",
+    "watchdog>=6.0.0",
+]
+
+[tool.uv.sources]
+jac-mcp = { git = "https://github.com/jaseci-labs/jaseci.git", subdirectory = "jac-mcp" }
