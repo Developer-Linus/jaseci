@@ -1,7 +1,5 @@
 # Jac MCP Studio
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg)](LICENSE)
-
 An interactive developer dashboard for working with [Jac](https://www.jac-lang.org/) code via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io). Connect to a Jac MCP server and run tools to validate, format, inspect, and explore Jac code, all from a clean browser UI.
 
 > **What is Jac?** Jac is a programming language built on top of Python that adds native support for graph-based computation, AI integration, and object-spatial programming. Learn more at [jac-lang.org](https://www.jac-lang.org/).
@@ -194,9 +192,3 @@ jac add --cl <package-name>
 **MCP server URL** can be changed at any time from the UI without restarting. Clicking Connect re-initializes the MCP session with the new URL.
 
 **The backend never stores code**: all tool calls are forwarded directly to the MCP server and results are held only in the browser's UI state.
-
----
-
-## License
-
-[MIT](LICENSE)
