@@ -1,4 +1,4 @@
-"""Parametrized fixture tests — systematic input coverage via shared fixture data.
+"""Parameterized fixture tests — systematic input coverage via shared fixture data.
 
 Each `parametrize()` call registers one test case per fixture entry, so adding a new
 blank-input variant (e.g. a unicode space) automatically expands every walker's coverage.
@@ -18,15 +18,15 @@ import from main {
 }
 import from backend.utils { extract_first_error }
 
-# ── Fixture data ──────────────────────────────────────────────────────────────
+# Fixture data
 # Extending any of these lists automatically exercises every walker registered
-# below with the new variant — no test code changes required.
+# below with the new variant. No test code changes required.
 glob BLANK_CODE: list = ["", " ", "\t", "\n", "   \n\t  ", "\r\n"],
      BLANK_MESSAGE: list = ["", " ", "\t", "\n", "  \t\n  "],
      BLANK_NAME: list = ["", " ", "\t", "  \n  "],
      BLANK_QUERY: list = ["", " ", "\n", "\t\t"];
 
-# ── Walker test functions ─────────────────────────────────────────────────────
+# Walker test functions
 def _check_validate_jac(code: str) {
     w = root spawn validate_jac(code=code);
     r = w.reports[0];
@@ -84,7 +84,7 @@ def _check_search_docs(query: str) {
     assert r["tool"] == "search_docs" , f"Expected tool=search_docs, got {r['tool']}";
 }
 
-# ── Response envelope shape fixture ──────────────────────────────────────────
+# Response envelope shape fixture
 # Every walker response must carry these four keys — parametrize ensures each
 # key is individually verified so a missing key produces a focused failure.
 glob ENVELOPE_KEYS: list = ["ok", "tool", "data", "error"];
@@ -104,7 +104,7 @@ def _check_search_docs_envelope(key: str) {
     assert key in w.reports[0] , f"search_docs response missing required key: '{key}'";
 }
 
-# ── extract_first_error fixture table ────────────────────────────────────────
+# extract_first_error fixture table
 # (input_dict, expected_output) pairs — replaces the five manual tests in
 # utils_test.jac with a single parametrized table that is easier to extend.
 glob ERROR_FIXTURES: list = [
@@ -134,7 +134,7 @@ def _check_extract_first_error(pair: tuple) {
     assert got == pair[1] , f"extract_first_error: expected '{pair[1]}', got '{got}'";
 }
 
-# ── Registration ─────────────────────────────────────────────────────────────
+# Registration
 
 # Code-walker blank input fixture: 6 variants × 5 walkers = 30 tests
 with entry {
