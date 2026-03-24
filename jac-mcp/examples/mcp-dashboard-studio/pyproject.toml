@@ -5,8 +5,8 @@ description = "Interactive browser dashboard for Jac code via MCP"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "jac-client>=0.3.6",
+    "jac-client>=0.3.8",
     "jac-mcp==0.1.7",
-    "jaclang>=0.12.2",
+    "jaclang>=0.13.1",
     "watchdog>=6.0.0",
 ]
