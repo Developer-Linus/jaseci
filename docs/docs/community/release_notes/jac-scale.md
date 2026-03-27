@@ -4,12 +4,18 @@ This document provides a summary of new features, improvements, and bug fixes in
 
 ## jac-scale 0.2.9 (Unreleased)
 
+- **Extensible Deployment Targets and Image Registries**: `DeploymentTargetFactory` and `ImageRegistryFactory` now support plugin-registered targets via `register(name, factory)`. External packages can register custom deployment targets (e.g. `DeploymentTargetFactory.register("enterprise-kubernetes", my_factory)`) and image registries without modifying jac-scale. Custom targets load their config from `[plugins.scale.<target-name>]` in `jac.toml`.
+- **PWA/Web Target Integration Test**: Added test to verify `jac start --client pwa` uses jac-scale's FastAPI server when installed (checks `/docs` endpoint availability).
+- **Fix: HPA config ignored on redeployment**: `create_hpa` silently swallowed 409 Conflict errors when the HPA already existed, so updated `min_replicas`, `max_replicas`, and `cpu_utilization_target` values in `jac.toml` were never applied on subsequent deploys. Changed to a replace-first, create-on-404 pattern consistent with how Ingress and ConfigMap resources are managed, ensuring HPA configuration is always kept in sync with `jac.toml`.
+- **Sandbox Security Hardening**: Hardened K8s sandbox pods by dropping all Linux capabilities (`drop: ALL`), enabling seccomp `RuntimeDefault` profile (~44 dangerous syscalls blocked), disabling service account token automounting (prevents K8s API access from inside sandboxes), and adding a configurable `/app` emptyDir size limit (`app_storage_limit`, default 1Gi) to prevent node disk exhaustion. Applied consistently to both on-demand and warm pool pods. The sandbox base Dockerfile now creates a dedicated non-root user (`jac`, UID 1000) and installs Bun system-wide so it's accessible under the security context.
+
 ## jac-scale 0.2.8 (Latest Release)
 
 - 1 small changes.
 
 ## jac-scale 0.2.7
 
+- **Apple & GitHub SSO Support**: Added Apple Sign In and GitHub as SSO providers via `fastapi-sso`. Unified the SSO callback into a single endpoint per platform (`/sso/{platform}/callback`) that auto-registers new users or logs in existing ones. Initiation endpoints remain separate (`/sso/{platform}/login`, `/sso/{platform}/register`). SSO `host` config simplified to just the base URL (e.g., `http://localhost:8000`). Configure via `[plugins.scale.sso.apple]` and `[plugins.scale.sso.github]` in `jac.toml`.
 - **Kubernetes Security Hardening**: Added container-level security contexts (`allowPrivilegeEscalation: false`, `drop: ALL`, `readOnlyRootFilesystem`, `seccompProfile: RuntimeDefault`), dedicated `ServiceAccount` per workload, component-specific NetworkPolicies enforcing proper isolation (databases only accept traffic from main app + dashboards, monitoring components only accept ingress from trusted internal sources), and `pod-security.kubernetes.io/enforce: baseline` namespace labels.
 - **Scheduler Code Quality Cleanup**: Extracted shared `_authenticate_request()` and `_validate_trigger()` helpers to remove duplicated auth/validation logic across `/jobs` endpoints. Fixed `get_job()` to query by ID directly instead of loading all jobs. Replaced deprecated `datetime.utcnow()` with `datetime.now(timezone.utc)`. Persisted `is_walker` in job data to avoid redundant introspector lookups. Replaced silent exception swallowing with debug logging.
 - **Metrics Endpoint Fix & Prometheus Auth**: Fixed `/metrics` 500 error (`TransportResponse` is a dataclass, not Pydantic - replaced `.model_dump()` with `dataclasses.asdict()`). Added HTTP Basic Auth support so Prometheus can scrape `/metrics` via `basic_auth` in `prometheus.yml`.
