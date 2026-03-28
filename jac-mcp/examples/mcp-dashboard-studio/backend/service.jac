@@ -1,6 +1,9 @@
 """MCP service layer — sole protocol boundary for all MCP communication."""
 
-import from httpx { post }
+import from requests { post }
+import from requests.models { Response }
+import from requests.exceptions { RequestException }
+import from typing { cast }
 import from json { loads }
 
 # Mutable state
@@ -26,7 +29,7 @@ def:pub ping_endpoint(url: str) -> dict {
             timeout=5.0
         );
         return {"ok": True};
-    } except Exception as e {
+    } except RequestException as e {
         return {"ok": False, "message": str(e)};
     }
 }
@@ -46,19 +49,20 @@ def _post_json(payload: dict, session_id: str | None = None) -> dict {
         headers["Mcp-Session-Id"] = session_id;
     }
     try {
-        resp = post(_st.server_url, json=payload, headers=headers, timeout=30.0);
+        resp = cast(
+            Response, post(_st.server_url, json=payload, headers=headers, timeout=30.0)
+        );
+        body: dict = {};
         try {
-            body = resp.json();
-        } except Exception {
-            body = {};
-        }
+            body = cast(dict, resp.json());
+        } except ValueError { }
         return {
             "status": resp.status_code,
             "headers": dict(resp.headers),
             "body": body
         };
-    } except Exception as e {
-        raise Exception("HTTP request failed: " + str(e));
+    } except RequestException as e {
+        raise RuntimeError("HTTP request failed: " + str(e));
     }
 }
 
@@ -79,9 +83,9 @@ def _initialize_mcp_session -> str {
     };
     r = _post_json(payload);
     if r["status"] != 200 {
-        raise Exception("MCP initialize failed with status " + str(r["status"]));
+        raise RuntimeError("MCP initialize failed with status " + str(r["status"]));
     }
-    session_id = r["headers"].get("mcp-session-id", "");
+    session_id = cast(str, cast(dict, r["headers"]).get("mcp-session-id", ""));
     # Send initialized notification — no response expected
     _post_json({"jsonrpc": "2.0", "method": "notifications/initialized"}, session_id);
     _st.session_id = session_id;
@@ -98,9 +102,9 @@ def _extract_tool_result(body: dict) -> dict {
         return {"ok": False, "error": msg};
     }
     try {
-        text = body["result"]["content"][0]["text"];
+        text = cast(str, body["result"]["content"][0]["text"]);
         return {"ok": True, "data": loads(text)};
-    } except Exception as e {
+    } except (KeyError, IndexError, TypeError) as e {
         return {"ok": False, "error": "Failed to parse tool result: " + str(e)};
     }
 }
@@ -114,7 +118,7 @@ def _call_mcp_tool_once(tool_name: str, args: dict, session_id: str) -> dict {
         "id": _next_id()
     };
     r = _post_json(payload, session_id);
-    parsed = _extract_tool_result(r["body"]);
+    parsed = _extract_tool_result(cast(dict, r["body"]));
     return {** parsed, "status": r["status"]};
 }
 
@@ -135,7 +139,7 @@ def:pub call_mcp_tool(tool_name: str, args: dict) -> dict {
                 if result.get("ok")
                 else {"message": result.get("error", "Unknown error")}
         };
-    } except Exception as e {
+    } except RuntimeError as e {
         return {
             "ok": False,
             "tool": tool_name,
