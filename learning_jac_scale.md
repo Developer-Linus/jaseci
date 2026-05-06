@@ -32,6 +32,257 @@ jac-scale/jac_scale/context.jac          # JScaleExecutionContext - integrates w
 
 These five files are the core; everything else is either an implementation detail or optional extension.
 
+### Phase 1 Notes
+
+#### How the five files relate to each other
+
+```
+jac start app.jac
+      |
+      v
+ plugin.jac          <-- hooks into jaclang via pluggy (@hookimpl)
+      |
+      |-- creates --> JScaleExecutionContext  (context.jac)
+      |                     |
+      |                     v
+      |               memory_hierarchy.jac
+      |               ScaleTieredMemory: L1 (in-proc) / L2 (Redis) / L3 (Mongo)
+      |
+      |-- creates --> JacAPIServer            (serve.jac)
+                          |
+                          v
+                     FastAPI app: walker / function / auth / webhook / ws endpoints
+                     db.jac: available to user code for direct DB access
+```
+
+---
+
+#### 1. plugin.jac -- Entry point
+
+This is where jaclang learns jac-scale exists. It uses pluggy's `@hookimpl` decorator. Two classes do the work.
+
+**`JacCmd` extends the CLI:**
+
+| Command / flag | What it does |
+|----------------|-------------|
+| `jac start --scale` | Deploy to Kubernetes instead of running locally |
+| `jac start --build` | Build and push Docker image before deploying |
+| `jac start --target` | Deployment target (default: `kubernetes`) |
+| `jac start --registry` | Image registry (default: `dockerhub`) |
+| `jac start --enable-tls` | Patch TLS via cert-manager onto an existing deploy |
+| `jac destroy` | Remove deployment (entire namespace or a single component) |
+| `jac status` | Show pod/component status as a Rich table |
+| `jac setup microservice` | Interactive microservice config setup |
+| `jac scale status/stop/restart/logs` | Manage running local microservices |
+
+**`JacScalePlugin` overrides jaclang hooks:**
+
+| hookimpl | What it overrides |
+|----------|------------------|
+| `create_j_context` | Returns `JScaleExecutionContext` instead of jaclang's default |
+| `create_server` | Returns `JFastApiServer([])` |
+| `get_api_server_class` | Returns the composed `JacAPIServer` |
+| `get_user_manager` | Returns `JacScaleUserManager` |
+| `store` | Uses `StorageFactory` for cloud-capable file storage |
+| `ensure_sv_service` | Spawns a sibling sv-service as a subprocess on a free port |
+| `sv_service_call` | Adds auth header forwarding, 3-attempt retry (0.1 / 0.2 / 0.4 s backoff), and a per-provider circuit breaker (trips after 5 consecutive transport failures, 30 s cooldown) |
+
+**The pre-hook decision tree (`_scale_pre_hook` runs before every `jac start`):**
+
+```
+jac start fires
+      |
+      v
+microservices enabled AND not already a sibling (JAC_SV_SIBLING != "1")?
+      |
+     yes --> start_microservice_mode() --> cancel normal start
+      |
+      no
+      |
+      v
+--scale flag set?
+      |
+     yes --> deploy to Kubernetes --> cancel normal start
+      |
+      no
+      |
+      v
+fall through: normal jac start (FastAPI server on localhost)
+```
+
+At the bottom of the file, `with entry` registers `JacScalePlugin()` with pluggy's `plugin_manager`. This is the moment all `@hookimpl` methods go live.
+
+---
+
+#### 2. serve.jac -- FastAPI wrapper
+
+`JacAPIServer` is the central FastAPI wrapper. It composes eight objects (mixins + base):
+
+```
+JacAPIServer
+├── JacAPIServerCore          # server start/stop, health check, HMR, scheduler setup, metrics
+├── JacAPIServerAuth          # /register, /login, /refresh, /me, /sso/*, API key CRUD
+├── JacAPIServerEndpoints     # walker endpoints, function endpoints, webhooks, WebSockets
+├── JacAPIServerStatic        # static files, SPA page rendering, graph visualization
+├── JacAPIServerAdmin         # admin portal REST endpoints
+├── JacAPIServerLLMTelemetry  # LLM call tracking (model, tokens, latency, cost)
+├── JacAPIServerScheduler     # CRUD for scheduled jobs
+└── JServer                   # jaclang base class (jaclang.runtimelib.server)
+```
+
+Fields on the composed class (all start as `None` or `False`):
+
+```
+_hmr_pending: bool            # Hot Module Replacement is pending
+_hot_reloader: Any | None
+_api_key_manager: ApiKeyManager | None
+_metrics: MetricsCollector | None
+_ws_manager: WebSocketConnectionManager | None
+```
+
+Configuration is loaded at module level (before any request) from `get_scale_config()`:
+
+- JWT: secret, algorithm, expiry delta days
+- SSO: host
+
+Port behavior: `_find_available_port()` tries up to 10 consecutive ports. Errno 98 (Linux) and errno 10048 (Windows) signal "address in use."
+
+**HTTP routes registered by each mixin:**
+
+| Mixin | Routes |
+|-------|--------|
+| `JacAPIServerAuth` | `POST /register`, `POST /login`, `POST /refresh_token`, `POST /update_password`, `GET /me`, `GET /sso/*`, `POST/GET/DELETE /api_keys` |
+| `JacAPIServerEndpoints` | `POST /walker/{name}`, `POST /walker/{name}/{node}`, `POST /function/{name}`, `POST /webhook/{name}`, `WS /ws/{name}` |
+| `JacAPIServerScheduler` | `POST /jobs`, `GET /jobs`, `GET /jobs/{id}`, `PUT /jobs/{id}`, `DELETE /jobs/{id}` |
+| `JacAPIServerCore` | `GET /healthz` |
+| `JacAPIServerStatic` | `GET /`, `GET /client.js`, `GET /graph` |
+
+---
+
+#### 3. db.jac -- Direct DB access
+
+`Db` is the object you use when you need direct database access from Jac code, bypassing the automatic memory hierarchy. The hierarchy (L1/L2/L3) handles graph nodes automatically; `Db` is for everything else: counters, feature flags, rate limit state, arbitrary collections.
+
+**Connection pooling:** `get_mongo_client(uri)` and `get_redis_client(uri)` return pooled clients keyed by the resolved URI. The pools are process-global (`_mongo_clients` and `_redis_clients` module-level dicts).
+
+**API surface of `Db`:**
+
+```
+Db  (has: client, db_name='jac_db', db_type)
+|
+├── Common (MongoDB + Redis)
+│   ├── get(key, col_name)               --> dict | None
+│   ├── set(key, value, col_name)        --> str
+│   ├── delete(key, col_name)            --> int
+│   └── exists(key, col_name)            --> bool
+|
+├── MongoDB-only
+│   ├── find_one(col_name, filter)
+│   ├── find(col_name, filter)
+│   ├── insert_one / insert_many
+│   ├── update_one / update_many         (upsert_mode param available)
+│   ├── delete_one / delete_many
+│   └── find_by_id / update_by_id / delete_by_id
+|
+├── Redis-only
+│   ├── set_with_ttl(key, value, ttl, col_name)
+│   ├── incr(key, col_name)
+│   ├── expire(key, seconds, col_name)
+│   └── scan_keys(pattern, col_name)
+|
+└── find_nodes(node_type, filter, col_name='_anchors')
+    # queries '_anchors', the same collection the memory hierarchy uses
+    # this is the bridge between direct DB access and the graph runtime
+```
+
+The `'_anchors'` collection is where `MongoBackend` stores all graph nodes. Querying it via `find_nodes` lets you read graph state from outside the walker runtime.
+
+---
+
+#### 4. memory_hierarchy.jac -- Three-tier memory abstraction
+
+This file defines three classes that together replace jaclang's default storage layer.
+
+**The replacement map:**
+
+| jaclang default | jac-scale replacement | Tier | When active |
+|----------------|----------------------|------|-------------|
+| In-process dict | (inherited from TieredMemory) | L1 | Always |
+| `LocalCacheMemory` | `RedisBackend` | L2 | When Redis is reachable |
+| `SqliteMemory` | `MongoBackend` | L3 | When MongoDB is reachable |
+| `SqliteMemory` | `SqliteMemory` (unchanged) | L3 | MongoDB not available |
+
+**`RedisBackend(CacheMemory)` -- L2**
+
+Implements the full `CacheMemory` interface: `get`, `put`, `delete`, `has`, `query`, `find`, `find_one`, `commit`, `batch_get`. Also adds `exists`, `put_if_exists`, `invalidate`.
+
+**`MongoBackend(PersistentMemory)` -- L3**
+
+Uses `db_name='jac_db'`, collection `'_anchors'`. Internal write path is `_put_node_atomic(anchor, edges_added, edges_removed)` which tracks edge deltas atomically. Has an admin surface: `inspect_summary`, `list_quarantined`, `recover_one`, `recover_all`, `list_aliases`, `add_alias`, `remove_alias`.
+
+**`ScaleTieredMemory(TieredMemory)` -- the top-level composite**
+
+Selects backends at `postinit` based on environment. Tracks which L3 is active via `_persistence_type: PersistenceType` (enum: `NONE`, `MONGODB`, `SQLITE`). `use_cache = True` by default.
+
+**Read path through the tiers:**
+
+```
+Request for anchor by UUID
+         |
+         v
+   L1: in-process dict
+   found? --> return
+         |
+         no
+         v
+   L2: RedisBackend (if _cache_available)
+   found? --> promote to L1, return
+         |
+         no
+         v
+   L3: MongoBackend or SqliteMemory
+   found? --> promote to L2 + L1, return
+         |
+         no
+         v
+   None (anchor does not exist)
+```
+
+---
+
+#### 5. context.jac -- JScaleExecutionContext
+
+This is the thinnest of the five files (15 lines). Its job is to be the single hook point that wires jac-scale's storage layer into the jaclang runtime.
+
+```jac
+class JScaleExecutionContext(ExecutionContext) {
+    def init(self: JScaleExecutionContext) -> None;
+}
+```
+
+The full implementation is in `impl/context.impl.jac`. The `init` method creates a `ScaleTieredMemory` instance and attaches it to the context. Because `JacScalePlugin.create_j_context()` (in plugin.jac) returns an instance of this class, every Jac execution (walker run, function call) uses jac-scale's storage instead of jaclang's default.
+
+Storage config is NOT a parameter on the context. The docstring says it explicitly: "Storage backend is configured via environment variables (e.g., MONGODB_URI), not per-context parameters." One process, one storage backend, determined at startup from the environment.
+
+**The full connection chain:**
+
+```
+plugin.jac: JacScalePlugin.create_j_context()
+                    |
+                    v
+            JScaleExecutionContext     (context.jac)
+                    |
+                    v
+            ScaleTieredMemory          (memory_hierarchy.jac)
+                    |
+              +-----+-----+
+              |     |     |
+              L1   L2    L3
+                  Redis  Mongo/SQLite  <-- configured by MONGODB_URI / REDIS_URL env vars
+```
+
+Every walker run, every graph traversal, every anchor lookup flows through this chain.
+
 ---
 
 ## Phase 2 - Run the tests, read every fixture (2-3 days)
