@@ -40,7 +40,7 @@ These five files are the core; everything else is either an implementation detai
 jac start app.jac
       |
       v
- plugin.jac          <-- hooks into jaclang via pluggy (@hookimpl)
+ plugin.jac          <-- hooks into jaclang via its own plugin system (@hookimpl)
       |
       |-- creates --> JScaleExecutionContext  (context.jac)
       |                     |
