@@ -195,7 +195,9 @@ Db  (has: client, db_name='jac_db', db_type)
     # this is the bridge between direct DB access and the graph runtime
 ```
 
-The `'_anchors'` collection is where `MongoBackend` stores all graph nodes. Querying it via `find_nodes` lets you read graph state from outside the walker runtime.
+**What `_anchors` means:**
+
+Every node, edge, walker, and object in a Jac program is wrapped at runtime in an `Anchor` (defined in `jac/jaclang/jac0core/archetype.jac`). The `Anchor` holds the entity's UUID, its owning root UUID, its access permissions, and a `persistent` flag. The user-defined fields live inside `anchor.archetype`. `MongoBackend` serializes these `Anchor` objects into a MongoDB collection called `'_anchors'` -- that collection IS the graph. `find_nodes(node_type, filter)` queries it directly, which is why it bridges raw DB access and the walker runtime.
 
 ---
 
