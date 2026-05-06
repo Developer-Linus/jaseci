@@ -59,7 +59,7 @@ jac start app.jac
 
 #### 1. plugin.jac -- Entry point
 
-This is where jaclang learns jac-scale exists. It uses pluggy's `@hookimpl` decorator. Two classes do the work.
+This is where jaclang learns jac-scale exists. It uses jaclang's own plugin system (`jac/jaclang/jac0core/plugin.jac`), which is a custom lightweight replacement for the pluggy library. The key types are `HookimplMarker` (marks a function as an implementation), `HookCaller` (dispatches calls to all registered implementations), and `PluginManager` (registers plugins, manages hook specs). jac-scale imports `hookimpl` and `plugin_manager` from `jaclang.jac0core.runtime`. Two classes do the work.
 
 **`JacCmd` extends the CLI:**
 
@@ -110,7 +110,7 @@ microservices enabled AND not already a sibling (JAC_SV_SIBLING != "1")?
 fall through: normal jac start (FastAPI server on localhost)
 ```
 
-At the bottom of the file, `with entry` registers `JacScalePlugin()` with pluggy's `plugin_manager`. This is the moment all `@hookimpl` methods go live.
+At the bottom of the file, `with entry` registers `JacScalePlugin()` with `plugin_manager` (a `PluginManager` instance from `jaclang.jac0core.runtime`). This is the moment all `@hookimpl` methods go live. Under the hood, `PluginManager.register()` walks the class and discovers every method marked with `HookimplMarker`, wiring them into the appropriate `HookCaller`.
 
 ---
 
