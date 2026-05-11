@@ -87,6 +87,8 @@ targets/       =  The kitchen
 factories/     =  The head chef who decides what to use
                   "For this order, use MongoDB + DockerHub + Kubernetes"
                   Reads config and creates the right objects
+                  Does NOT do the work itself - just picks and builds
+                  the right object, then hands it off
 
 plugin.jac     =  The front door
                   "When someone types --scale, start the kitchen"
@@ -105,8 +107,9 @@ You type:   jac start app.jac --scale
                       │ calls
                       ▼
           ┌───────────────────────┐
-          │  factories/           │  ← head chef; reads jac.toml config
-          │  deployment_factory   │    and decides what to build
+          │  factories/           │  ← reads jac.toml config and decides
+          │  deployment_factory   │    which class to build and hand off
+          │                       │    (never does deployment work itself)
           └───────────┬───────────┘
                       │ creates
                       ▼
@@ -294,9 +297,12 @@ plugin.jac                          ← hooks --scale flag; reads config; calls 
       │
       │  passed into
       ▼
-factories/deployment_factory.jac    ← creates KubernetesTarget with this config
+factories/deployment_factory.jac    ← reads the config and decides which target
+      │                                 class to build (e.g. KubernetesTarget)
+      │                                 does NOT do any deployment work itself
+      │                                 just creates the right object and hands it off
       │
-      │  stored in
+      │  creates and passes config into
       ▼
 targets/kubernetes/kubernetes_config.jac
   has min_replicas: int = 1
@@ -321,6 +327,23 @@ keda_prometheus_query: str = ''      ← what to query from Prometheus
 ```
 
 And declare them in `plugin_config.jac` so users can set them in `jac.toml`.
+
+**The factory is also extensible.** External plugins can register their own
+targets without touching jac-scale's core code:
+
+```
+DeploymentTargetFactory.register(
+    "my-custom-target",
+    lambda config: MyCustomTarget(config=config)
+)
+
+# Then in jac.toml:
+# target = "my-custom-target"
+# The factory will pick it up automatically.
+```
+
+This is why the factory exists as a separate layer - it makes jac-scale
+swappable without rewriting the internals.
 
 ---
 
