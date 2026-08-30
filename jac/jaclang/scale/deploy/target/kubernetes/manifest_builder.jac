@@ -1068,6 +1068,9 @@ obj ManifestBuilder {
             if peer_name == svc_name or peer_name == GATEWAY_NAME {
                 continue;
             }
+            if self._get_http_activation_config(peer_name) is not None {
+                continue;
+            }
             key = sv_client.peer_url_env_key(peer_name);
             if key in seen_peer_keys {
                 continue;
