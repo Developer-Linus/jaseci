@@ -27,6 +27,7 @@ import from jaclang.scale.runtime.gateway.service_registry {
 }
 import from jaclang.server.sv_client { peer_url_env_key }
 import from jaclang.scale.runtime.fleet { FLEET_ENV, fleet_of }
+import from jaclang.scale.config.config_loader { reset_scale_config }
 
 
 glob _K8S_E2E_FIXTURE: Path = Path(__file__).parents[1] / "fixtures" / "k8s_e2e",
@@ -598,6 +599,7 @@ def _peer_env_restore(saved: dict[str, str | None]) {
             os.environ[key] = value;
         }
     }
+    reset_scale_config();
 }
 
 
@@ -606,6 +608,10 @@ def _peer_env_isolate {
         os.environ.pop(peer_url_env_key(name), None);
     }
     os.environ["POD_NAMESPACE"] = _PEER_NS;
+    # build_k8s_registry now consults scale config (for http_activation
+    # awareness); reset so no earlier test's cached, possibly
+    # activation-enabled config leaks into these naming-convention checks.
+    reset_scale_config();
 }
 
 
