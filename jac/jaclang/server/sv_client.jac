@@ -49,6 +49,7 @@ def register(app: str, url: str, route: str = "") {
         _routes[app] = route;
         _base_routes[app] = route;
     }
+    _host_overrides.pop(app, None);
 }
 
 def register_host_override(module_name: str, host: str) {
