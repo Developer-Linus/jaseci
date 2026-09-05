@@ -31,9 +31,9 @@ def resolve_http_activation_config(
     app_scale_cfg: dict[str, any]
 ) -> dict[str, any] | None {
     """Merge [apps.<svc_name>.scale.http_activation] over
-    [scale.kubernetes.http_activation], the same precedence
-    ManifestBuilder._get_http_activation_config uses. Returns None when the
-    merged config isn't enabled.""";
+    [scale.kubernetes.http_activation]. The single implementation of this
+    precedence; ManifestBuilder._get_http_activation_config delegates here.
+    Returns None when the merged config isn't enabled.""";
     per_service: dict[str, any] = dict(app_scale_cfg.get("http_activation", {}));
     merged: dict[str, any] = dict(top_level_http_activation);
     merged.update(per_service);

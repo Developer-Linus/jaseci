@@ -1445,7 +1445,7 @@ obj ManifestBuilder {
 
     def _get_http_activation_config(svc_name: str) -> dict[str, any] | None {
         return resolve_http_activation_config(
-            dict(self.k8s_config.http_activation), self._ms_cfg(), svc_name
+            dict(self.k8s_config.http_activation), self._service_config(svc_name)
         );
     }
 
