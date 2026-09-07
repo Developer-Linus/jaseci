@@ -133,7 +133,6 @@ glob LLVMContextRef = _opaque("LLVMContext"),
      LLVMSectionIteratorRef = _opaque("LLVMSectionIterator"),
      LLVMOrcLLJITRef = _opaque("LLVMOrcLLJITRef"),
      LLVMOrcDylibTrackerRef = _opaque("LLVMOrcDylibTrackerRef"),
-     LLVMTimePassesHandlerRef = _opaque("LLVMTimePassesHandler"),
      LLVMPipelineTuningOptionsRef = _opaque("LLVMPipeLineTuningOptions"),
      LLVMModulePassManagerRef = _opaque("LLVMModulePassManager"),
      LLVMFunctionPassManagerRef = _opaque("LLVMFunctionPassManager"),
@@ -178,9 +177,7 @@ class OutputString {
             if _is_shutting_down is not None and not _is_shutting_down() {
                 self.close();
             }
-        } except Exception {
-            ;
-        }
+        } except Exception {}
     }
 
     def __str__(self: OutputString) -> str {
@@ -250,9 +247,7 @@ class ObjectRef {
         }
     }
 
-    def _dispose(self: ObjectRef) {
-        ;
-    }
+    def _dispose(self: ObjectRef) {}
 
     has closed: bool {
         getter {
@@ -276,9 +271,7 @@ class ObjectRef {
             if _is_shutting_down is not None and not _is_shutting_down() {
                 self.close();
             }
-        } except Exception {
-            ;
-        }
+        } except Exception {}
     }
 
     def __bool__(self: ObjectRef) -> bool {

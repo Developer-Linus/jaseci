@@ -20,8 +20,12 @@ impl PermissionDenied.message -> str {
         f"Permission denied: {self.operation} on "
         f"{self.target_type}[{self.target_id}] owned by root[{owner}]; "
         f"required {self.required.name}, have {self.actual.name}. "
-        f"Hint: at the owner-side call `grant(node, level={self.required.name})`, "
-        f"or expose an ability on the target node and route writes through it."
+        f"Hint: at the owner-side call "
+        f"`Jac.allow_root(node, root_id, AccessLevel.{self.required.name})` to "
+        f"share with one user's root, `grant(node, "
+        f"level=AccessLevel.{self.required.name})` to open the node to every "
+        f"user, or expose an ability on the target node and route writes "
+        f"through it."
     );
 }
 
@@ -104,6 +108,7 @@ impl Anchor.__getstate__ -> dict[(str, any)] {
 impl Anchor.__setstate__(state: dict[(str, any)]) -> None {
     persistent = bool(state.pop('persistent', False));
     self.__dict__.update(state);
+    self.__dict__.setdefault('destroyed', False);
     self.persistent = persistent;
     if (self.is_populated() and self.archetype) {
         self.archetype.__jac__ = self;
@@ -225,7 +230,7 @@ impl EdgeAnchor.detach -> None {
     sv_forget_edge(self);
 
     import from jaclang.runtime.runtime { JacRuntime }
-    ctx = JacRuntime.exec_ctx;
+    ctx = JacRuntime.peek_context();
     aid = self.id;
     if ctx is not None and aid is not None {
         ctx.mem.delete(aid);
@@ -300,7 +305,7 @@ impl Archetype.uninstall_subclass_hook(hook: Callable[[type], None]) -> None {
     }
 }
 
-impl Archetype.postinit -> None { }
+impl Archetype.postinit -> None {}
 
 impl Archetype.__repr__ -> str {
     return f"{self.__class__.__name__}";

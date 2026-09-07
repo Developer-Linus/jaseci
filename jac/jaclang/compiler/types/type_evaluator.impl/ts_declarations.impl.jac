@@ -175,7 +175,7 @@ impl TypeEvaluator._map_ts_type(
         int_val: (int | None) = None;
         try {
             int_val = int(ts.name);
-        } except ValueError { }
+        } except ValueError {}
         if (int_val is not None and self.prefetch.int_class) {
             return self._convert_to_instance(
                 self.prefetch.int_class.clone_with_literal(int_val)
@@ -486,4 +486,14 @@ impl TypeEvaluator._untyped_external_is_error(node_: UniNode) -> bool {
     }
     self._untyped_external_cfg_cache[proj_root] = result;
     return result;
+}
+
+impl TypeEvaluator._jac_virtual_sibling_dts(
+    import_node: Import, from_mod_type: ModuleType
+) -> (str | None) {
+    if not import_node.is_virtual_jac or from_mod_type.file_uri is None {
+        return None;
+    }
+    import from jaclang.compiler.driver.modresolver { sibling_declaration_file }
+    return sibling_declaration_file(str(from_mod_type.file_uri));
 }

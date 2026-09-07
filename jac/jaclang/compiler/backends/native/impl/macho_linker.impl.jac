@@ -2,6 +2,7 @@ import struct;
 import os;
 import hashlib;
 import from jaclang.compiler.backends.native.linker_common {
+    encode_uleb128,
     _align,
     _build_strtab,
     _append_to_blob,
@@ -99,23 +100,6 @@ glob CSMAGIC_EMBEDDED_SIGNATURE = 0xFADE0CC0,
      CS_PAGE_SIZE_LOG2 = 12;
 
 
-def _encode_uleb128(value: int) -> bytes {
-    result = bytearray();
-    while True {
-        byte = value & 0x7F;
-        value >>= 7;
-        if value != 0 {
-            byte |= 0x80;
-        }
-        result.append(byte);
-        if value == 0 {
-            break;
-        }
-    }
-    return bytes(result);
-}
-
-
 def _resolve_macho_name(
     local_sym_map: dict[str, tuple[str, int]], nm: str
 ) -> (str | None) {
@@ -204,18 +188,18 @@ def _build_export_trie(symbols: list[tuple[str, int]]) -> bytes {
         for nd in order {
             term_addr = nd.term;
             if term_addr is not None {
-                info = _encode_uleb128(EXPORT_SYMBOL_FLAGS_KIND_REGULAR)
-                    + _encode_uleb128(term_addr);
-                e = _encode_uleb128(len(info)) + info;
+                info = encode_uleb128(EXPORT_SYMBOL_FLAGS_KIND_REGULAR)
+                    + encode_uleb128(term_addr);
+                e = encode_uleb128(len(info)) + info;
             } else {
-                e = _encode_uleb128(0);
+                e = encode_uleb128(0);
             }
             e += bytes([len(nd.kids)]);
             for label in sorted(nd.kids.keys()) {
                 child = nd.kids[label];
                 e += label.encode("utf-8")
                     + b"\x00"
-                    + _encode_uleb128(offsets[node_index[id(child)]]);
+                    + encode_uleb128(offsets[node_index[id(child)]]);
             }
             encs.append(e);
         }
@@ -331,6 +315,20 @@ def _macho_reloc_refusal(rel: MachOReloc, sym_name: str, why: str) -> str {
         "whatever else landed nearby, which is not a link error at build time "
         "and is a wrong artifact at run time (#8313). Teach the linker this "
         "relocation rather than emitting the artifact without it."
+    );
+}
+
+
+def _macho_pinned_image_refusal(rel: MachOReloc, sym_name: str) -> str {
+    who = f" for symbol {sym_name}" if sym_name else "";
+    return (
+        f"Mach-O link refused: an absolute address{who} was patched into "
+        f"{rel.target_sec}+0x{rel.address:x}, a read-only section of the "
+        "image. Only __DATA can be rebased, so an image holding one can run "
+        "at its link address and nowhere else -- and an arm64 main executable "
+        "must be position-independent, so dyld would slide this one and every "
+        "such address would go stale (#8800). Emit position-independent code "
+        "for this target rather than linking an image that cannot move."
     );
 }
 
@@ -1124,14 +1122,14 @@ impl MachOLinker.build_executable -> bytes {
         } else {
             ordinal = lib_ordinals.get(_lib, 1) if _lib is not None else 1;
             bind_data.append(0x20);
-            bind_data.extend(_encode_uleb128(ordinal));
+            bind_data.extend(encode_uleb128(ordinal));
         }
 
         bind_data.append(BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM);
         bind_data.extend(sym_name.encode("utf-8") + b"\x00");
         bind_data.append(BIND_OPCODE_SET_TYPE_IMM | BIND_TYPE_POINTER);
         bind_data.append(BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | data_seg_idx);
-        bind_data.extend(_encode_uleb128(got_offset));
+        bind_data.extend(encode_uleb128(got_offset));
         bind_data.append(BIND_OPCODE_DO_BIND);
     }
     if len(bind_data) > 0 {
@@ -1180,7 +1178,7 @@ impl MachOLinker.build_executable -> bytes {
             rebase_data.append(
                 (REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB & 0xF0) | data_seg_idx
             );
-            rebase_data.extend(_encode_uleb128(off));
+            rebase_data.extend(encode_uleb128(off));
             rebase_data.append(REBASE_OPCODE_DO_REBASE);
         }
         rebase_data.append(REBASE_OPCODE_DONE);
@@ -1318,11 +1316,18 @@ impl MachOLinker.build_executable -> bytes {
     rodata_bytes = bytearray(rodata_data);
     data_bytes = bytearray(data_data);
 
+    pinned_rel: (MachOReloc | None) = None;
+    pinned_sym = "";
+    after_subtractor = False;
+
     for rel in self.relocations {
         if (is_arm64 and rel.rtype == ARM64_RELOC_SUBTRACTOR)
             or (not is_arm64 and rel.rtype == X86_64_RELOC_SUBTRACTOR) {
+            after_subtractor = True;
             continue;
         }
+        was_after_subtractor = after_subtractor;
+        after_subtractor = False;
 
         sym_addr = 0;
         sym_name = "";
@@ -1413,6 +1418,14 @@ impl MachOLinker.build_executable -> bytes {
             eff_addend += _unsigned_inline_addend(
                 rel, patch_buf, patch_off, self.sections
             );
+            if (not was_after_subtractor)
+                and pinned_rel is None
+                and (
+                    rel.target_sec in code_sections or rel.target_sec in rodata_sections
+                ) {
+                pinned_rel = rel;
+                pinned_sym = sym_name;
+            }
         }
         if is_arm64 {
             applied = _arm64_apply_reloc(
@@ -1430,6 +1443,10 @@ impl MachOLinker.build_executable -> bytes {
                 )
             );
         }
+    }
+
+    if pinned_rel is not None and is_arm64 {
+        raise ValueError(_macho_pinned_image_refusal(pinned_rel, pinned_sym));
     }
 
     stubs_bytes = bytearray();
@@ -1465,7 +1482,10 @@ impl MachOLinker.build_executable -> bytes {
 
     output = bytearray(total_file_size);
 
-    mh_flags = MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL | MH_PIE;
+    mh_flags = MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL;
+    if pinned_rel is None {
+        mh_flags |= MH_PIE;
+    }
     struct.pack_into(
         "<IiIIIII",
         output,
@@ -2070,13 +2090,13 @@ impl MachOLinker.build_shared_object -> bytes {
         } else {
             ordinal = lib_ordinals.get(_lib, 1);
             bind_data.append(0x20);
-            bind_data.extend(_encode_uleb128(ordinal));
+            bind_data.extend(encode_uleb128(ordinal));
         }
         bind_data.append(BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM);
         bind_data.extend(sym_name.encode("utf-8") + b"\x00");
         bind_data.append(BIND_OPCODE_SET_TYPE_IMM | BIND_TYPE_POINTER);
         bind_data.append(BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB | data_seg_idx);
-        bind_data.extend(_encode_uleb128(got_offset));
+        bind_data.extend(encode_uleb128(got_offset));
         bind_data.append(BIND_OPCODE_DO_BIND);
     }
     if len(bind_data) > 0 {
@@ -2127,7 +2147,7 @@ impl MachOLinker.build_shared_object -> bytes {
             rebase_data.append(
                 (REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB & 0xF0) | data_seg_idx
             );
-            rebase_data.extend(_encode_uleb128(off));
+            rebase_data.extend(encode_uleb128(off));
             rebase_data.append(REBASE_OPCODE_DO_REBASE);
         }
         rebase_data.append(REBASE_OPCODE_DONE);

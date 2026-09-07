@@ -882,12 +882,14 @@ impl NormalizePass.enter_ctrl_stmt with uni.CtrlStmt entry {
 }
 
 impl NormalizePass.enter_delete_stmt with uni.DeleteStmt entry {
-    new_kid: list[uni.UniNode] = [
-        here.gen_token(Tok.KW_DELETE),
-        here.target,
-        here.gen_token(Tok.SEMI),
-
-    ];
+    new_kid: list[uni.UniNode] = [here.gen_token(Tok.KW_DELETE)];
+    for i in range(len(here.targets)) {
+        if i > 0 {
+            new_kid.append(here.gen_token(Tok.COMMA));
+        }
+        new_kid.append(here.targets[i]);
+    }
+    new_kid.append(here.gen_token(Tok.SEMI));
     here.set_kids(nodes=new_kid);
 }
 
@@ -1340,7 +1342,7 @@ impl NormalizePass.enter_index_slice with uni.IndexSlice entry {
     here.set_kids(nodes=new_kid);
 }
 
-impl NormalizePass.enter_slice with uni.Slice entry { }
+impl NormalizePass.enter_slice with uni.Slice entry {}
 
 impl NormalizePass.enter_edge_ref_trailer with uni.EdgeRefTrailer entry {
     new_kid: list[uni.UniNode] = [];
@@ -1498,11 +1500,11 @@ impl NormalizePass.enter_assign_compr with uni.AssignCompr entry {
     here.set_kids(nodes=new_kid);
 }
 
-impl NormalizePass.enter_jsx_attribute with uni.JsxAttribute entry { }
+impl NormalizePass.enter_jsx_attribute with uni.JsxAttribute entry {}
 
-impl NormalizePass.enter_jsx_child with uni.JsxChild entry { }
+impl NormalizePass.enter_jsx_child with uni.JsxChild entry {}
 
-impl NormalizePass.enter_jsx_element with uni.JsxElement entry { }
+impl NormalizePass.enter_jsx_element with uni.JsxElement entry {}
 
 impl NormalizePass.enter_jsx_element_name with uni.JsxElementName entry {
     new_kid: list[uni.UniNode] = [];
@@ -1734,7 +1736,7 @@ impl NormalizePass.enter_match_arch with uni.MatchArch entry {
     here.set_kids(nodes=new_kid);
 }
 
-impl NormalizePass.enter_token with uni.Token entry { }
+impl NormalizePass.enter_token with uni.Token entry {}
 
 impl NormalizePass.enter_string with uni.String entry {
     here.value = f"{here.value}";

@@ -136,6 +136,7 @@ import from jaclang.compiler.frontend.relations {
     CfgSucc,
     CfgTrue,
     DecidedCodespace,
+    Codespace,
     Defines,
     InScope,
     PlacedIn,
@@ -177,6 +178,8 @@ node UniNode {
     def thaw_structure -> None;
     def structure_thawed -> StructureThaw;
     def _attach(child: UniNode, role: type[Role]) -> None;
+    def _role_clear(role: type[Role]) -> None;
+    def _as_node_list(value: any) -> list[UniNode];
     def _children -> list[UniNode];
     def _role_shaped(role: type[Role], found: list[UniNode]) -> any;
     def _role_set(role: type[Role], value: any) -> None;
@@ -256,6 +259,8 @@ node Symbol {
         imported: bool postinit,
         semstr: str postinit,
         ownership: OwnershipKind = OwnershipKind.NONE,
+        linear: bool = False,
+        is_view: bool = False,
         param_rebound: bool = False,
         na_escapes: bool = False,
         na_region_handle: bool = False,
@@ -612,12 +617,14 @@ node MatchPattern(UniNode) {}
 
 node SubTag[T](UniNode) {
     has tag: T,
-        ownership: OwnershipKind = OwnershipKind.NONE;
+        ownership: OwnershipKind = OwnershipKind.NONE,
+        linear: bool = False;
 
     def init(
         *,
         tag: T,
         ownership: OwnershipKind = OwnershipKind.NONE,
+        linear: bool = False,
         kid: Sequence[UniNode] = []
     ) -> None;
 
@@ -626,6 +633,8 @@ node SubTag[T](UniNode) {
 }
 
 node Module(AstDocNode, UniScopeNode) {
+    def set_code_context(context: CodeContext) -> None;
+
     has name: str,
         source: Source,
         terminals: list[Token],
@@ -636,15 +645,19 @@ node Module(AstDocNode, UniScopeNode) {
         mobui_enforced_root: (str | None) = None,
         jac_project_root: (str | None) = None,
         access_enforced: bool = False,
+        app: (str | None) = None,
+        app_root: (str | None) = None,
+        app_kind: str = "",
+        owner_app: (str | None) = None,
         ct_resolved: bool = False,
         ct_file_deps: list[str] postinit,
+        ct_body_deps: list[str] postinit,
         native_viols_reported: bool = False,
         client_viols_reported: bool = False,
         rc_last_use: dict[int, list[str]] postinit,
+        rc_scope_cleanup: dict[int, list[str]] postinit,
         rc_move_in: set[int] postinit,
-        anon_region_open: dict[int, int] postinit,
-        anon_region_close: dict[int, int] postinit,
-        anon_region_locals: dict[int, list[str]] postinit;
+        own_move_sites: set[int] postinit;
 
     has body: Sequence[ElementStmt | String | EmptyToken] { getter; }
 
@@ -669,12 +682,14 @@ node Module(AstDocNode, UniScopeNode) {
     ) -> None;
 
     has decided_codespace: str { getter; setter(decided_codespace: str); }
+    has codespace_inferred: bool = False;
 
     def postinit -> None;
 
     has annexable_by: (str | None) { getter; }
 
     def declares_codespace(ctx: CodeContext, path_hint: str = '') -> bool;
+    def absorb_annex_body(stmts: Sequence[UniNode]) -> None;
     static def make_stub(
         inject_name: (str | None) = None, inject_src: (Source | None) = None
     ) -> Module {
@@ -827,7 +842,8 @@ obj ImportBoundaryFacts {
         na_unmappable_targets: list[str] = [],
         native_absorb_path: (str | None) = None,
         native_item_paths: dict[(str, str)] = {},
-        bridged_decls: dict[(str, Ability)] = {};
+        bridged_decls: dict[(str, Ability)] = {},
+        cross_app_kind: str = "local";
 }
 
 node Import(ContextAwareNode, ElementStmt, CodeBlockStmt) {
@@ -1062,6 +1078,9 @@ node Ability(ContextAwareNode, AstAccessNode, ElementStmt, AstAsyncNode, ArchBlo
     ) -> None;
 
     def postinit -> None;
+
+    has receiver_mode: OwnershipKind = OwnershipKind.NONE,
+        raises: list[str] postinit;
 
     has is_method: bool { getter; }
     has is_cls_method: bool { getter; }
@@ -1447,11 +1466,16 @@ node CtrlStmt(CodeBlockStmt) {
 }
 
 node DeleteStmt(CodeBlockStmt) {
-    has target: Expr { getter; }
+    has targets: list[Expr] { getter; }
 
-    def init(*, target: Expr, kid: Sequence[UniNode] = []) -> None;
+    def init(*, targets: list[Expr], kid: Sequence[UniNode] = []) -> None;
     def postinit -> None;
     def __repr__ -> str;
+    def leaf_targets -> list[Expr];
+    static def unwrap_target(target: Expr) -> Expr;
+    static def is_location(target: Expr) -> bool;
+    static def type_may_hold_graph(t: (TypeBase | None)) -> bool;
+    static def target_may_hold_graph(target: Expr) -> bool;
 }
 
 node ReportStmt(CodeBlockStmt) {
@@ -2719,6 +2743,8 @@ def _ability_of_defn(defn_node: UniNode) -> (Ability | None);
 def ability_of_symbol(sym: (Symbol | None)) -> (Ability | None);
 
 def binding_kind_of_decl(decl: NameAtom) -> BindingKind;
+
+def import_chain_of(sym: Symbol) -> list[Symbol];
 
 def resolved_decl_of(sym: Symbol) -> (NameAtom | None);
 

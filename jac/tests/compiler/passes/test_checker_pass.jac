@@ -5,10 +5,8 @@ import from pathlib { Path }
 import from tests.support { JAC_ROOT }
 import jaclang;
 import jaclang.compiler.frontend.unitree as uni;
-import from jaclang.compiler.passes.type_checker_pass { TypeCheckPass }
 import from jaclang.compiler.driver.program { JacProgram }
 import from jaclang.compiler.driver.compile_options { CompileOptions }
-import from jaclang.compiler.driver.pass_driver { run_pass }
 import from jaclang.testing.test { parametrize }
 
 glob FIXTURES = os.path.join(JAC_ROOT, "tests", "compiler", "passes", "fixtures"),
@@ -4133,23 +4131,70 @@ test "jsx_step2_handler_aliases" {
         + "\n---\n".join(err.pretty_print() for err in program.errors_had);
 }
 
+def _jsx_msgs(program: JacProgram, code: str) -> list {
+    return sorted(
+        [
+            d.msg
+            for d in program.errors_had + program.warnings_had
+            if d.code and d.code.code == code
+        ]
+    );
+}
+
 test "jsx_step3_jsx_prop_check" {
     path = os.path.join(CHECKER_FIXTURES, "checker_jsx_step3_jsx_prop_check.jac");
     program = JacProgram();
     mod = program.compile(path, options=NO_TC);
+    all_diags = "\n---\n".join(
+        d.pretty_print() for d in program.errors_had + program.warnings_had
+    );
 
-    e1100_errors = [
-        e
-        for e in program.errors_had
-        if e.code and e.code.code == "E1100"
-    ];
-    assert len(e1100_errors) >= 1 , f"Expected E1100 for JSX prop type mismatch, got {len(
-        e1100_errors
-    )} E1100 errors. All errors:\n"
-        + "\n---\n".join(
-            f"{err.code.code if err.code else '?'}: {err.pretty_print()}"
-            for err in program.errors_had
-        );
+    assert len(_jsx_msgs(program, "E1100")) >= 1 , f"Expected E1100 for the onClick type mismatch:\n{all_diags}";
+
+    # A call site passing no attribute and a zero-parameter component are
+    # checked like any other; nested content counts as `children`, a comment
+    # does not.
+    e1102 = _jsx_msgs(program, "E1102");
+    assert len(e1102) == 3 , f"Expected 3 E1102 (Plain 'title', Card 'children' twice):\n{all_diags}";
+    assert len(
+        [
+            m
+            for m in e1102
+            if "prop 'title'" in m
+        ]
+    )
+        == 1 , f"Expected one E1102 naming 'title':\n{all_diags}";
+    assert len(
+        [
+            m
+            for m in e1102
+            if "prop 'children'" in m
+        ]
+    )
+        == 2 , f"Expected two E1102 naming 'children':\n{all_diags}";
+    e1101 = _jsx_msgs(program, "E1101");
+    assert len(e1101) == 1 and "bogus" in e1101[0] , f"Expected exactly 1 E1101 (Zero 'bogus'):\n{all_diags}";
+
+    # Children handed to a component that declares none are dropped by the
+    # codegen, so the call site is warned.
+    w1053 = _jsx_msgs(program, "W1053");
+    assert len(w1053) == 2 , f"Expected 2 W1053 (Plain, Zero):\n{all_diags}";
+    assert len(
+        [
+            m
+            for m in w1053
+            if "Component 'Plain'" in m
+        ]
+    )
+        == 1 , f"Expected W1053 on 'Plain':\n{all_diags}";
+    assert len(
+        [
+            m
+            for m in w1053
+            if "Component 'Zero'" in m
+        ]
+    )
+        == 1 , f"Expected W1053 on 'Zero':\n{all_diags}";
 }
 
 test "jsx_step4_lambda_inference" {
@@ -4290,6 +4335,16 @@ test "jsx_props_bag_untyped_and_typed" {
     assert "UntypedComp" in w1052[0].pretty_print() , f"Expected W1052 for 'UntypedComp', got: {w1052[
         0
     ].pretty_print()}";
+
+    # A `props` bundle beside another parameter has no valid lowering: E1109
+    # fires once, on MixedComp.
+    e1109 = [
+        e
+        for e in program.errors_had
+        if e.code and e.code.code == "E1109"
+    ];
+    assert len(e1109) == 1 and "MixedComp" in e1109[0].pretty_print() , f"Expected exactly 1 E1109 (MixedComp), got:\n"
+        + "\n---\n".join(e.pretty_print() for e in program.errors_had);
 }
 
 test "jsx_intrinsic_tag_names_do_not_emit_w1051" {
@@ -4945,8 +5000,7 @@ test "mobui_project_forbids_html_intrinsic_tags" {
     path = os.path.join(CHECKER_FIXTURES, "checker_jsx_mobui_html_forbidden.jac");
     program = JacProgram();
     program.compile(
-        path,
-        options=CompileOptions(project_kind="mobui", project_root=CHECKER_FIXTURES)
+        path, options=CompileOptions(ui="mobui", project_root=CHECKER_FIXTURES)
     );
 
     e1105 = [
@@ -4993,8 +5047,7 @@ test "mobui_project_allows_lowercase_component_in_scope" {
     path = os.path.join(CHECKER_FIXTURES, "checker_jsx_mobui_html_forbidden.jac");
     program = JacProgram();
     program.compile(
-        path,
-        options=CompileOptions(project_kind="mobui", project_root=CHECKER_FIXTURES)
+        path, options=CompileOptions(ui="mobui", project_root=CHECKER_FIXTURES)
     );
     e1105 = [
         e
@@ -5017,8 +5070,7 @@ test "mobui_project_lowercase_component_no_w1050" {
     );
     program = JacProgram();
     program.compile(
-        path,
-        options=CompileOptions(project_kind="mobui", project_root=CHECKER_FIXTURES)
+        path, options=CompileOptions(ui="mobui", project_root=CHECKER_FIXTURES)
     );
     w1050 = [
         w
@@ -5030,7 +5082,7 @@ test "mobui_project_lowercase_component_no_w1050" {
 }
 
 test "mobui_kind_does_not_leak_outside_project_root" {
-    # Regression: a consumer's project_kind="mobui" must not reach files
+    # Regression: a consumer's ui="mobui" must not reach files
     # outside the project root. The real failure was client_runtime.jac
     # (from jac-client) being compiled into the user's JacProgram during
     # `jac build` and receiving E1105 for its HTML tags ("kind-leak").
@@ -5041,7 +5093,7 @@ test "mobui_kind_does_not_leak_outside_project_root" {
     with tempfile.TemporaryDirectory() as tmp_root {
         program = JacProgram();
         program.compile(
-            path, options=CompileOptions(project_kind="mobui", project_root=tmp_root)
+            path, options=CompileOptions(ui="mobui", project_root=tmp_root)
         );
         e1105 = [
             e
@@ -5057,25 +5109,28 @@ test "mobui_kind_does_not_leak_outside_project_root" {
 }
 
 test "jac_toml_kind_mobui_round_trip" {
-    # Verify the jac.toml → per-path discovery → compile() code path for
-    # `[project] client_kind = "mobui"`. All other mobui-project tests set
-    # project_kind via CompileOptions directly; this one writes a real
-    # project (jac.toml + module) and relies on the guard pass discovering
-    # the kind from the module's own path -- no cwd, no config singleton.
+    # Verify the jac.toml → workspace reader → compile() code path for
+    # `[apps.<name>] kind = "mobile"`: a mobile app is mobUI with no other
+    # key. All other mobui-project tests set ui via CompileOptions directly;
+    # this one writes a real project (jac.toml + module) and relies on the
+    # guard pass discovering the kind from the module's own path -- no cwd,
+    # no config singleton.
     import shutil;
     import tempfile;
     import from jaclang.project.config { JacConfig }
 
-    toml_content = '[project]\nname = "test-proj"\nclient_kind = "mobui"\n';
+    toml_content = '[project]\nname = "test-proj"\n\n[apps.main]\nkind = "mobile"\n';
 
     with tempfile.TemporaryDirectory() as tmp_dir {
         toml_path = Path(tmp_dir) / "jac.toml";
         toml_path.write_text(toml_content);
-        # Part 1: round-trip — JacConfig.load() must parse client_kind correctly.
+        # Part 1: round-trip — JacConfig.load() must derive mobUI from the kind.
         cfg = JacConfig.load(toml_path);
-        assert cfg.project.client_kind == "mobui" , f"Expected client_kind='mobui' from jac.toml, got '{cfg.project.client_kind}'";
+        assert cfg.apps["main"].ui() == "mobui" , f"Expected ui='mobui' for app main, got '{cfg.apps[
+            'main'
+        ].ui()}'";
         # Part 2: per-path discovery -- a module inside the project picks up
-        # "mobui" with a plain CompileOptions() (no explicit project_kind),
+        # "mobui" with a plain CompileOptions() (no explicit ui),
         # causing JsxIntrinsicGuardPass to emit E1105.
         fixture = os.path.join(tmp_dir, "main.jac");
         shutil.copyfile(
@@ -5089,42 +5144,11 @@ test "jac_toml_kind_mobui_round_trip" {
             for e in program.errors_had
             if e.code and e.code.code == "E1105"
         ];
-        assert len(e1105) == 4 , f"Expected 4 E1105 from jac.toml client_kind=mobui, got {len(
+        assert len(e1105) == 4 , f"Expected 4 E1105 from [apps.main] kind=mobile, got {len(
             e1105
         )}:\n"
             + "\n---\n".join(e.pretty_print() for e in e1105);
     }
-}
-
-test "mobui_hello_example_discovers_kind_and_stays_e1105_clean" {
-    # Integration over the shipped starter example: its jac.toml declares
-    # client_kind = "mobui", per-path discovery must switch the guard on for
-    # its modules, and the example itself must stay free of raw HTML tags.
-    import from jaclang.project.client_kind { resolve_client_kind_context }
-
-    example_dir = os.path.join(JAC_ROOT, "examples", "mobui", "hello");
-    `entry = os.path.join(example_dir, "main.jac");
-    assert os.path.isfile(`entry) , f"mobui hello example missing at {`entry}";
-
-    (kind, proj_root) = resolve_client_kind_context(`entry);
-    assert kind == "mobui" , (
-        f"per-path discovery must resolve mobui for the example, got '{kind}'"
-    );
-    assert proj_root and os.path.samefile(proj_root, example_dir) , (
-        f"project root must be the example dir, got '{proj_root}'"
-    );
-
-    program = JacProgram();
-    program.compile(`entry, options=CompileOptions());
-    e1105 = [
-        e
-        for e in program.errors_had
-        if e.code and e.code.code == "E1105"
-    ];
-    assert len(e1105) == 0 , (
-        "shipped mobUI example must be E1105-clean:\n"
-        + "\n---\n".join(e.pretty_print() for e in e1105)
-    );
 }
 
 test "builtin_inference_regressions" {
@@ -5230,4 +5254,20 @@ test "match_wildcard_no_warning_noise" {
     assert not noise , (
         "case _ must not draw warning noise; got: " + str([str(w) for w in noise])
     );
+}
+
+test "client cleanup returns only warn when ignored" {
+    program = JacProgram();
+    program.compile(
+        os.path.join(CHECKER_FIXTURES, "checker_client_effect_returns.jac"),
+        options=NO_TC
+    );
+    assert not program.errors_had , str(program.errors_had);
+    ignored = [
+        w
+        for w in program.warnings_had
+        if w.code and w.code.code == "W2014"
+    ];
+    assert len(ignored) == 2 , str(ignored);
+    assert [w.loc.first_line for w in ignored] == [7, 10];
 }

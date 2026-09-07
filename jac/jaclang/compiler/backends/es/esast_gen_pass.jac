@@ -8,8 +8,9 @@ import from jaclang.compiler.backends.es.es_unparse { es_to_js }
 import from jaclang.compiler.frontend.constant { CodeContext, SymbolType }
 import from jaclang.compiler.frontend.constant { Tokens as Tok }
 import from jaclang.runtime.osp_model { OspAnalysis, OspModel }
-import from jaclang.compiler.passes.ast_gen { BaseAstGenPass }
-import from jaclang.compiler.passes.ast_gen.jsx_processor { EsJsxProcessor }
+import from jaclang.compiler.backends.common.ast_gen_base { BaseAstGenPass }
+import from jaclang.compiler.frontend.module_facts { ModuleFacts }
+import from jaclang.compiler.backends.es.jsx_processor { EsJsxProcessor }
 import from jaclang.compiler.frontend.codeinfo { ClientManifest }
 import from jaclang.compiler.backends.es.scoped_styles {
     ScopedStyleSheet,
@@ -17,6 +18,7 @@ import from jaclang.compiler.backends.es.scoped_styles {
 }
 import from jaclang.compiler.backends.es.framework_backend { FrameworkBackend }
 import from jaclang.compiler.backends.es.free_ident_audit {
+    FreeIdentifier,
     RUNTIME_PRELUDE_GLOBALS,
     client_ambient_globals,
     free_identifiers
@@ -42,7 +44,8 @@ import from jaclang.compiler.frontend.diagnostics {
     E5085,
     E5086,
     E5099,
-    E5101
+    E5101,
+    E5103
 }
 
 glob _T = TypeVar('_T', bound=es.Node),
@@ -330,6 +333,7 @@ walker EsastGenPass(BaseAstGenPass[es.Statement]) {
         nd: uni.BinaryExpr, left_expr: es.Expression, right_expr: es.Expression
     ) -> (SpawnCallParts | None);
 
+    def _import_item_named(name: str) -> (uni.ModuleItem | None);
     def _build_spawn_runtime_call(
         nd: uni.BinaryExpr, parts: SpawnCallParts
     ) -> es.AwaitExpression;
@@ -399,6 +403,10 @@ walker EsastGenPass(BaseAstGenPass[es.Statement]) {
 
     can exit_module with uni.Module exit;
     def _audit_free_identifiers(nd: uni.Module, program: es.Program) -> None;
+    def _free_ident_site(
+        names: list[uni.Name], free: FreeIdentifier
+    ) -> (uni.Name | None);
+
     def populate_client_manifest(nd: uni.Module) -> None;
     can exit_sub_tag with uni.SubTag exit;
     can exit_import with uni.Import exit;
@@ -408,6 +416,8 @@ walker EsastGenPass(BaseAstGenPass[es.Statement]) {
     ) -> None;
 
     def _sv_import_item_is_type(nd: uni.Import, item: uni.ModuleItem) -> bool;
+    def _is_service_bridge_import(nd: uni.Import) -> bool;
+    def _sv_provider_options(nd: uni.Import) -> (es.Expression | None);
     def _record_sv_backend(nd: uni.Import) -> None;
     def _generate_na_import_binding(nd: uni.Import) -> None;
     def _is_client_native_import(nd: uni.Import) -> bool;
@@ -511,6 +521,28 @@ walker EsastGenPass(BaseAstGenPass[es.Statement]) {
     can exit_switch_stmt with uni.SwitchStmt exit;
     can exit_switch_case with uni.SwitchCase exit;
     can exit_delete_stmt with uni.DeleteStmt exit;
+    def _es_destroy_stmt(
+        target: uni.Expr, nd: uni.DeleteStmt
+    ) -> (es.Statement | None);
+
+    def _es_poly_destroy_stmt(
+        value: es.Expression, nd: uni.DeleteStmt
+    ) -> es.Statement;
+
+    def _es_del_trivial(expr: es.Expression) -> bool;
+    def _es_del_bind(
+        expr: es.Expression, name: str, stmts: list[es.Statement], nd: uni.DeleteStmt
+    ) -> es.Expression;
+
+    def _es_delete_location(
+        target: uni.AtomTrailer, nd: uni.DeleteStmt, ordinal: int
+    ) -> list[es.Statement];
+
+    def _es_release_name_stmt(
+        target: uni.Name, nd: uni.DeleteStmt
+    ) -> (es.Statement | None);
+
+    def _es_slice_part(part: (uni.Expr | None), nd: uni.DeleteStmt) -> es.Expression;
     can exit_match_stmt with uni.MatchStmt exit;
     def _lower_match_pattern(
         pat: uni.MatchPattern, subj: es.Expression
@@ -569,7 +601,6 @@ walker EsastGenPass(BaseAstGenPass[es.Statement]) {
     can exit_assignment with uni.Assignment exit;
     def _resolve_source_module(nd: uni.Import) -> (uni.Module | None);
     def _resolve_call_ability(nd: uni.FuncCall) -> (uni.Ability | None);
-    def _return_type_includes_jsx_element(rt: uni.Expr) -> bool;
     def _return_type_route_role(rt: uni.Expr) -> (str | None);
     def _component_pascal_name(nd: uni.Ability) -> (str | None);
     def _component_call_abi(ability_node: uni.Ability) -> str;
@@ -649,6 +680,8 @@ walker EsastGenPass(BaseAstGenPass[es.Statement]) {
 
     def _bind_client_value_refs(nd: uni.Module) -> list[es.Statement];
     can exit_func_call with uni.FuncCall exit;
+    def _place_accessors(place: es.Expression) -> es.Expression | None;
+    def _lower_place_builtin(nd: uni.FuncCall) -> es.Expression | None;
     can exit_index_slice with uni.IndexSlice exit;
     can exit_special_var_ref with uni.SpecialVarRef exit;
     can exit_atom_trailer with uni.AtomTrailer exit;

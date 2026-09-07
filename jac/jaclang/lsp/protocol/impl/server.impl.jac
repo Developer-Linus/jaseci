@@ -494,9 +494,7 @@ impl LanguageServer._write_message(body: dict) -> None {
             self._transport_writer.write(header);
             self._transport_writer.write(content);
             self._transport_writer.flush();
-        } except (BrokenPipeError, OSError) {
-            ;
-        }
+        } except (BrokenPipeError, OSError) {}
     }
 }
 
@@ -549,7 +547,8 @@ impl LanguageServer._build_capabilities -> dict {
         "textDocument/references": "referencesProvider",
         "textDocument/rename": "renameProvider",
         "textDocument/formatting": "documentFormattingProvider",
-        "textDocument/semanticTokens/full": "semanticTokensProvider"
+        "textDocument/semanticTokens/full": "semanticTokensProvider",
+        "textDocument/inlayHint": "inlayHintProvider"
     };
     for (method, cap_key) in _cap_map.items() {
         if method in self._features {

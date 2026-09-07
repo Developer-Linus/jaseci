@@ -28,6 +28,7 @@ obj EmbeddedGateway(Gateway) {
         client_dist_dir: str = DEFAULT_CLIENT_DIST_DIR,
         base_path: str = ".",
         static_mounts: list[dict[str, str]] = [],
+        port_pinned: bool = False,
         app: any = None,
         _asset_table: list[AssetRoot] | None = None;
 

@@ -37,7 +37,7 @@ def lintfix_formatting(
     ls: JacLangServer, params: lspt.DocumentFormattingParams
 ) -> list[lspt.TextEdit];
 
-def did_create_files(ls: JacLangServer, params: lspt.CreateFilesParams) { }
+def did_create_files(ls: JacLangServer, params: lspt.CreateFilesParams) {}
 
 def did_rename_files(ls: JacLangServer, params: lspt.RenameFilesParams) -> None;
 
@@ -56,6 +56,10 @@ async def completion(
         (params.context.trigger_character if params.context else None)
     );
 }
+
+def inlay_hint(
+    ls: JacLangServer, params: lspt.InlayHintParams
+) -> list[lspt.InlayHint];
 
 def hover(
     ls: JacLangServer, params: lspt.TextDocumentPositionParams

@@ -29,7 +29,7 @@ impl ASTValidationPass.enter_binary_expr with BinaryExpr entry {
 }
 
 impl ASTValidationPass.enter_name with Name entry {
-    if here.__class__ is not Name {
+    if type(here) is not Name {
         return;
     }
     if here.value == "pass" {
@@ -38,7 +38,7 @@ impl ASTValidationPass.enter_name with Name entry {
 }
 
 impl ASTValidationPass.enter_param_var with ParamVar entry {
-    ctx_owner = here.find_parent_of_type(ContextAwareNode);
+    ctx_owner: (ContextAwareNode | None) = here.find_parent_of_type(ContextAwareNode);
     if isinstance(here.name, Name)
         and keyword.iskeyword(here.name.value)
         and (ctx_owner is None or ctx_owner.code_context == CodeContext.SERVER) {
@@ -117,7 +117,7 @@ impl ASTValidationPass.enter_switch_stmt with SwitchStmt entry {
     }
 }
 
-impl ASTValidationPass._reject_non_bindable(target: object) -> None {
+impl ASTValidationPass._reject_non_bindable(target: UniNode) -> None {
     non_bindable = {Tok.KW_ROOT, Tok.KW_SUPER};
     if isinstance(target, (TupleVal, ListVal)) {
         for el in target.values {
@@ -215,7 +215,7 @@ impl ASTValidationPass.enter_inner_compr with InnerCompr entry {
 }
 
 impl ASTValidationPass.enter_has_var with HasVar entry {
-    ctx_owner = here.find_parent_of_type(ContextAwareNode);
+    ctx_owner: (ContextAwareNode | None) = here.find_parent_of_type(ContextAwareNode);
     if isinstance(here.name, Name)
         and keyword.iskeyword(here.name.value)
         and (ctx_owner is None or ctx_owner.code_context == CodeContext.SERVER) {
@@ -233,7 +233,40 @@ impl ASTValidationPass.enter_expr_as_item with ExprAsItem entry {
 }
 
 impl ASTValidationPass.enter_delete_stmt with DeleteStmt entry {
-    self._reject_non_bindable(here.target);
+    for target in here.targets {
+        self._reject_non_bindable(target);
+        self._reject_undeletable(target);
+    }
+}
+
+impl ASTValidationPass._reject_undeletable(target: UniNode) -> None {
+    inner = target;
+    while isinstance(inner, AtomUnit) {
+        inner = inner.value;
+    }
+    if isinstance(inner, (TupleVal, ListVal)) {
+        if len(inner.values) == 0 {
+            self.emit(E0083, node_override=inner, what="an empty target list");
+            return;
+        }
+        for el in inner.values {
+            self._reject_undeletable(el);
+        }
+        return;
+    }
+    if isinstance(inner, AtomTrailer) and inner.is_null_ok {
+        self.emit(E0083, node_override=inner, what="a null-safe access");
+        return;
+    }
+    if isinstance(inner, UnaryExpr)
+        and isinstance(inner.op, Token)
+        and inner.op.name in (Tok.STAR_MUL, Tok.STAR_POW) {
+        self.emit(E0083, node_override=inner, what="an unpacked target");
+        return;
+    }
+    if isinstance(inner, (Literal, MultiString, FString)) {
+        self.emit(E0083, node_override=inner, what="a literal");
+    }
 }
 
 impl ASTValidationPass.enter_import with Import entry {

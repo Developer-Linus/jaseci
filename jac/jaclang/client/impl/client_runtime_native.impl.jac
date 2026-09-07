@@ -187,7 +187,7 @@ impl _adaptImageProps(props: dict) -> dict {
                     console.warn(
                         "[jac-native-runtime] Missing Metro asset mapping for token "
                             + str(uri)
-                            + ". Re-run jac build --client react-native."
+                            + ". Re-run jac build <app>."
                     );
                 }
                 out["source"] = {"uri": uri};
@@ -686,12 +686,12 @@ impl __getApiBaseUrl -> str {
         if cfg and cfg.extra and cfg.extra.apiBaseUrl {
             return cfg.extra.apiBaseUrl;
         }
-    } except Exception { }
+    } except Exception {}
     if not globalThis.__jacWarnedMissingApiBaseUrl__ {
         globalThis.__jacWarnedMissingApiBaseUrl__ = True;
         console.warn(
             "[jac-native-runtime] Missing API base URL. Set expo.extra.apiBaseUrl "
-            "or run jac run --client react-native --dev so it is injected."
+            "or run jac run --dev <app> so it is injected."
         );
     }
     return "";
@@ -1080,7 +1080,7 @@ impl JacForm(props: dict[str, any]) -> JsxElement {
         if schema._def and schema._def.schema {
             actualSchema = schema._def.schema;
         }
-    } except Exception { }
+    } except Exception {}
     schemaShape = actualSchema.shape or {};
     fieldNames = Object.keys(schemaShape);
     form = useJacForm(validate_mode, schema);
@@ -1171,7 +1171,7 @@ impl __jacInstallErrorHandlers -> None {
     globalThis.__jacErrorHandlersInstalled = True;
     try {
         __ensureNativeTokenPrimed();
-    } except Exception { }
+    } except Exception {}
     try {
         prev = globalThis.ErrorUtils.getGlobalHandler();
         globalThis.ErrorUtils.setGlobalHandler(

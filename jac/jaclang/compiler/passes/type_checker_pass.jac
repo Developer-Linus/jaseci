@@ -18,6 +18,7 @@ import from jaclang.compiler.frontend.unitree {
     ExprAsItem,
     FilterCompr,
     FormattedValue,
+    FString,
     FuncCall,
     FuncSignature,
     HasVar,
@@ -30,10 +31,12 @@ import from jaclang.compiler.frontend.unitree {
     KWPair,
     LambdaExpr,
     ListVal,
+    Literal,
     Module,
     ModuleCode,
     ModuleItem,
     ModulePath,
+    MultiString,
     Name,
     Null,
     ParamVar,
@@ -59,6 +62,7 @@ import from jaclang.compiler.frontend.unitree {
     YieldExpr
 }
 import from jaclang.compiler.passes.uni_pass { UniPass }
+import from jaclang.compiler.symbol_utils { return_type_is_jsx }
 import from jaclang.compiler.frontend.constant { Tokens as Tok }
 import from jaclang.compiler.frontend.diagnostics { E0033, E0108, E0109 }
 import from jaclang.compiler.types.ct_value { CT_DEFERRED, CtValue }
@@ -114,6 +118,7 @@ import from jaclang.compiler.frontend.diagnostics {
     E1095,
     E1106,
     E1107,
+    E1109,
     E1112,
     E1113,
     E1116,
@@ -122,6 +127,7 @@ import from jaclang.compiler.frontend.diagnostics {
     E1124,
     E1132,
     E5095,
+    E1133,
     W1036,
     W1037,
     W1052,
@@ -208,6 +214,12 @@ walker TypeCheckPass(UniPass) {
     def _check_explicit_any(ann_node: UniNode) -> None;
     def _check_walker_reports_shape(nd: HasVar, declared_type: object) -> None;
     def _enclosing_walker_report_elem_type(nd: UniNode) -> (TypeBase | None);
+    def _jsx_component_params(nd: Ability) -> (list[ParamVar] | None);
+    def _is_ref_forward_tail_param(p: ParamVar) -> bool;
+    def _check_props_bundle_is_exclusive(
+        nd: Ability, comp_params: list[ParamVar]
+    ) -> None;
+
     def _check_event_trigger_archetype(nd: Ability) -> None;
     def _check_unresolved_lambda_params -> None;
 }

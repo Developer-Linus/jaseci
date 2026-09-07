@@ -5,15 +5,14 @@ import json;
 import os;
 import sys;
 import types;
-import from collections { OrderedDict }
-import from collections.abc { Callable, Coroutine, Mapping, Sequence }
+import from collections { OrderedDict, deque }
+import from collections.abc { Callable, Coroutine, Iterable, Mapping, Sequence }
 import from concurrent.futures { Future, ThreadPoolExecutor }
 import from contextvars { ContextVar }
 import dataclasses;
 import from dataclasses { dataclass, field }
 import from inspect { getfile }
 import from logging { getLogger }
-import from pathlib { Path }
 import from typing { TYPE_CHECKING, Literal, ParamSpec, Protocol, TypeAlias, TypeVar }
 import from uuid { UUID }
 import from jaclang.runtime.archetype {
@@ -66,7 +65,8 @@ import type from jaclang.compiler.driver.selfhost { SelfHostCache }
 import type from jaclang.client.client_bundle { ClientBundle, ClientBundleBuilder }
 import type from jaclang.runtime.context { ExecutionContext }
 import type from jaclang.server.server { JacAPIServer as JacServer }
-import type from jaclang.server.server { ModuleIntrospector, UserManager }
+import type from jaclang.server.identity.user_manager { UserManager }
+import type from jaclang.server.server { ModuleIntrospector, ServerExtension }
 
 glob logger = getLogger(__name__),
      T = TypeVar('T'),
@@ -86,7 +86,8 @@ glob logger = getLogger(__name__),
      _default_full_target_path: list = [None],
      _shared_root_resolver: list = [None, None];
 
-glob _scale_provider_cache: list = [];
+glob _scale_provider_cache: list = [],
+     _scale_provider_error: list = [None];
 
 glob _persistent_memory_provider: list = [None];
 
@@ -98,9 +99,15 @@ def _scale_provider -> any {
     try {
         import from jaclang.scale.plugin { JacScalePlugin }
         result = JacScalePlugin;
-    } except ImportError { }
+    } except ImportError as e {
+        _scale_provider_error[0] = e;
+    }
     _scale_provider_cache.append(result);
     return result;
+}
+
+def scale_provider_error -> any {
+    return _scale_provider_error[0];
 }
 
 def _all_grant(anchor: Anchor) -> AccessLevel {
@@ -198,6 +205,7 @@ obj LLMModel(Protocol) {
 
 class JacContext {
     static def get_context -> ExecutionContext;
+    static def peek_context -> (ExecutionContext | None);
     static def reset_graph(root_node: (Root | None) = None) -> int;
     static def create_j_context(
         user_root: (str | None),
@@ -218,7 +226,10 @@ class JacPersistence {
     static async def aget_object(id: str) -> (Archetype | None);
     static def object_ref(`obj: Archetype) -> str;
     static def save(`obj: (Archetype | Anchor)) -> None;
-    static def destroy(objs: Archetype | Anchor | list[(Archetype | Anchor)]) -> None;
+    static def destroy(objs: any, strict: bool = False) -> None;
+    static def _destroy_anchors(objs: any, strict: bool) -> list[Anchor];
+    static def peek_attr(`obj: any, name: str) -> any;
+    static def peek_item(container: any, key: any) -> any;
     static def get_user_manager(base_path: str) -> UserManager;
     static def store(base_path: str = './storage', create_dirs: bool = True) -> any;
     static def get_persistent_memory(config: dict) -> any;
@@ -234,6 +245,7 @@ class JacAccessValidation {
         to: Anchor, min_level: AccessLevel, operation: str
     ) -> bool;
 
+    static def _is_shared_root(to: Anchor) -> bool;
     static def allow_root(
         archetype: Archetype,
         root_id: UUID,
@@ -450,17 +462,8 @@ class JacServe {
         module: types.ModuleType, force: bool = False
     ) -> ClientBundle;
 
-    static def format_build_error(
-        error_output: str, project_dir: Path, config: object = None
-    ) -> str;
-
     static def get_api_server_class -> type;
-    static def ensure_sv_service(module_name: str, base_path: str) -> None;
-    static def sv_service_call(module_name: str, func_name: str, args: dict) -> any;
-    static def sv_walker_call(
-        module_name: str, walker_name: str, args: dict, stub_cls: any
-    ) -> any;
-
+    static def get_server_extensions -> list[ServerExtension];
     static def get_sv_registry -> dict[str, str];
     static def create_server(
         jac_server: JacServer, host: str, port: int, max_retries: int = 10
@@ -551,6 +554,7 @@ class JacRuntime(JacRuntimeInterface) {
     static def get_full_target_path -> (str | None);
     static def set_base_path(base_path: (str | None)) -> None;
     static def set_full_target_path(target_path: (str | None)) -> None;
+    static def shared_root_id -> (UUID | None);
     static def get_shared_root -> Root;
     static def set_shared_root_resolver(
         resolver: (Callable[([], (str | None))] | None)
@@ -559,4 +563,5 @@ class JacRuntime(JacRuntimeInterface) {
     static def set_context(context: ExecutionContext) -> None;
     static def push_request_context(context: ExecutionContext) -> any;
     static def reset_request_context(token: any) -> None;
+    static def after_fork_in_child -> None;
 }
