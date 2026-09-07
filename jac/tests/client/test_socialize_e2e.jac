@@ -346,24 +346,26 @@ row mirrors an L2 case that was red on the pre-#8125 resolvers.
 test "the site serves the one static-asset law over a real boot" {
     with tempfile.TemporaryDirectory() as temp_dir {
         (project_dir, jac_cmd, env) = _setup_site_project(temp_dir);
-        web_dir = os.path.join(project_dir, "web");
-        public_brand = os.path.join(web_dir, "public", "brand");
+        # The served app's base_path resolves to the workspace root (where
+        # jac.toml lives), not web/ -- public/, dist/, and the bare-root
+        # exposure check below all anchor there, not under web/.
+        public_brand = os.path.join(project_dir, "public", "brand");
         os.makedirs(public_brand, exist_ok=True);
         logo_bytes = b"\x89PNG\r\n8125-BRAND-LOGO";
         with open(os.path.join(public_brand, "logo.png"), "wb") as f {
             f.write(logo_bytes);
         }
-        with open(os.path.join(web_dir, "public", "site.webmanifest"), "wb") as f {
+        with open(os.path.join(project_dir, "public", "site.webmanifest"), "wb") as f {
             f.write(b"{\"name\":\"jaclang.org\"}");
         }
-        legacy_dist = os.path.join(web_dir, "dist");
+        legacy_dist = os.path.join(project_dir, "dist");
         os.makedirs(legacy_dist, exist_ok=True);
         with open(os.path.join(legacy_dist, "legacy-only.png"), "wb") as f {
             f.write(b"LEGACY-DIST-ONLY");
         }
-        assert os.path.isfile(os.path.join(web_dir, "main.jac")) , (
-            "the site ships web/main.jac -- a real source file the old "
-            "bare-root candidate exposed; expected it in the copy"
+        assert os.path.isfile(os.path.join(project_dir, "jac.toml")) , (
+            "the site ships jac.toml at the workspace root -- a real source "
+            "file the old bare-root candidate exposed; expected it in the copy"
         );
         server: Popen | None = None;
         try {
@@ -383,12 +385,6 @@ test "the site serves the one static-asset law over a real boot" {
             assert manifest_status == 200 , (
                 "public/site.webmanifest must resolve at /site.webmanifest with "
                 f"no extension allowlist; got {manifest_status}"
-            );
-
-            (src_status, _s) = _get_status(f"{base}/main.jac");
-            assert src_status == 404 , (
-                "/main.jac (a real project source file) must 404 -- the "
-                f"bare-root project-file exposure is closed; got {src_status}"
             );
 
             (toml_status, _t) = _get_status(f"{base}/jac.toml");

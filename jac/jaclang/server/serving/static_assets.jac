@@ -62,18 +62,9 @@ def asset_root_table(
     dist = str(client_dist);
     assets = str(_assets_dir(project_root));
     public = str(project_root / "public");
-    dist_resolved = _resolve_root(dist);
     assets_resolved = _resolve_root(assets);
     public_resolved = _resolve_root(public);
 
-    table.append(
-        AssetRoot(
-            url_prefix="static",
-            local_dir=dist,
-            source="dist",
-            resolved_dir=dist_resolved
-        )
-    );
     table.append(
         AssetRoot(
             url_prefix="static/assets",
@@ -82,11 +73,23 @@ def asset_root_table(
             resolved_dir=assets_resolved,
         )
     );
-    table.append(
-        AssetRoot(
-            url_prefix="", local_dir=dist, source="dist", resolved_dir=dist_resolved
-        )
-    );
+
+    if dist and dist != "." {
+        dist_resolved = _resolve_root(dist);
+        table.append(
+            AssetRoot(
+                url_prefix="static",
+                local_dir=dist,
+                source="dist",
+                resolved_dir=dist_resolved
+            )
+        );
+        table.append(
+            AssetRoot(
+                url_prefix="", local_dir=dist, source="dist", resolved_dir=dist_resolved
+            )
+        );
+    }
     table.append(
         AssetRoot(
             url_prefix="",
