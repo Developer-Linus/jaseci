@@ -89,6 +89,20 @@ def register_page_endpoints(server: JacAPIServer) {
             asset_dist = str(sealed_dist);
         }
     }
+    if not asset_dist and config is not None and config.is_workspace {
+        import from jaclang.client.targets.registry { client_app_dir_for }
+        entry_path = Jac.get_full_target_path() or '';
+        workspace_dist = client_app_dir_for(config, entry_path) / 'dist';
+        if workspace_dist.is_dir() {
+            asset_dist = str(workspace_dist);
+        }
+    }
+    if not asset_dist {
+        default_dist = Path(_static_base(server)) / '.jac' / 'client' / 'dist';
+        if default_dist.is_dir() {
+            asset_dist = str(default_dist);
+        }
+    }
     asset_table: list[AssetRoot] = asset_root_table(
         Path(_static_base(server)), Path(asset_dist), []
     );
