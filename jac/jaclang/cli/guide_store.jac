@@ -7,16 +7,6 @@ obj Guide {
         path: str;
 }
 
-obj GuideSection {
-    has title: str,
-        slug: str,
-        level: int,
-        line_no: int,
-        body: str;
-}
-
-def guide_sections(g: Guide) -> list[GuideSection];
-
 obj GrepHit {
     has guide: str,
         line_no: int,
