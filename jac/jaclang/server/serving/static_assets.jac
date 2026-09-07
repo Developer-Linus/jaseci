@@ -27,17 +27,21 @@ def _resolve_root(local_dir: str) -> Path {
 
 
 def _assets_dir(project_root: Path) -> Path {
+    default_dir = project_root / "assets";
     try {
         import from jaclang.client.config_loader { JacClientConfig }
         client_config = JacClientConfig(project_root);
         configured = str(client_config.get_assets_config().get('dir') or '');
         if configured {
-            return project_root / configured;
+            configured_dir = project_root / configured;
+            if configured_dir.is_dir() {
+                return configured_dir;
+            }
         }
     } except Exception as e {
         _logger.debug(f"could not read a configured assets dir, using default: {e}");
     }
-    return project_root / "assets";
+    return default_dir;
 }
 
 
