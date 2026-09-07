@@ -65,7 +65,7 @@ import tomllib
 with open('jac.toml', 'rb') as f:
     cfg = tomllib.load(f)
 k8s = cfg['scale']['kubernetes']
-act = cfg['scale']['microservices']['services']['worker']['http_activation']
+act = cfg['apps']['worker']['scale']['http_activation']
 # Touching act['rules'][0]['hosts'][0] here (unused otherwise -- this script
 # never sets a Host header) validates the fixture's rules block is shaped as
 # expected, failing loudly here rather than as a later, cryptic kubectl error.

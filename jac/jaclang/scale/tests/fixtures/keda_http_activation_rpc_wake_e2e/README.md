@@ -11,7 +11,7 @@ keda_http_activation_rpc_wake_e2e/
   app.jac     Root-routed service; its `trigger_ping` walker calls
               worker.ping() over sv-to-sv RPC.
   worker.jac  HTTP-activated, scale-to-zero service; a single `ping` walker.
-  jac.toml    [scale.microservices.routes] + per-service http_activation on
+  jac.toml    [apps.app] + [apps.worker] with per-app http_activation on
               `worker` only -- `app` stays warm, matching a real "frontend
               service in front of an occasionally-used backend" shape.
 ```
