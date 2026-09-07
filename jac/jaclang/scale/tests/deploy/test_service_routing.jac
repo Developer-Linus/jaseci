@@ -28,9 +28,7 @@ test "neither top-level nor per-service config set: not activated" {
 }
 
 test "top-level enabled, no per-service block: activated, inherits top-level values" {
-    cfg = resolve_http_activation_config(
-        {"enabled": True, "target_port": 8080}, {}
-    );
+    cfg = resolve_http_activation_config({"enabled": True, "target_port": 8080}, {});
     assert cfg is not None;
     assert cfg["target_port"] == 8080;
 }
@@ -44,8 +42,7 @@ test "per-service enabled with no top-level default: activated" {
 test "per-service overrides a top-level key, both merge into one config" {
     app_cfg = {"http_activation": {"target_port": 9090}};
     cfg = resolve_http_activation_config(
-        {"enabled": True, "target_port": 8080, "concurrency_target": 10},
-        app_cfg
+        {"enabled": True, "target_port": 8080, "concurrency_target": 10}, app_cfg
     );
     assert cfg["target_port"] == 9090 , "per-service value must win over the top-level default";
     assert cfg["concurrency_target"] == 10 , "unset per-service keys still inherit the default";
@@ -135,9 +132,7 @@ test "mixed activation states in one call resolve independently, no cross-talk" 
     try {
         routes = {"orders_app": "/orders", "cart_app": "/cart"};
         kubernetes_cfg = {"http_activation": {"enabled": False}};
-        app_scale_configs = {
-            "orders_app": {"http_activation": {"enabled": True}}
-        };
+        app_scale_configs = {"orders_app": {"http_activation": {"enabled": True}}};
         resolved = build_k8s_service_routes(
             routes, 8000, kubernetes_cfg, app_scale_configs
         );
@@ -201,12 +196,14 @@ test "ManifestBuilder._get_http_activation_config agrees with resolve_http_activ
         container_port=8000,
         http_activation={"enabled": True, "target_port": 8080, "concurrency_target": 10}
     );
-    ms_cfg = {"services": {"orders_app": {"http_activation": {"target_port": 9090}}}};
-    builder = ManifestBuilder(k8s_config=cfg, microservices_config=ms_cfg);
+    builder = ManifestBuilder(
+        k8s_config=cfg,
+        app_overrides={"orders_app": {"http_activation": {"target_port": 9090}}}
+    );
 
     via_builder = builder._get_http_activation_config("orders_app");
     via_resolver = resolve_http_activation_config(
-        dict(cfg.http_activation), builder._ms_cfg(), "orders_app"
+        dict(cfg.http_activation), builder._service_config("orders_app")
     );
     assert via_builder == via_resolver;
     assert via_builder["target_port"] == 9090 , "per-service override must win on both paths";
@@ -219,12 +216,14 @@ test "ManifestBuilder._get_http_activation_config agrees with resolve_http_activ
         container_port=8000,
         http_activation={"enabled": True, "target_port": 8080, "concurrency_target": 10}
     );
-    ms_cfg = {"services": {"orders_app": {"http_activation": {"enabled": False}}}};
-    builder = ManifestBuilder(k8s_config=cfg, microservices_config=ms_cfg);
+    builder = ManifestBuilder(
+        k8s_config=cfg,
+        app_overrides={"orders_app": {"http_activation": {"enabled": False}}}
+    );
 
     via_builder = builder._get_http_activation_config("orders_app");
     via_resolver = resolve_http_activation_config(
-        dict(cfg.http_activation), builder._ms_cfg(), "orders_app"
+        dict(cfg.http_activation), builder._service_config("orders_app")
     );
     assert via_builder is None;
     assert via_builder == via_resolver;

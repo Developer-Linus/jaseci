@@ -222,7 +222,7 @@ test "generate_manifests never activates the gateway, even though every microser
                     "rules": [{"hosts": ["*"]}]
                 }
             ),
-            microservices_config={"routes": {"billing_ops": "/"}, "services": services},
+            fleet=fleet_of({"billing_ops": "/"}, overrides=services),
             dry_run=True
         );
         bundle = b.generate_manifests(AppConfig(code_folder=project, app_name="t"), "");
