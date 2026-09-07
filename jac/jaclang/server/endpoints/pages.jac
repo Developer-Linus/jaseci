@@ -14,7 +14,7 @@ import from jaclang.server.serving.endpoint {
     JEndPoint,
     ParameterType
 }
-import from jaclang.project.config { get_config }
+import from jaclang.project.config { find_project_root, get_config }
 import from jaclang.server.serving.files { file_response }
 import from jaclang.server.server { JacAPIServer, JsonValue }
 import from jaclang.server.static_files {
@@ -47,7 +47,15 @@ def _dev_client_elsewhere -> JSONResponse {
 def _static_base(server: JacAPIServer) -> str {
     ctx = Jac.get_context();
     bp = (ctx.base_path_dir if ctx else '') or Jac.get_base_path_dir();
-    return bp or server.base_path;
+    raw = bp or server.base_path;
+    if raw {
+        project_root_result = find_project_root(Path(raw));
+        if project_root_result {
+            (resolved, _) = project_root_result;
+            return str(resolved);
+        }
+    }
+    return raw;
 }
 
 
@@ -106,15 +114,6 @@ def register_page_endpoints(server: JacAPIServer) {
     asset_table: list[AssetRoot] = asset_root_table(
         Path(_static_base(server)), Path(asset_dist), []
     );
-    logger.warning(
-        f"DEBUG_ASSET_TABLE base={_static_base(server)!r} dist={asset_dist!r}"
-    );
-    for r in asset_table {
-        logger.warning(
-            f"DEBUG_ASSET_ROOT prefix={r.url_prefix!r} local={r.local_dir!r} "
-            f"resolved={r.resolved_dir!r} exists={r.resolved_dir.is_dir()}"
-        );
-    }
 
     def render_page(request: Request, page_name: str, **kwargs: JsonValue) -> Response {
         sibling = sibling_app_dist(config, page_name, server.base_path);

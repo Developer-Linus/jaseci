@@ -159,28 +159,10 @@ def resolve_asset(
         try {
             resolved = target.resolve();
             if not resolved.is_relative_to(base) {
-                if "jac-logo" in url_path {
-                    _logger.warning(
-                        f"DEBUG_RESOLVE jail-miss prefix={r.url_prefix!r} "
-                        f"target={resolved!r} base={base!r}"
-                    );
-                }
                 continue;
             }
-        } except (OSError, ValueError) as e {
-            if "jac-logo" in url_path {
-                _logger.warning(
-                    f"DEBUG_RESOLVE resolve-error prefix={r.url_prefix!r} "
-                    f"target={target!r} err={e!r}"
-                );
-            }
+        } except (OSError, ValueError) {
             continue;
-        }
-        if "jac-logo" in url_path {
-            _logger.warning(
-                f"DEBUG_RESOLVE tried prefix={r.url_prefix!r} target={resolved!r} "
-                f"is_file={resolved.is_file()}"
-            );
         }
         if resolved.is_file() {
             return (resolved, r);
