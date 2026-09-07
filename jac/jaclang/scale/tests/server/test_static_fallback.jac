@@ -1,18 +1,19 @@
 import os;
 import tempfile;
+import from pathlib { Path }
 import from jaclang.server.serving.datatypes { Request }
 import from jaclang.scale.runtime.gateway.microservice_gateway { MicroserviceGateway }
 import from jaclang.scale.runtime.gateway.service_registry { ServiceRegistry }
-import from jaclang.scale.server.serve { JacAPIServerStatic }
-import from jaclang.runtime.runtime { JacRuntime as Jac }
+import from jaclang.server.serving.static_assets { asset_root_table, resolve_asset }
 
 
-def _static_server(project_root: str) -> JacAPIServerStatic {
-    # serve_root_asset / serve_static_file derive base_path from the Jac context;
-    # point it at a real tempdir tree so the resolver runs against it (no project
-    # markers above /tmp, so find_project_root falls back to this dir).
-    Jac.get_context().base_path_dir = project_root;
-    return JacAPIServerStatic(module_name="test_static_fallback");
+"""The monolith (pages.jac's static_file/root_asset) builds its asset table
+the same way: asset_root_table(project_root, client_dist, []) -- no static
+mounts there, those are a gateway-only concept. Exercise the same primitive
+directly rather than booting a real server."""
+def _resolve(project_root: str, empty_dist: str, url_path: str) -> any {
+    table = asset_root_table(Path(project_root), Path(empty_dist), []);
+    return resolve_asset(table, url_path);
 }
 
 
@@ -147,6 +148,7 @@ test "public/ asset is served at the web root like vite and next serve it (#8124
 test "monolith: a public/ asset resolves at the web root (wiring)" {
     import shutil;
     project_root = tempfile.mkdtemp();
+    empty_dist = tempfile.mkdtemp();
     try {
         brand_dir = os.path.join(project_root, "public", "brand");
         os.makedirs(brand_dir, exist_ok=True);
@@ -154,11 +156,11 @@ test "monolith: a public/ asset resolves at the web root (wiring)" {
             f.write(b"PNG_DATA");
         }
 
-        srv = _static_server(project_root);
-        resp = srv.serve_root_asset("brand/logo.png");
-        assert resp.status_code == 200 , "public/brand/logo.png must resolve at /brand/logo.png in the monolith";
+        hit = _resolve(project_root, empty_dist, "/brand/logo.png");
+        assert hit is not None , "public/brand/logo.png must resolve at /brand/logo.png in the monolith";
     } finally {
         shutil.rmtree(project_root, ignore_errors=True);
+        shutil.rmtree(empty_dist, ignore_errors=True);
     }
 }
 
@@ -166,16 +168,17 @@ test "monolith: a public/ asset resolves at the web root (wiring)" {
 test "monolith: a bare project-root file is not exposed at the web root (#8125 security)" {
     import shutil;
     project_root = tempfile.mkdtemp();
+    empty_dist = tempfile.mkdtemp();
     try {
         with open(os.path.join(project_root, "package.json"), "w") as f {
             f.write("{\"private\": true}");
         }
 
-        srv = _static_server(project_root);
-        resp = srv.serve_root_asset("package.json");
-        assert resp.status_code == 404 , "a bare project-root file (package.json) must not be served at /package.json";
+        hit = _resolve(project_root, empty_dist, "/package.json");
+        assert hit is None , "a bare project-root file (package.json) must not be served at /package.json";
     } finally {
         shutil.rmtree(project_root, ignore_errors=True);
+        shutil.rmtree(empty_dist, ignore_errors=True);
     }
 }
 
@@ -183,6 +186,7 @@ test "monolith: a bare project-root file is not exposed at the web root (#8125 s
 test "monolith: project src/ is not exposed at the web root (#8125 security)" {
     import shutil;
     project_root = tempfile.mkdtemp();
+    empty_dist = tempfile.mkdtemp();
     try {
         src_dir = os.path.join(project_root, "src");
         os.makedirs(src_dir, exist_ok=True);
@@ -190,11 +194,11 @@ test "monolith: project src/ is not exposed at the web root (#8125 security)" {
             f.write("export const KEY = 1;");
         }
 
-        srv = _static_server(project_root);
-        resp = srv.serve_root_asset("src/app.js");
-        assert resp.status_code == 404 , "project source under src/ must not be served at /src/app.js";
+        hit = _resolve(project_root, empty_dist, "/src/app.js");
+        assert hit is None , "project source under src/ must not be served at /src/app.js";
     } finally {
         shutil.rmtree(project_root, ignore_errors=True);
+        shutil.rmtree(empty_dist, ignore_errors=True);
     }
 }
 
@@ -202,6 +206,7 @@ test "monolith: project src/ is not exposed at the web root (#8125 security)" {
 test "monolith: no basename flattening at the web root (I5)" {
     import shutil;
     project_root = tempfile.mkdtemp();
+    empty_dist = tempfile.mkdtemp();
     try {
         assets_dir = os.path.join(project_root, "assets");
         os.makedirs(assets_dir, exist_ok=True);
@@ -209,11 +214,11 @@ test "monolith: no basename flattening at the web root (I5)" {
             f.write(b"PNG");
         }
 
-        srv = _static_server(project_root);
-        resp = srv.serve_root_asset("sub/logo.png");
-        assert resp.status_code == 404 , "assets/logo.png must not be reachable at /sub/logo.png via basename flattening";
+        hit = _resolve(project_root, empty_dist, "/sub/logo.png");
+        assert hit is None , "assets/logo.png must not be reachable at /sub/logo.png via basename flattening";
     } finally {
         shutil.rmtree(project_root, ignore_errors=True);
+        shutil.rmtree(empty_dist, ignore_errors=True);
     }
 }
 
@@ -221,6 +226,7 @@ test "monolith: no basename flattening at the web root (I5)" {
 test "monolith: no basename flattening under /static (I5)" {
     import shutil;
     project_root = tempfile.mkdtemp();
+    empty_dist = tempfile.mkdtemp();
     try {
         assets_dir = os.path.join(project_root, "assets");
         os.makedirs(assets_dir, exist_ok=True);
@@ -228,10 +234,10 @@ test "monolith: no basename flattening under /static (I5)" {
             f.write(b"PNG");
         }
 
-        srv = _static_server(project_root);
-        resp = srv.serve_static_file("sub/logo.png");
-        assert resp.status_code == 404 , "assets/logo.png must not be reachable at /static/sub/logo.png via basename flattening";
+        hit = _resolve(project_root, empty_dist, "/static/sub/logo.png");
+        assert hit is None , "assets/logo.png must not be reachable at /static/sub/logo.png via basename flattening";
     } finally {
         shutil.rmtree(project_root, ignore_errors=True);
+        shutil.rmtree(empty_dist, ignore_errors=True);
     }
 }

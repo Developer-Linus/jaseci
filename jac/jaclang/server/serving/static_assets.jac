@@ -26,6 +26,17 @@ def _resolve_root(local_dir: str) -> Path {
 }
 
 
+def _assets_dir(project_root: Path) -> Path {
+    try {
+        import from jaclang.client.config_loader { JacClientConfig }
+        return JacClientConfig(project_root).get_assets_dir();
+    } except Exception as e {
+        _logger.debug(f"could not resolve a configured assets dir, using default: {e}");
+        return project_root / "assets";
+    }
+}
+
+
 def asset_root_table(
     project_root: Path, client_dist: Path, mounts: list[dict]
 ) -> list[AssetRoot] {
@@ -49,7 +60,7 @@ def asset_root_table(
     }
 
     dist = str(client_dist);
-    assets = str(project_root / "assets");
+    assets = str(_assets_dir(project_root));
     public = str(project_root / "public");
     dist_resolved = _resolve_root(dist);
     assets_resolved = _resolve_root(assets);
