@@ -80,8 +80,17 @@ def register_page_endpoints(server: JacAPIServer) {
     settings = server.resolved_settings();
     config = get_config();
     root_app = server.introspector.resolve_root_app();
+    asset_dist = settings.client_dist;
+    if not asset_dist {
+        import from jaclang.server.sealed_serve { client_dist_for }
+        source_path = getattr(server.module, '__file__', '') or '';
+        sealed_dist = client_dist_for(source_path) if source_path else None;
+        if sealed_dist is not None {
+            asset_dist = str(sealed_dist);
+        }
+    }
     asset_table: list[AssetRoot] = asset_root_table(
-        Path(_static_base(server)), Path(settings.client_dist), []
+        Path(_static_base(server)), Path(asset_dist), []
     );
 
     def render_page(request: Request, page_name: str, **kwargs: JsonValue) -> Response {
@@ -151,7 +160,7 @@ def register_page_endpoints(server: JacAPIServer) {
     }
 
     def root_index(request: Request, **kwargs: JsonValue) -> Response {
-        index = client_dist_index(settings.client_dist);
+        index = client_dist_index(asset_dist);
         if index is not None {
             return file_response(request, str(index), cache_control='no-cache');
         }
@@ -262,7 +271,7 @@ def register_page_endpoints(server: JacAPIServer) {
             (target, _) = hit;
             return file_response(request, str(target));
         }
-        index = client_dist_index(settings.client_dist);
+        index = client_dist_index(asset_dist);
         if index is not None and not Path(file_path).suffix {
             return file_response(request, str(index), cache_control='no-cache');
         }
