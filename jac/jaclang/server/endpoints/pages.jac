@@ -106,6 +106,15 @@ def register_page_endpoints(server: JacAPIServer) {
     asset_table: list[AssetRoot] = asset_root_table(
         Path(_static_base(server)), Path(asset_dist), []
     );
+    logger.warning(
+        f"DEBUG_ASSET_TABLE base={_static_base(server)!r} dist={asset_dist!r}"
+    );
+    for r in asset_table {
+        logger.warning(
+            f"DEBUG_ASSET_ROOT prefix={r.url_prefix!r} local={r.local_dir!r} "
+            f"resolved={r.resolved_dir!r} exists={r.resolved_dir.is_dir()}"
+        );
+    }
 
     def render_page(request: Request, page_name: str, **kwargs: JsonValue) -> Response {
         sibling = sibling_app_dist(config, page_name, server.base_path);
