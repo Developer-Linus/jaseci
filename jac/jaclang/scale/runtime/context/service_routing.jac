@@ -27,8 +27,7 @@ def resolve_interceptor_service_address(kubernetes_cfg: dict[str, any]) -> str {
 
 
 def resolve_http_activation_config(
-    top_level_http_activation: dict[str, any],
-    app_scale_cfg: dict[str, any]
+    top_level_http_activation: dict[str, any], app_scale_cfg: dict[str, any]
 ) -> dict[str, any] | None {
     """Merge [apps.<svc_name>.scale.http_activation] over
     [scale.kubernetes.http_activation]. The single implementation of this
