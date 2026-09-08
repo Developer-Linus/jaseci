@@ -919,7 +919,7 @@ class JacScalePluginConfig {
                         "static_mounts": {
                             "type": "list",
                             "default": [],
-                            "description": "Extra static-asset roots served under `/static/<url_prefix>`, each `{url_prefix, local_path}`. A request matching a mount's prefix is served exclusively from it (no fallback to public/assets/the SPA shell on a miss)."
+                            "description": "Extra static-asset roots served at `/<url_prefix>` (the prefix is used verbatim -- include `static/` in it yourself if you want the mount under that tier), each `{url_prefix, local_path}`. A request matching a mount's prefix is served exclusively from it (no fallback to public/assets/the SPA shell on a miss)."
                         },
                         "client_dist_dir": {
                             "type": "string",

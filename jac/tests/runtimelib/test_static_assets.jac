@@ -167,21 +167,35 @@ test "configured mounts win first and keep exclusive ownership" {
 }
 
 
-test "a mount miss is exclusive: it never falls through to public/ or assets/" {
-    proj = _project();
-    _write(proj, "public/files/data.json", b"FROM_PUBLIC");
-    mount_dir = _project();
+test "a mount miss is exclusive: it never falls through to public/, assets/, or the static tier" {
+    # (mount url_prefix, a real file placed where the leak would be served
+    # from, the request path that misses in the mount and should 404 rather
+    # than reach that file)
+    cases = [
+        ("files", "public/files/data.json", "/files/data.json"),
+        # a mount nested under the reserved static/ tier (unlike a mount at
+        # exactly "static", which is an additive overlay per #7020) must be
+        # just as exclusive as any other prefix -- a miss must not fall
+        # through to the built-in static->dist root three entries down.
+        ("static/brand", ".jac/client/dist/brand/logo.png", "/static/brand/logo.png"),
 
-    table = asset_root_table(
-        proj,
-        proj / ".jac" / "client" / "dist",
-        [{"url_prefix": "files", "local_path": str(mount_dir)}]
-    );
-    result = resolve_asset(table, "/files/data.json");
-    assert result is None , (
-        "a static_mount owns its prefix exclusively; a miss must not fall "
-        "through to public/files/data.json (or assets/)"
-    );
+    ];
+    for (prefix, leak_rel, request_path) in cases {
+        proj = _project();
+        _write(proj, leak_rel, b"LEAK");
+        mount_dir = _project();
+
+        table = asset_root_table(
+            proj,
+            proj / ".jac" / "client" / "dist",
+            [{"url_prefix": prefix, "local_path": str(mount_dir)}]
+        );
+        result = resolve_asset(table, request_path);
+        assert result is None , (
+            f"a static_mount at '{prefix}' owns its prefix exclusively; a miss "
+            f"must not fall through to {leak_rel}"
+        );
+    }
 }
 
 

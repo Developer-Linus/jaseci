@@ -39,7 +39,9 @@ def _assets_dir(project_root: Path) -> Path {
             }
         }
     } except Exception as e {
-        _logger.debug(f"could not read a configured assets dir, using default: {e}");
+        _logger.warning(
+            f"invalid [client.assets] 'dir' config, falling back to project_root/assets: {e}"
+        );
     }
     return default_dir;
 }
@@ -143,8 +145,10 @@ def resolve_asset(
     table: list[AssetRoot], url_path: str
 ) -> (tuple[Path, AssetRoot] | None) {
     mount_claimed = False;
+
+    mount_is_static_overlay = False;
     for r in table {
-        if mount_claimed and r.url_prefix == "" {
+        if mount_claimed and not (mount_is_static_overlay and r.url_prefix != "") {
             continue;
         }
         rel = _remainder(url_path, r.url_prefix);
@@ -153,6 +157,7 @@ def resolve_asset(
         }
         if r.source == "mount" {
             mount_claimed = True;
+            mount_is_static_overlay = r.url_prefix == "static";
         }
         base = r.resolved_dir;
         target = base / rel;
