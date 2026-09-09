@@ -721,6 +721,57 @@ test "sv_service_call sets the Host header when the resolved route carries one" 
 }
 
 
+test "_resolve_call_target warns once per module on a failing dynamic lookup, then again after it recovers and fails again" {
+    import from jaclang.scale.runtime.context.service_routing { ServiceRoute }
+
+    original_get_routes = JacScalePlugin.get_sv_service_routes;
+    original_warning = rpc_mod.logger.warning;
+    warn_calls: list = [];
+
+    def fake_warning(msg: str) {
+        warn_calls.append(msg);
+    }
+
+    def failing_routes -> dict[str, ServiceRoute] {
+        raise RuntimeError("route table unreachable");
+    }
+
+    def healthy_routes -> dict[str, ServiceRoute] {
+        return {
+            "k9_warn_once_mod": ServiceRoute(
+                url="http://k9-warn-once-mod-service.prod.svc.cluster.local:8000",
+                host_header=None
+            )
+        };
+    }
+
+    rpc_mod._dynamic_route_lookup_warned.discard("k9_warn_once_mod");
+    _as_any(rpc_mod).logger.warning = fake_warning;
+    sv_client.register("k9_warn_once_mod", "http://fallback.invalid:9999");
+
+    try {
+        _as_any(JacScalePlugin).get_sv_service_routes = staticmethod(failing_routes);
+        rpc_mod._resolve_call_target("k9_warn_once_mod");
+        rpc_mod._resolve_call_target("k9_warn_once_mod");
+        rpc_mod._resolve_call_target("k9_warn_once_mod");
+        assert len(warn_calls) == 1;
+
+        _as_any(JacScalePlugin).get_sv_service_routes = staticmethod(healthy_routes);
+        rpc_mod._resolve_call_target("k9_warn_once_mod");
+        assert len(warn_calls) == 1;
+
+        _as_any(JacScalePlugin).get_sv_service_routes = staticmethod(failing_routes);
+        rpc_mod._resolve_call_target("k9_warn_once_mod");
+        assert len(warn_calls) == 2;
+    } finally {
+        JacScalePlugin.get_sv_service_routes = original_get_routes;
+        rpc_mod.logger.warning = original_warning;
+        rpc_mod._dynamic_route_lookup_warned.discard("k9_warn_once_mod");
+        sv_client.unregister("k9_warn_once_mod");
+    }
+}
+
+
 import socket;
 import threading;
 

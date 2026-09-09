@@ -1,3 +1,4 @@
+import logging;
 import from .breaker {
     breaker_should_skip,
     breaker_record_success,
@@ -5,8 +6,10 @@ import from .breaker {
     _BREAKER_COOLDOWN_SECONDS
 }
 
+glob logger = logging.getLogger(__name__);
 glob _RPC_MAX_ATTEMPTS: int = 3,
      _RPC_INITIAL_BACKOFF_SECONDS: float = 0.1;
+glob _dynamic_route_lookup_warned: set[str] = set();
 
 def _rpc_with_retries(module_name: str, label: str, send: any) -> any {
     import time;
@@ -109,14 +112,17 @@ def _resolve_call_target(module_name: str) -> tuple[str, str | None] {
         routes: dict[str, any] = JacScalePlugin.get_sv_service_routes();
         route = routes.get(module_name);
         if route is not None and route.url {
+            _dynamic_route_lookup_warned.discard(module_name);
             return (route.url, route.host_header);
         }
     } except Exception as e {
-        import logging;
-        logging.getLogger(__name__).warning(
-            f"Dynamic route lookup failed for '{module_name}'; falling back "
-            f"to the static registry, which may not be interceptor-aware: {e}"
-        );
+        if module_name not in _dynamic_route_lookup_warned {
+            _dynamic_route_lookup_warned.add(module_name);
+            logger.warning(
+                f"Dynamic route lookup failed for '{module_name}'; falling back "
+                f"to the static registry, which may not be interceptor-aware: {e}"
+            );
+        }
     }
     return (_provider_url(module_name), sv_client.host_override_for(module_name));
 }
