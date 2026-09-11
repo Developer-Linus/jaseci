@@ -12,12 +12,12 @@ namespace = "jac-http-rpc-wake-e2e"
 
 [apps.app]
 kind = "service"
-entry-point = "app.jac"
+entry-point = "app"
 route = "/"
 
 [apps.worker]
 kind = "service"
-entry-point = "worker.jac"
+entry-point = "worker"
 route = "/worker"
 
 # A cold KEDA-HTTP-Add-on wake blocks a proxied request behind a real pod
