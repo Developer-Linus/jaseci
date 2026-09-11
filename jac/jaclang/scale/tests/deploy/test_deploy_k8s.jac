@@ -85,15 +85,11 @@ test "early exit" {
     details = result.details;
     failure_message = result.message;
     print(f"Deployment result: {details}");
-    # app_err.jac has compile errors, so it cannot be sealed into a .jab. The
-    # deploy now fails fast at binary prep rather than shipping a source bundle
-    # that would crash-loop in the cluster; it never reaches the health check.
     assert result.success is False;
     assert "health_check_of_deployment" not in details;
     assert failure_message is not None;
-    assert (
-        "jac runtime" in failure_message or "seal" in failure_message.lower()
-    ) , failure_message;
+    assert "client build failed" in failure_message , failure_message;
+    assert "app_err.jac" in failure_message , failure_message;
 }
 
 test "deployment target methods" {
@@ -669,7 +665,7 @@ def _k8s_config_for_toml(toml_content: str) -> dict {
 
 test "unconfigured app_name derives from [project].name; namespace stays default" {
     cfg = _k8s_config_for_toml(
-        "[project]\nname = \"My App\"\nentry-point = \"main.jac\"\n"
+        "[project]\nname = \"My App\"\nentry-point = \"main\"\n"
     );
     assert cfg["app_name"] == "my-app" , f"got {cfg['app_name']!r}";
     assert cfg["namespace"] == "default" , f"got {cfg['namespace']!r}";
@@ -684,7 +680,7 @@ test "explicit app_name wins over the derived default" {
 
 test "no usable project name falls back to legacy app_name 'jaseci'" {
     for toml in [
-        "[project]\nentry-point = \"main.jac\"\n",
+        "[project]\nentry-point = \"main\"\n",
         "[project]\nname = \"---\"\n",
         "[project]\nname = \"   \"\n"
     ] {

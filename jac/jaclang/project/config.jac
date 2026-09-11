@@ -34,7 +34,7 @@ obj ProjectConfig {
         classifiers: list[str] = [],
         requires_python: str = "",
         jac_version: str = "",
-        entry_point: str = "main.jac",
+        entry_point: str = "main",
         kind: str = "",
         default_app: str = "",
         urls: dict[str, str] = {},
@@ -147,7 +147,10 @@ obj ServeAuthConfig {
     has secret: str = "",
         algorithm: str = "HS256",
         token_ttl_days: int = 7,
-        password_hash_cost: int = 14;
+        password_hash_cost: int = 14,
+        registration_challenge: bool = False,
+        registration_attempts_per_hour: int = 0,
+        registration_challenges_per_10_minutes: int = 0;
 }
 
 obj ServeConfig {
@@ -334,6 +337,7 @@ obj JacConfig {
     ) -> bool;
 
     def merge_from_toml_file(toml_path: Path) -> None;
+    def merge_apps_table(apps_table: dict[str, any]) -> None;
     def app(name: str) -> AppConfig | None;
     def resolve_app(name: str = "") -> AppConfig;
     def resolved_kind(app: AppConfig) -> str;
@@ -341,7 +345,6 @@ obj JacConfig {
     def app_for_path(abs_path: str) -> AppConfig | None;
     def app_for_target(entry_path: str = "") -> AppConfig | None;
     def serving_apps -> list[AppConfig];
-    def owner_app_for_path(abs_path: str) -> tuple[AppConfig | None, bool];
 }
 
 def _parse_toml_data(data: dict[str, any], toml_path: Path | None = None) -> JacConfig;

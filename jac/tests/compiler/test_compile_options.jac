@@ -38,6 +38,26 @@ test "identical codegen options produce an identical fingerprint" {
     assert _pinned_opts().codegen_fingerprint() == _pinned_opts().codegen_fingerprint();
 }
 
+test "forced server compilation retains Python standard-library imports" {
+    import from jaclang.compiler.driver.program { JacProgram }
+    program = JacProgram();
+    module = program.compile(
+        file_path="forced_server_socket.jac",
+        use_str="import socket;\n"
+            + "def bind_local { sock = socket.socket(); "
+            + "sock.bind(('127.0.0.1', 0)); sock.close(); }\n",
+        options=CompileOptions(
+            default_codespace="native",
+            force_codespace="server",
+            force_target_program=True,
+            need_full_ast=True
+        )
+    );
+    assert not program.errors_had , str(program.errors_had);
+    assert not module.in_native_context();
+    assert module.gen.py_bytecode is not None;
+}
+
 test "every codegen option flip changes the fingerprint" {
     base_fp = _pinned_opts().codegen_fingerprint();
     flips: list = [
@@ -689,4 +709,23 @@ test "no consumer-site NULL guards on string operands" {
         "optional unwrap must be emitted by exactly one site "
         f"(_coerce_type_inner in types.impl.jac); found: {unwrap_sites}"
     );
+}
+
+test "symbol requests preserve their app and native target context" {
+    parent = CompileOptions(
+        aot_mode=True,
+        default_codespace='native',
+        target_app='cli',
+        entry_point='/project/main.jac',
+        project_root='/project',
+        native_target='wasm32-unknown-unknown'
+    );
+    child = parent.for_symbols(need_tree=True);
+    assert child is not parent;
+    assert child.no_cgen and child.symtab_ir_only and child.need_full_ast;
+    assert child.aot_mode and child.default_codespace == 'native';
+    assert child.entry_point == parent.entry_point;
+    assert child.project_root == parent.project_root;
+    assert child.codegen_identity() == parent.codegen_identity();
+    assert not parent.no_cgen and not parent.symtab_ir_only;
 }

@@ -2,6 +2,7 @@ import from jaclang.runtime.osp_kernel { osp_skip_rest }
 import textwrap;
 import from collections.abc { Sequence }
 import from jaclang.compiler.frontend.unitree {
+    literal_string_value,
     Ability,
     ArchHas,
     Archetype,
@@ -341,6 +342,8 @@ walker JcirGenPass(BaseAstGenPass[CgItem]) {
     has already_added: list[str] = [],
         _ct_only_names: (set[str] | None) = None,
         jaclib_imports: set[str] postinit,
+        _runtime_aliases: dict[str, str] postinit,
+        _reserved_names: set[str] postinit,
         builtin_imports: set[str] postinit,
         sized_imports: set[str] postinit,
         typing_imports: set[str] postinit,
@@ -350,7 +353,10 @@ walker JcirGenPass(BaseAstGenPass[CgItem]) {
         _sink: dict[UniNode, list[CgItem]] postinit,
         _module_root: (CgNode | None) = None,
         _module_path: str = "",
-        _interop_stub_node: (UniNode | None) = None;
+        _interop_stub_node: (UniNode | None) = None,
+        _sv_boundary_names: dict[str, str] = {},
+        _sv_boundary_registry: str = "",
+        _sv_serializer: str = "";
 
     with entry {}
 
@@ -421,6 +427,7 @@ walker JcirGenPass(BaseAstGenPass[CgItem]) {
     def _py_name(nd: AstSymbolNode) -> str;
     def py_ctx(nd: AstSymbolNode) -> CgNode;
     def _next_lambda_name -> str;
+    def _reserve_name(preferred: str) -> str;
     def _push_hoist_frame -> None;
     def _hoist_lambda(func_def: CgNode) -> None;
     def _ancestor_is_one_of(nd: (UniNode | None), roots: list[UniNode]) -> bool;
@@ -438,6 +445,8 @@ walker JcirGenPass(BaseAstGenPass[CgItem]) {
     def _top_level_bound_names(items: any) -> list;
     def _native_test_shim_stmts(nd: Test) -> list;
     def _generate_sv_to_sv_stubs(nd: Import) -> bool;
+    def _gen_py_sv_boundary_types -> None;
+    def _gen_py_wire_methods -> list[str];
     def _sv_consumer_app_expr -> str;
     def _sv_endpoint_effects(binding: InteropBinding, key: str) -> list[str];
     def _sv_bridge_walker_call(expr: Expr) -> (FuncCall | None);
@@ -566,6 +575,7 @@ walker JcirGenPass(BaseAstGenPass[CgItem]) {
     can exit_compare_expr with CompareExpr exit;
     can exit_cfg_expr with CfgExpr exit;
     can exit_bool_expr with BoolExpr exit;
+    can enter_lambda_expr with LambdaExpr entry;
     can exit_lambda_expr with LambdaExpr exit;
     def _emit_lambda_expr_body(nd: LambdaExpr, body_node: Expr) -> None;
     def _remove_lambda_param_annotations(signature: FuncSignature) -> None;
@@ -583,7 +593,9 @@ walker JcirGenPass(BaseAstGenPass[CgItem]) {
     can exit_k_v_pair with KVPair exit;
     can exit_k_w_pair with KWPair exit;
     can exit_inner_compr with InnerCompr exit;
+    can enter_list_compr with ListCompr entry;
     can exit_list_compr with ListCompr exit;
+    def _statement_list_comprehension(nd: ListCompr, hoists: list[CgNode]) -> CgNode;
     can exit_gen_compr with GenCompr exit;
     can exit_set_compr with SetCompr exit;
     can exit_dict_compr with DictCompr exit;

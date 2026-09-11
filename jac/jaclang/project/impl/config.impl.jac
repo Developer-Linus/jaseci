@@ -228,6 +228,29 @@ impl JacConfig.apply_profile(
     if "scripts" in profile {
         self.scripts.update(profile["scripts"]);
     }
+    if "apps" in profile {
+        self.merge_apps_table(profile["apps"]);
+    }
+}
+
+impl JacConfig.merge_apps_table(apps_table: dict[str, any]) -> None {
+    import copy;
+    if not isinstance(apps_table, dict) or not apps_table {
+        return;
+    }
+    base = self._base_data.get("apps");
+    if not isinstance(base, dict) {
+        raise ValueError(
+            "an overlay declares [apps] but jac.toml does not; "
+            "declare every app in jac.toml and let the overlay retune it"
+        );
+    }
+    merged = _deep_merge(copy.deepcopy(base), copy.deepcopy(apps_table));
+    self._base_data["apps"] = merged;
+    self._raw_data["apps"] = copy.deepcopy(merged);
+    self.apps = parse_apps(
+        self._base_data.get("project", {}), _interpolate_recursive(merged)
+    );
 }
 
 impl JacConfig.apply_profile_overlay(profile_name: str | None = None) -> None {
@@ -371,6 +394,9 @@ impl JacConfig.merge_from_toml_file(toml_path: Path) -> None {
         } else {
             self._raw_data[key] = value;
         }
+    }
+    if "apps" in data {
+        self.merge_apps_table(data["apps"]);
     }
 }
 
@@ -1019,6 +1045,7 @@ impl _parse_toml_data(
         config.project_root = toml_path.parent;
     }
     if "project" in data {
+        import from jaclang.project.apps { validate_entry_point }
         proj = data["project"];
         config.project = ProjectConfig(
             name=proj.get("name", ""),
@@ -1032,7 +1059,7 @@ impl _parse_toml_data(
             classifiers=proj.get("classifiers", []),
             requires_python=proj.get("requires-python", ""),
             jac_version=proj.get("jac-version", ""),
-            entry_point=proj.get("entry-point", "main.jac"),
+            entry_point=validate_entry_point(proj.get("entry-point", "main")),
             kind=proj.get("kind", ""),
             default_app=str(
                 proj.get("default-app", proj.get("default_app", "")) or ""
@@ -1192,7 +1219,16 @@ impl _parse_toml_data(
                 secret=str(auth_data.get("secret", "")),
                 algorithm=str(auth_data.get("algorithm", "HS256")),
                 token_ttl_days=int(auth_data.get("token_ttl_days", 7)),
-                password_hash_cost=int(auth_data.get("password_hash_cost", 14))
+                password_hash_cost=int(auth_data.get("password_hash_cost", 14)),
+                registration_challenge=bool(
+                    auth_data.get("registration_challenge", False)
+                ),
+                registration_attempts_per_hour=max(
+                    0, int(auth_data.get("registration_attempts_per_hour", 0))
+                ),
+                registration_challenges_per_10_minutes=max(
+                    0, int(auth_data.get("registration_challenges_per_10_minutes", 0))
+                )
             )
         );
     }
@@ -1484,27 +1520,12 @@ impl JacConfig.app_for_path(abs_path: str) -> AppConfig | None {
     if self.project_root is None {
         return None;
     }
-    root_dir = str(self.project_root);
-    if not self.apps {
-        implicit = implicit_app(self);
-        return implicit if implicit.contains(root_dir, abs_path) else None;
-    }
-    best: AppConfig | None = None;
-    best_depth = -1;
     for app in self.apps.values() {
-        if not app.contains(root_dir, abs_path) {
-            continue;
-        }
-        if app.is_file_rooted() {
+        if app.contains(str(self.project_root), abs_path) {
             return app;
         }
-        depth = len(app.root_dir(root_dir));
-        if depth > best_depth {
-            best = app;
-            best_depth = depth;
-        }
     }
-    return best;
+    return None;
 }
 
 impl JacConfig.serving_apps -> list[AppConfig] {
@@ -1517,22 +1538,6 @@ impl JacConfig.serving_apps -> list[AppConfig] {
         }
     }
     return out;
-}
-
-impl JacConfig.owner_app_for_path(abs_path: str) -> tuple[AppConfig | None, bool] {
-    app = self.app_for_path(abs_path);
-    if app is not None {
-        return (app, False);
-    }
-    serving = self.serving_apps();
-    if len(serving) == 1 {
-        return (serving[0], False);
-    }
-    default_app = self.app(self.default_app) if self.default_app else None;
-    if default_app is not None and default_app in serving {
-        return (default_app, False);
-    }
-    return (None, len(serving) > 1);
 }
 
 impl JacConfig.default_app.getter -> str {

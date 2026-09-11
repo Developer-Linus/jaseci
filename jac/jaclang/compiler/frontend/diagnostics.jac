@@ -334,6 +334,18 @@ glob E0001 = _err("E0001", Category.SYNTAX, "Expected '{expected}', got '{got}'"
          "Cannot delete {what}",
          help="`del` takes either a location to unbind -- a name, an attribute, or a subscript -- or an expression yielding graph objects to destroy. This target is neither."
      ),
+     E0084 = _err(
+         "E0084",
+         Category.SYNTAX,
+         "Graph construction requires outward directed connections",
+         help="Use `++>` or `+>:Edge:+>` inside `graph { ... }`. Incoming and undirected mutation remain available outside construction expressions."
+     ),
+     E0085 = _err(
+         "E0085",
+         Category.SYNTAX,
+         "Graph construction cannot suspend execution",
+         help="Resolve awaited values and asynchronous iterables before entering `graph { ... }`. Construction expressions are synchronous."
+     ),
      W0060 = _warn(
          "W0060",
          Category.SYNTAX,
@@ -410,7 +422,7 @@ glob E0001 = _err("E0001", Category.SYNTAX, "Expected '{expected}', got '{got}'"
      E1020 = _err("E1020", Category.TYPE, "Cannot unpack non-iterable {type}"),
      E1021 = _err("E1021", Category.TYPE, "Type \"{type}\" is not iterable"),
      E1022 = _err(
-         "E1022", Category.TYPE, "Type {type} is not iterable (no __iter__ method)"
+         "E1022", Category.TYPE, "Type {type} is not iterable (no {method} method)"
      ),
      E1023 = _err("E1023", Category.TYPE, "Type \"{type}\" is not callable"),
      E1030 = _err(
@@ -446,6 +458,11 @@ glob E0001 = _err("E0001", Category.SYNTAX, "Expected '{expected}', got '{got}'"
          Category.TYPE,
          "Explicit 'any' type annotation disables type checking here;"
          " consider a more specific type"
+     ),
+     E1038 = _err(
+         "E1038",
+         Category.TYPE,
+         "Mapping unpacking is not valid in a type argument list"
      ),
      E1040 = _err("E1040", Category.TYPE, "Type \"{type}\" is not subscriptable"),
      E1041 = _err("E1041", Category.TYPE, "Type \"{type}\" is not awaitable"),
@@ -1468,28 +1485,14 @@ glob E0001 = _err("E0001", Category.SYNTAX, "Expected '{expected}', got '{got}'"
          Category.SEMANTIC,
          "'{name}' belongs to app '{app}'; app '{user_app}' may only use it "
          "through shared code or its bridge surface",
-         help="An app boundary is structural: modules under one [apps.<name>] root are private to that app. Another app reaches them only through the owner's bridge surface -- a walker or a `def:pub` function the compiler bridges to the owner's server (`:pub` only marks an endpoint unauthenticated; a walker bridges without it) -- or by moving the code to a shared module outside every app root."
+         help="An app's declared entry is its boundary. Import a walker or public function from that entry to use its bridge surface. Ordinary imported modules participate in the selected app's compilation context."
      ),
      W2039 = _warn(
          "W2039",
          Category.SEMANTIC,
          "'{name}' belongs to app '{app}'; app '{user_app}' may only use it "
          "through shared code or its bridge surface",
-         help="An app boundary is structural: modules under one [apps.<name>] root are private to that app. Another app reaches them only through the owner's bridge surface -- a walker or a `def:pub` function the compiler bridges to the owner's server (`:pub` only marks an endpoint unauthenticated; a walker bridges without it) -- or by moving the code to a shared module outside every app root."
-     ),
-     E2040 = _err(
-         "E2040",
-         Category.SEMANTIC,
-         "Shared module '{module}' imports '{name}' from app '{app}'; shared "
-         "code may not depend on app modules",
-         help="Shared modules sit below every app and are compiled once per app that reaches them, so a dependency on one app's module would pull that app into every other. Move '{name}' into shared code, or move the importing module under the app that owns it."
-     ),
-     W2040 = _warn(
-         "W2040",
-         Category.SEMANTIC,
-         "Shared module '{module}' imports '{name}' from app '{app}'; shared "
-         "code may not depend on app modules",
-         help="Shared modules sit below every app and are compiled once per app that reaches them, so a dependency on one app's module would pull that app into every other. Move '{name}' into shared code, or move the importing module under the app that owns it."
+         help="An app's declared entry is its boundary. Import a walker or public function from that entry to use its bridge surface. Ordinary imported modules participate in the selected app's compilation context."
      ),
      E2084 = _err(
          "E2084",
@@ -1498,6 +1501,12 @@ glob E0001 = _err("E0001", Category.SYNTAX, "Expected '{expected}', got '{got}'"
          "implicit return when it is the final statement of a function, "
          "ability, or lambda body.",
          help="Add ';' to discard the expression's value, or use an explicit `return` if the value should leave the enclosing function from this position."
+     ),
+     E2085 = _err(
+         "E2085",
+         Category.SEMANTIC,
+         "'await' is only valid inside an 'async' function or ability",
+         help="Mark the enclosing function or ability 'async' (e.g. `async def` or `async can`) so it compiles to a coroutine capable of `await`; otherwise remove the `await` and call it synchronously."
      ),
      W3001 = _warn(
          "W3001",
@@ -2042,13 +2051,6 @@ glob E0001 = _err("E0001", Category.SYNTAX, "Expected '{expected}', got '{got}'"
          Category.CODEGEN,
          "App '{consumer}' imports '{name}', a {kind} owned by app '{provider}'; nodes and edges never cross an app boundary",
          help="A node or edge lives in the graph of the app that owns it, so another app cannot construct or hold one. Spawn one of '{provider}''s walkers and work with what it reports, or move the type into shared code as an obj.",
-         blocks_codegen=True
-     ),
-     E5107 = _err(
-         "E5107",
-         Category.CODEGEN,
-         "Server-placed shared module '{module}' has no single owner: reached by serving apps {apps}; declare it as a service app or pin an owner",
-         help="A shared module with server-placed elements runs on exactly one app's server so that every other app bridges to the same owner. With more than one serving app in the workspace the compiler cannot pick one. Give the module its own `[apps.<name>]` table (`kind = \"service\"`, `entry-point = \"<path>\"`), or pin it to an owner with `[apps.<owner>.placement.pins] \"<module>\" = \"server\"`.",
          blocks_codegen=True
      ),
      E5104 = _err(

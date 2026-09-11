@@ -11,7 +11,7 @@ import from jaclang.runtime.osp_model { OspAnalysis, OspModel }
 import from jaclang.compiler.backends.common.ast_gen_base { BaseAstGenPass }
 import from jaclang.compiler.frontend.module_facts { ModuleFacts }
 import from jaclang.compiler.backends.es.jsx_processor { EsJsxProcessor }
-import from jaclang.compiler.frontend.codeinfo { ClientManifest }
+import from jaclang.compiler.frontend.codeinfo { BoundaryTypeInfo, ClientManifest }
 import from jaclang.compiler.backends.es.scoped_styles {
     ScopedStyleSheet,
     load_style_annex
@@ -368,6 +368,10 @@ walker EsastGenPass(BaseAstGenPass[es.Statement]) {
     ) -> es.Expression;
 
     def _build_edge_ref(nd: uni.EdgeRefTrailer) -> es.Expression;
+    def _build_osp_filter(
+        nd: uni.UniNode, target: es.Expression, filt: uni.FilterCompr
+    ) -> (es.Expression | None);
+
     def _build_osp_filter_pred(
         nd: uni.UniNode, filt: uni.FilterCompr
     ) -> (es.Expression | None);
@@ -424,6 +428,7 @@ walker EsastGenPass(BaseAstGenPass[es.Statement]) {
     def _generate_na_import_binding(nd: uni.Import) -> None;
     def _is_client_native_import(nd: uni.Import) -> bool;
     def _emit_boundary_type_stubs(nd: uni.Module) -> list;
+    def _boundary_type_name(info: BoundaryTypeInfo) -> str;
     def _es_json_literal(value: any) -> any;
     can exit_type_alias with uni.TypeAlias exit;
     can exit_type_param with uni.TypeParam exit;
@@ -446,7 +451,7 @@ walker EsastGenPass(BaseAstGenPass[es.Statement]) {
     def _ref_forward_param(nd: uni.Ability) -> (uni.ParamVar | None);
     def _register_jac_virtual_import(module_id: str) -> None;
     def _register_jac_runtime_import -> None;
-    def _ensure_backend -> None;
+    def _ensure_backend -> FrameworkBackend;
     def _transform_to_useeffect(nd: uni.Ability) -> None;
     can exit_jsx_element with uni.JsxElement exit;
     can exit_jsx_element_name with uni.JsxElementName exit;
@@ -620,7 +625,7 @@ walker EsastGenPass(BaseAstGenPass[es.Statement]) {
     def _wrap_to_wire_if_boundary(
         expr: es.Expression,
         type_name: str,
-        boundary_types: dict[(str, any)],
+        boundary_types: dict[str, BoundaryTypeInfo],
         jac_node: uni.UniNode
     ) -> es.Expression;
 
@@ -631,10 +636,16 @@ walker EsastGenPass(BaseAstGenPass[es.Statement]) {
     def _wrap_return_with_boundary(
         call_expr: es.Expression,
         ret_type: str,
-        boundary_types: dict[(str, any)],
+        boundary_types: dict[str, BoundaryTypeInfo],
         jac_node: uni.UniNode,
         pre_awaited: bool
     ) -> es.Expression;
+
+    def _field_constructor_args(
+        nd: uni.FuncCall,
+        args: list[es.Expression | es.SpreadElement],
+        props: list[es.Property | es.SpreadElement]
+    ) -> (es.Expression | None);
 
     def _resolve_call_arg_slots(
         nd: uni.FuncCall,
@@ -717,7 +728,6 @@ walker EsastGenPass(BaseAstGenPass[es.Statement]) {
     can exit_if_else_expr with uni.IfElseExpr exit;
     can exit_await_expr with uni.AwaitExpr exit;
     can exit_yield_expr with uni.YieldExpr exit;
-    def _ability_is_generator(nd: uni.Ability) -> bool;
     can exit_cast_expr with uni.CastExpr exit;
     can exit_null with uni.Null exit;
     can exit_name with uni.Name exit;

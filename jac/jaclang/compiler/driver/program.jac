@@ -1,4 +1,5 @@
-import sys;
+import from jaclang.compiler.driver.pipeline_types { AnalysisFact }
+import type from jaclang.compiler.types.stubcat.reader { StubCatalog }
 import types;
 import from threading { Event }
 import jaclang.compiler.frontend.unitree as uni;
@@ -18,12 +19,7 @@ import type from jaclang.compiler.types.type_evaluator { TypeEvaluator }
 import type from jaclang.compiler.driver.compiler { JacCompiler }
 import type from jaclang.compiler.driver.mtp { Info }
 import type from jaclang.compiler.passes.transform { Transform }
-
-with entry {
-    if sys.getrecursionlimit() < 12000 {
-        sys.setrecursionlimit(12000);
-    }
-}
+import type from jaclang.compiler.driver.compilation_context { SourceStore }
 
 class JacProgram {
     has hub: ModuleHub,
@@ -38,13 +34,17 @@ class JacProgram {
         mtir_map: dict[(str, Info)],
         type_evaluator: TypeEvaluator | None,
         _compiler: JacCompiler | None,
-        _iface: any;
+        _iface: any,
+        source_store: SourceStore,
+        context_root: JacProgram | None,
+        context_key: str,
+        contexts: dict[str, JacProgram];
 
     def init(self: JacProgram, main_mod: (uni.ProgramModule | None) = None) -> None;
     def _get_compiler(self: JacProgram) -> JacCompiler;
     def iface_registry(self: JacProgram) -> any;
     def get_type_evaluator(self: JacProgram) -> TypeEvaluator;
-    def stub_catalog(self: JacProgram) -> any;
+    def stub_catalog(self: JacProgram) -> StubCatalog | None;
     def clear_type_system(self: JacProgram, clear_hub: bool = False) -> None;
     def release_compile_closure(self: JacProgram, collect: bool = True) -> None;
     def release_native_dep_units(self: JacProgram) -> None;

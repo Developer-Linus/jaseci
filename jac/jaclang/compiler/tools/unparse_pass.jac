@@ -89,6 +89,7 @@ walker UnparsePass(UniPass) {
     can exit_dict_compr with uni.DictCompr exit;
     can exit_atom_trailer with uni.AtomTrailer exit;
     can exit_atom_unit with uni.AtomUnit exit;
+    can exit_graph_expr with uni.GraphExpr exit;
     can exit_yield_expr with uni.YieldExpr exit;
     can exit_func_call with uni.FuncCall exit;
     can exit_index_slice with uni.IndexSlice exit;
@@ -167,12 +168,12 @@ def unparse_module(mod: uni.Module, requires_format: bool = True) -> str {
             mod.set_kids(nodes=head_kid or [uni.EmptyToken()]);
         }
         try {
-            import from jaclang.compiler.driver.pass_driver { run_pass }
-            run_pass(NormalizePass, mod, JacProgram());
+            import from jaclang.compiler.driver.pipeline { run_utility, UtilityProduct }
+            run_utility(UtilityProduct.NORMALIZE, mod, JacProgram());
             if requires_format {
                 return format_module(mod);
             }
-            run_pass(UnparsePass, mod, JacProgram());
+            run_utility(UtilityProduct.UNPARSE, mod, JacProgram());
             return mod.gen.jac;
         } finally {
             if filtered {

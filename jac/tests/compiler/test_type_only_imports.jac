@@ -79,9 +79,7 @@ def make_dts_project(
             '"import":"./dist/index.mjs"}}}',
         {"dist/index.mjs": mjs, "dist/index.d.ts": dts}
     );
-    write_client_jac_project(
-        proj_dir, project_name, "lib/app.jac", pkg + ' = "^1.0.0"\n'
-    );
+    write_client_jac_project(proj_dir, project_name, "lib.app", pkg + ' = "^1.0.0"\n');
     return proj_dir;
 }
 
@@ -110,12 +108,11 @@ def make_mermaid_project(proj_dir: Path) -> Path {
 }
 
 
-"""Write a client-pinned jac project root directory and return it."""
-def write_pinned_project(proj_root: Path) -> Path {
+"""Write a JavaScript package project root directory and return it."""
+def write_client_project(proj_root: Path) -> Path {
     (proj_root / "jac.toml").write_text(
         '[project]\nname = "typeonly"\nversion = "0.1.0"\n'
-        'entry-point = "app.jac"\n\n'
-        '[placement.pins]\n"*" = "client"\n'
+        'kind = "js-package"\nentry-point = "app"\n'
     );
     return proj_root;
 }
@@ -218,7 +215,7 @@ test "import type of a d.ts interface checks clean and emits no specifier" {
 
 test "plain import of a jac type alias is refused; import type is clean" {
     with TemporaryDirectory() as td {
-        proj_root = write_pinned_project(Path(cast(str, td)));
+        proj_root = write_client_project(Path(cast(str, td)));
         (proj_root / "rows.jac").write_text("type Row = dict[str, int];\n");
         bad = proj_root / "bad.jac";
         bad.write_text(
@@ -273,7 +270,7 @@ test "a server module may value-import a jac type alias and construct it" {
     # -- E1107 exists to keep the base primitive precisely so this works. E1131
     # must not push cross-module brand construction onto `import type`.
     with TemporaryDirectory() as td {
-        proj_root = write_server_project(Path(cast(str, td)), "use.jac");
+        proj_root = write_server_project(Path(cast(str, td)), "use");
         (proj_root / "brands.jac").write_text(BRAND_SRC);
         f = proj_root / "use.jac";
         f.write_text(BRAND_USE_SRC);
@@ -289,7 +286,7 @@ test "a client module may not value-import a jac type alias" {
     # Only the ES backend erases an alias, so the very same pair is an error
     # once the importing module is client code.
     with TemporaryDirectory() as td {
-        proj_root = write_pinned_project(Path(cast(str, td)));
+        proj_root = write_client_project(Path(cast(str, td)));
         (proj_root / "brands.jac").write_text(BRAND_SRC);
         f = proj_root / "use.jac";
         f.write_text(BRAND_USE_SRC);
@@ -312,7 +309,7 @@ test "import type of a jac alias erases it on the server too, so value use is E1
     # to a TYPE_CHECKING guard, so the name is not there at run time and the
     # constructor call is refused rather than left to fail as a NameError.
     with TemporaryDirectory() as td {
-        proj_root = write_server_project(Path(cast(str, td)), "use.jac");
+        proj_root = write_server_project(Path(cast(str, td)), "use");
         (proj_root / "brands.jac").write_text(BRAND_SRC);
         f = proj_root / "use.jac";
         f.write_text(
@@ -334,7 +331,7 @@ test "a server has-field may be typed by a plainly imported jac alias" {
     # through typing.get_type_hints, so pushing this onto `import type` would
     # break it. A plain import has to stay legal here.
     with TemporaryDirectory() as td {
-        proj_root = write_server_project(Path(cast(str, td)), "store.jac");
+        proj_root = write_server_project(Path(cast(str, td)), "store");
         (proj_root / "rows.jac").write_text("type Row = dict[str, int];\n");
         f = proj_root / "store.jac";
         f.write_text(
@@ -384,7 +381,7 @@ glob POINT_SRC: str = (
 
 test "value uses of an import-type binding are refused in a client module" {
     with TemporaryDirectory() as td {
-        proj_root = write_pinned_project(Path(cast(str, td)));
+        proj_root = write_client_project(Path(cast(str, td)));
         (proj_root / "point.jac").write_text(POINT_SRC);
         f = proj_root / "uses.jac";
         f.write_text(VALUE_USES_SRC);
@@ -402,7 +399,7 @@ test "value uses of an import-type binding are refused in a client module" {
 
 test "type uses of an import-type binding are accepted in a client module" {
     with TemporaryDirectory() as td {
-        proj_root = write_pinned_project(Path(cast(str, td)));
+        proj_root = write_client_project(Path(cast(str, td)));
         (proj_root / "point.jac").write_text(POINT_SRC);
         f = proj_root / "typeuses.jac";
         f.write_text(TYPE_USES_SRC);
@@ -419,7 +416,7 @@ test "value uses of an import-type binding are refused in a server module" {
         proj_root = Path(cast(str, td));
         (proj_root / "jac.toml").write_text(
             '[project]\nname = "typeonlysv"\nversion = "0.1.0"\n'
-            'entry-point = "uses.jac"\n'
+            'entry-point = "uses"\n'
         );
         (proj_root / "point.jac").write_text(POINT_SRC);
         f = proj_root / "uses.jac";
@@ -438,7 +435,7 @@ test "type uses of an import-type binding are accepted in a server module" {
         proj_root = Path(cast(str, td));
         (proj_root / "jac.toml").write_text(
             '[project]\nname = "typeonlysv"\nversion = "0.1.0"\n'
-            'entry-point = "typeuses.jac"\n'
+            'entry-point = "typeuses"\n'
         );
         (proj_root / "point.jac").write_text(POINT_SRC);
         f = proj_root / "typeuses.jac";
@@ -464,8 +461,8 @@ test "bridged import stubs skip archetype items and keep function items" {
         proj_root = Path(cast(str, td));
         (proj_root / "jac.toml").write_text(
             '[project]\nname = "svstub"\nversion = "0.1.0"\n'
-            'entry-point = "page.jac"\n\n'
-            '[placement.pins]\napi = "server"\npage = "client"\n'
+            'entry-point = "page"\n\n'
+            '[placement.pins]\napi = "server"\n'
         );
         (proj_root / "api.jac").write_text(
             "obj Todo {\n"
@@ -595,7 +592,7 @@ test "a typed import anywhere in the chain keeps the binding type-only" {
     # `import type` hop is in the middle here, so the answer can only be right
     # if every hop is inspected rather than just the end of the chain.
     with TemporaryDirectory() as td {
-        proj_root = write_pinned_project(Path(cast(str, td)));
+        proj_root = write_client_project(Path(cast(str, td)));
         (proj_root / "rows.jac").write_text("type Row = dict[str, int];\n");
         (proj_root / "hub.jac").write_text('import type from .rows { Row }\n');
         f = proj_root / "app.jac";

@@ -22,6 +22,7 @@ reading, and merged they read a list three pushes deep.
 So: if a new fixture declares a glob anything writes, or imports one that
 does, give each of its cases its own test.
 """
+import from jaclang.compiler.driver.compilation_context { artifact_cache_path }
 
 import ctypes;
 import from jaclang.compiler.driver.compile_options {
@@ -38,6 +39,7 @@ import from tests.support {
     JAC_ROOT,
     TESTS_DIR,
     compile_native,
+    compile_native_ir,
     get_func,
     native_force_opts
 }
@@ -3006,7 +3008,6 @@ test "cache marker non native file has no llvmir section in jir" {
     import time;
     import shutil;
     import from jaclang.compiler.driver.jir {
-        get_module_cache_path,
         read_sections,
         SECTIONS_MAGIC,
         HEADER_SIZE,
@@ -3028,7 +3029,7 @@ test "cache marker non native file has no llvmir section in jir" {
         prog = JacProgram();
         JacCompiler().get_bytecode(jac_file, prog);
 
-        cache_path = get_module_cache_path(jac_file);
+        cache_path = artifact_cache_path(jac_file, prog);
         assert cache_path.exists() , f"JIR cache file not created at {cache_path}";
 
         data = cache_path.read_bytes();
@@ -3249,12 +3250,7 @@ test "clib dotted logical import maps to origin-relative subdir (issue #6387)" {
 }
 
 test "clib struct value-type coercion" {
-    prog = JacProgram();
-    ir = prog.compile(
-        str(os.path.join(FIXTURES, "clib_struct_coerce.jac")),
-        options=native_force_opts()
-    );
-    assert not prog.errors_had , f"Errors: {prog.errors_had}";
+    ir = compile_native_ir("clib_struct_coerce.jac");
     assert ir.gen.llvm_ir is not None , "No LLVM IR generated";
     llvm_ir_str = str(ir.gen.llvm_ir);
     # --- Large struct (Vec2: 128-bit, float fields) ---
@@ -3294,11 +3290,7 @@ test "clib System V AMD64 ABI lowering" {
     if "x86_64" not in platform.machine() and "AMD64" not in platform.machine() {
         return;
     }
-    prog = JacProgram();
-    ir = prog.compile(
-        str(os.path.join(FIXTURES, "clib_sysv_abi.jac")), options=native_force_opts()
-    );
-    assert not prog.errors_had , f"Errors: {prog.errors_had}";
+    ir = compile_native_ir("clib_sysv_abi.jac");
     assert ir.gen.llvm_ir is not None , "No LLVM IR generated";
     s = str(ir.gen.llvm_ir);
     # SSE eightbytes: float fields pack into <2 x float> / trailing float.
@@ -3316,6 +3308,18 @@ test "clib System V AMD64 ABI lowering" {
     assert '%"Cam.cabi" = type' in s , "C-layout type for nested struct";
     assert 'byval(%"Cam.cabi")' in s , "Cam passed byval";
     assert 'sret(%"Cam.cabi")' in s , "Cam returned via sret";
+    result_declaration = next(
+        line
+        for line in s.splitlines()
+        if line.startswith('declare void @"cam_mk"')
+    );
+    argument_declaration = next(
+        line
+        for line in s.splitlines()
+        if line.startswith('declare float @"cam_fovy"')
+    );
+    assert 'sret(%"Cam.cabi") align 8' in result_declaration;
+    assert 'byval(%"Cam.cabi") align 8' in argument_declaration;
     # The non-injective return-boxing (gap #7) is gone: a scalar return is never
     # rerouted through struct boxing.
     assert "clib.cabi.arg" in s , "nested struct packed to C layout for byval";
@@ -3387,11 +3391,7 @@ test "clib AArch64 AAPCS ABI lowering" {
     import from jaclang.compiler.driver.compile_options { CompileOptions }
     _saved = push_native_target("aarch64-unknown-linux-gnu");
     try {
-        prog = JacProgram();
-        ir = prog.compile(
-            str(os.path.join(FIXTURES, "clib_sysv_abi.jac")), options=CompileOptions()
-        );
-        assert not prog.errors_had , f"Errors: {prog.errors_had}";
+        ir = compile_native_ir("clib_sysv_abi.jac");
         assert ir.gen.llvm_ir is not None , "No LLVM IR generated";
         s = str(ir.gen.llvm_ir);
         assert "aarch64" in str(ir.gen.llvm_ir.triple) , "module not retargeted";
@@ -4560,7 +4560,6 @@ test "jir bitcode cache round-trip" {
     import struct;
     import from jaclang.compiler.driver.compiler { JacCompiler }
     import from jaclang.compiler.driver.jir {
-        get_module_cache_path,
         SECTIONS_MAGIC,
         HEADER_SIZE,
         read_sections,
@@ -4576,7 +4575,7 @@ test "jir bitcode cache round-trip" {
     assert code1 is not None , "get_bytecode should return code object";
 
     # Step 2: Verify SEC_NATIVE_OBJ section exists in the cached JIR file
-    cache_path = get_module_cache_path(fixture);
+    cache_path = artifact_cache_path(fixture, prog1);
     assert cache_path.exists() , f"JIR cache file should exist at {cache_path}";
     jir_data = cache_path.read_bytes();
     magic: bytes = SECTIONS_MAGIC;
@@ -6442,8 +6441,11 @@ test "restore-failure falls back to recompile for inferred modules (item #19)" {
 # buf[i], and a struct load + store into the element pointer for buf[i] = val.
 test "ptr subscript read/write: no E5090 and correct GEP IR (#6707, #6708)" {
     prog = JacProgram();
+    options = native_force_opts();
+    options.no_ir_cache = True;
+    options.skip_native_engine = True;
     ir = prog.compile(
-        str(os.path.join(FIXTURES, "ptr_subscript.jac")), options=native_force_opts()
+        str(os.path.join(FIXTURES, "ptr_subscript.jac")), options=options
     );
     e5090 = [
         e.code.code
