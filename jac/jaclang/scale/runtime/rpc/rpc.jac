@@ -1,4 +1,3 @@
-import logging;
 import from .breaker {
     breaker_should_skip,
     breaker_record_success,
@@ -6,10 +5,8 @@ import from .breaker {
     _BREAKER_COOLDOWN_SECONDS
 }
 
-glob logger = logging.getLogger(__name__);
 glob _RPC_MAX_ATTEMPTS: int = 3,
      _RPC_INITIAL_BACKOFF_SECONDS: float = 0.1;
-glob _dynamic_route_lookup_warned: set[str] = set();
 
 def _rpc_with_retries(module_name: str, label: str, send: any) -> any {
     import time;
@@ -102,29 +99,19 @@ def _resolve_call_target(module_name: str) -> tuple[str, str | None] {
     """One bundled lookup for (url, interceptor Host-header override), so
     the two are never resolved independently and can't disagree.
     Primary source: the live K8s dynamic registry (JacScalePlugin's
-    get_sv_service_routes, K8s-mode only). Fallback: _provider_url's
-    registry/env-var resolution, paired with sv_client's own host-override
-    table.""";
-    import from jaclang.server { sv_client }
+    get_sv_service_routes, K8s-mode only) -- it already fails open to {}
+    and warns (once per underlying cause) at its own failure sites, so
+    there is nothing to catch or re-warn about here. Fallback:
+    _provider_url's registry/env-var resolution -- the K8s path never
+    reaches here, so no separate host-override table is needed for it.""";
+    import from jaclang.scale.plugin { JacScalePlugin }
 
-    try {
-        import from jaclang.scale.plugin { JacScalePlugin }
-        routes: dict[str, any] = JacScalePlugin.get_sv_service_routes();
-        route = routes.get(module_name);
-        if route is not None and route.url {
-            _dynamic_route_lookup_warned.discard(module_name);
-            return (route.url, route.host_header);
-        }
-    } except Exception as e {
-        if module_name not in _dynamic_route_lookup_warned {
-            _dynamic_route_lookup_warned.add(module_name);
-            logger.warning(
-                f"Dynamic route lookup failed for '{module_name}'; falling back "
-                f"to the static registry, which may not be interceptor-aware: {e}"
-            );
-        }
+    routes: dict[str, any] = JacScalePlugin.get_sv_service_routes();
+    route = routes.get(module_name);
+    if route is not None and route.url {
+        return (route.url, route.host_header);
     }
-    return (_provider_url(module_name), sv_client.host_override_for(module_name));
+    return (_provider_url(module_name), None);
 }
 
 

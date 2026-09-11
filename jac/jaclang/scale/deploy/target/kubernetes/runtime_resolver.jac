@@ -12,7 +12,8 @@ import from jaclang.scale.runtime.context.service_routing {
     resolve_service_route
 }
 
-glob logger = logging.getLogger(__name__);
+glob logger = logging.getLogger(__name__),
+     _config_load_warned: set[str] = set();
 
 
 def resolve_peer_route(svc_name: str, namespace: str, port: int) -> ServiceRoute {
@@ -33,11 +34,15 @@ def resolve_peer_route(svc_name: str, namespace: str, port: int) -> ServiceRoute
         scale_cfg = get_scale_config();
         kubernetes_cfg = scale_cfg.get_kubernetes_config();
         app_scale_cfg = scale_cfg.get_app_scale_config(svc_name);
+        _config_load_warned.discard(svc_name);
     } except Exception as e {
-        logger.warning(
-            f"Could not load scale config while resolving '{svc_name}'; "
-            f"treating it as not HTTP-activated: {e}"
-        );
+        if svc_name not in _config_load_warned {
+            _config_load_warned.add(svc_name);
+            logger.warning(
+                f"Could not load scale config while resolving '{svc_name}'; "
+                f"treating it as not HTTP-activated: {e}"
+            );
+        }
     }
     return resolve_service_route(
         svc_name, namespace, port, kubernetes_cfg, app_scale_cfg

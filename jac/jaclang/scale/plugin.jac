@@ -16,6 +16,8 @@ import from jaclang.data.storage { Storage }
 import from .observability.factory { UtilityFactory }
 import from .deploy.target.factory { DeploymentTargetFactory }
 
+glob _sv_service_routes_warned: bool = False;
+
 obj DeployFactories {
     has utility: type[UtilityFactory],
         target: type[DeploymentTargetFactory];
@@ -605,7 +607,14 @@ class JacScalePlugin {
         """K8s-mode-only bundled resolution: url + interceptor Host-header
         override together, per service, from ONE call -- the single source
         of truth get_sv_registry() (below) and sv-to-sv RPC (rpc.jac) both
-        read from, so they can never independently drift.""";
+        read from, so they can never independently drift.
+
+        This whole lookup fails or succeeds atomically for every service at
+        once (it fails before any per-service resolution starts), so a
+        broken route table -- unreachable or malformed config -- would
+        otherwise warn on every sv-to-sv call and every rpc.jac fallback
+        that reaches here a second time through get_sv_registry(). Warn
+        once until it recovers.""";
         import os;
         if "KUBERNETES_SERVICE_HOST" not in os.environ {
             return {};
@@ -621,12 +630,17 @@ class JacScalePlugin {
             port: int = int(
                 get_scale_config().get_gateway_config().get("gateway_port", 8000)
             );
-            return build_k8s_registry_routes(names, port);
+            routes = build_k8s_registry_routes(names, port);
+            _sv_service_routes_warned = False;
+            return routes;
         } except Exception as e {
-            import logging;
-            logging.getLogger(__name__).warning(
-                f"K8s get_sv_service_routes failed: {e}"
-            );
+            if not _sv_service_routes_warned {
+                _sv_service_routes_warned = True;
+                import logging;
+                logging.getLogger(__name__).warning(
+                    f"K8s get_sv_service_routes failed: {e}"
+                );
+            }
             return {};
         }
     }

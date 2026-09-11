@@ -721,53 +721,61 @@ test "sv_service_call sets the Host header when the resolved route carries one" 
 }
 
 
-test "_resolve_call_target warns once per module on a failing dynamic lookup, then again after it recovers and fails again" {
-    import from jaclang.scale.runtime.context.service_routing { ServiceRoute }
+obj _FakeGatewayOnlyConfig {
+    def get_gateway_config -> dict[str, any] {
+        return {"gateway_port": 8000};
+    }
+}
 
-    original_get_routes = JacScalePlugin.get_sv_service_routes;
-    original_warning = rpc_mod.logger.warning;
+test "get_sv_service_routes warns once on a failing lookup, then again after it recovers and fails again" {
+    import logging;
+    import jaclang.scale.plugin as plugin_mod;
+    import jaclang.scale.config.config_loader as config_loader_mod;
+    import os;
+
+    plugin_logger = logging.getLogger("jaclang.scale.plugin");
+    original_warning = plugin_logger.warning;
+    original_get_scale_config = config_loader_mod.get_scale_config;
     warn_calls: list = [];
 
     def fake_warning(msg: str) {
         warn_calls.append(msg);
     }
 
-    def failing_routes -> dict[str, ServiceRoute] {
-        raise RuntimeError("route table unreachable");
+    def failing_config(project_dir: object = None) -> object {
+        raise RuntimeError("config unreachable");
     }
 
-    def healthy_routes -> dict[str, ServiceRoute] {
-        return {
-            "k9_warn_once_mod": ServiceRoute(
-                url="http://k9-warn-once-mod-service.prod.svc.cluster.local:8000",
-                host_header=None
-            )
-        };
+    def healthy_config(project_dir: object = None) -> object {
+        return _FakeGatewayOnlyConfig();
     }
 
-    rpc_mod._dynamic_route_lookup_warned.discard("k9_warn_once_mod");
-    _as_any(rpc_mod).logger.warning = fake_warning;
-    sv_client.register("k9_warn_once_mod", "http://fallback.invalid:9999");
+    had_k8s_env = "KUBERNETES_SERVICE_HOST" in os.environ;
+    os.environ["KUBERNETES_SERVICE_HOST"] = "10.0.0.1";
+    plugin_mod._sv_service_routes_warned = False;
+    setattr(plugin_logger, "warning", fake_warning);
 
     try {
-        _as_any(JacScalePlugin).get_sv_service_routes = staticmethod(failing_routes);
-        rpc_mod._resolve_call_target("k9_warn_once_mod");
-        rpc_mod._resolve_call_target("k9_warn_once_mod");
-        rpc_mod._resolve_call_target("k9_warn_once_mod");
+        setattr(config_loader_mod, "get_scale_config", failing_config);
+        JacScalePlugin.get_sv_service_routes();
+        JacScalePlugin.get_sv_service_routes();
+        JacScalePlugin.get_sv_service_routes();
         assert len(warn_calls) == 1;
 
-        _as_any(JacScalePlugin).get_sv_service_routes = staticmethod(healthy_routes);
-        rpc_mod._resolve_call_target("k9_warn_once_mod");
+        setattr(config_loader_mod, "get_scale_config", healthy_config);
+        JacScalePlugin.get_sv_service_routes();
         assert len(warn_calls) == 1;
 
-        _as_any(JacScalePlugin).get_sv_service_routes = staticmethod(failing_routes);
-        rpc_mod._resolve_call_target("k9_warn_once_mod");
+        setattr(config_loader_mod, "get_scale_config", failing_config);
+        JacScalePlugin.get_sv_service_routes();
         assert len(warn_calls) == 2;
     } finally {
-        JacScalePlugin.get_sv_service_routes = original_get_routes;
-        rpc_mod.logger.warning = original_warning;
-        rpc_mod._dynamic_route_lookup_warned.discard("k9_warn_once_mod");
-        sv_client.unregister("k9_warn_once_mod");
+        setattr(config_loader_mod, "get_scale_config", original_get_scale_config);
+        setattr(plugin_logger, "warning", original_warning);
+        plugin_mod._sv_service_routes_warned = False;
+        if not had_k8s_env {
+            os.environ.pop("KUBERNETES_SERVICE_HOST", None);
+        }
     }
 }
 

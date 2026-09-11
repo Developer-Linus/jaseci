@@ -19,7 +19,8 @@ import from kubernetes.client.exceptions { ApiException }
 import from types { SimpleNamespace }
 import from jaclang.scale.deploy.target.kubernetes.runtime_resolver {
     build_k8s_registry,
-    K8sRuntimeServiceResolver
+    K8sRuntimeServiceResolver,
+    resolve_peer_route
 }
 import from jaclang.scale.runtime.gateway.service_registry {
     ServiceRegistry,
@@ -594,6 +595,64 @@ test "build_env still bakes a direct peer URL for a peer without http_activation
     );
     env = {e["name"]: e["value"] for e in builder._build_env("app", {})};
     assert "JAC_APP_WORKER_URL" in env , env;
+}
+
+
+obj _FakeKubernetesScaleConfig {
+    def get_kubernetes_config -> dict[str, any] {
+        return {};
+    }
+
+    def get_app_scale_config(app_name: str) -> dict[str, any] {
+        return {};
+    }
+}
+
+test "resolve_peer_route warns once per service, then again after it recovers and fails again" {
+    # resolve_peer_route runs per fleet member on every sv-to-sv call and
+    # every get_sv_service_routes() lookup, so an unreachable or malformed
+    # scale config used to warn on every single one of those, per service.
+    import jaclang.scale.deploy.target.kubernetes.runtime_resolver as resolver_mod;
+    import jaclang.scale.config.config_loader as config_loader_mod;
+
+    original_warning = resolver_mod.logger.warning;
+    original_get_scale_config = config_loader_mod.get_scale_config;
+    warn_calls: list = [];
+
+    def fake_warning(msg: str) {
+        warn_calls.append(msg);
+    }
+
+    def failing_config(project_dir: object = None) -> object {
+        raise RuntimeError("config unreachable");
+    }
+
+    def healthy_config(project_dir: object = None) -> object {
+        return _FakeKubernetesScaleConfig();
+    }
+
+    resolver_mod._config_load_warned.discard("k9_warn_once_svc");
+    setattr(resolver_mod.logger, "warning", fake_warning);
+
+    try {
+        setattr(config_loader_mod, "get_scale_config", failing_config);
+        resolve_peer_route("k9_warn_once_svc", "ns", 8000);
+        resolve_peer_route("k9_warn_once_svc", "ns", 8000);
+        resolve_peer_route("k9_warn_once_svc", "ns", 8000);
+        assert len(warn_calls) == 1;
+
+        setattr(config_loader_mod, "get_scale_config", healthy_config);
+        resolve_peer_route("k9_warn_once_svc", "ns", 8000);
+        assert len(warn_calls) == 1;
+
+        setattr(config_loader_mod, "get_scale_config", failing_config);
+        resolve_peer_route("k9_warn_once_svc", "ns", 8000);
+        assert len(warn_calls) == 2;
+    } finally {
+        setattr(config_loader_mod, "get_scale_config", original_get_scale_config);
+        setattr(resolver_mod.logger, "warning", original_warning);
+        resolver_mod._config_load_warned.discard("k9_warn_once_svc");
+    }
 }
 
 
