@@ -14,7 +14,7 @@ import from jaclang.server.serving.endpoint {
     JEndPoint,
     ParameterType
 }
-import from jaclang.project.config { find_project_root, get_config }
+import from jaclang.project.config { get_config, resolve_base_path }
 import from jaclang.server.serving.files { file_response }
 import from jaclang.server.server { JacAPIServer, JsonValue }
 import from jaclang.server.static_files {
@@ -51,17 +51,8 @@ def _static_base(server: JacAPIServer) -> str {
     if image_root is not None {
         return image_root;
     }
-    ctx = Jac.get_context();
-    bp = (ctx.base_path_dir if ctx else '') or Jac.get_base_path_dir();
-    raw = bp or server.base_path;
-    if raw {
-        project_root_result = find_project_root(Path(raw));
-        if project_root_result {
-            (resolved, _) = project_root_result;
-            return str(resolved);
-        }
-    }
-    return raw;
+    fallback = Path(server.base_path) if server.base_path else None;
+    return str(resolve_base_path(fallback=fallback));
 }
 
 

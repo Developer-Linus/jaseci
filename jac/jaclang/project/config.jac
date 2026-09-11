@@ -244,7 +244,7 @@ def interpolate_env_vars(value: str) -> str;
 
 def find_project_root(start: Path | None = None) -> tuple[Path, Path] | None;
 
-def resolve_base_path -> Path;
+def resolve_base_path(fallback: Path | None = None) -> Path;
 
 def is_in_project -> bool;
 

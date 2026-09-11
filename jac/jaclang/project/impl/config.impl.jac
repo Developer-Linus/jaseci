@@ -35,12 +35,13 @@ impl find_project_root(start: Path | None = None) -> tuple[Path, Path] | None {
     return _find_project_root(start);
 }
 
-impl resolve_base_path -> Path {
+impl resolve_base_path(fallback: Path | None = None) -> Path {
     import from jaclang.runtime.runtime { JacRuntime as Jac }
 
+    cwd_fallback = fallback if fallback is not None else Path.cwd();
     base_path_dir = Path(bp_dir)
         if (bp_dir := Jac.get_context().base_path_dir or Jac.get_base_path_dir())
-        else Path.cwd();
+        else cwd_fallback;
     project_root_result = find_project_root(base_path_dir);
     if project_root_result {
         (base_path, _) = project_root_result;
