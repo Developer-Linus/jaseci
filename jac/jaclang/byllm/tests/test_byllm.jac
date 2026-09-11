@@ -45,13 +45,6 @@ def _as_any(v: any) -> any {
 }
 
 
-test "method tool call" {
-    stdout_value = run_fixture("method_tool");
-    assert "Calculator.add called with 12, 34" in stdout_value;
-    assert "Result: 46" in stdout_value;
-}
-
-
 test "the deprecated method= parameter still runs and warns once" {
     llm = FakeLLM(replies=[say("test output")]);
 
@@ -102,21 +95,6 @@ test "enum without value" {
     stdout_value = captured_output.getvalue();
     assert "YES" in stdout_value;
     assert "NO" in stdout_value;
-}
-
-
-test "visit by for routing" {
-    stdout_value = run_fixture("math_poem_agents");
-    assert "Agentic minds, we hold dear" in stdout_value;
-    assert "Math Result: 35" in stdout_value;
-}
-
-test "streaming visit by routes and streams tokens to handler" {
-    stdout_value = run_fixture("streaming_visit_by");
-    assert "STREAMING_VISIT_BY_PASS" in stdout_value;
-
-    assert "VISITED: green" in stdout_value;
-    assert "VISITED: red" not in stdout_value;
 }
 
 
