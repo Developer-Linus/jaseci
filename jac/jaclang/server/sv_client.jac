@@ -12,7 +12,6 @@ glob BRIDGE_TOKEN_ENV: str = "JAC_BRIDGE_TOKEN",
      _registry: dict[str, str] = {},
      _routes: dict[str, str] = {},
      _base_routes: dict[str, str] = {},
-     _host_overrides: dict[str, str] = {},
      _test_clients: dict[str, any] = {},
      _local_providers: dict[str, any] = {},
      _consumer_providers: dict[str, list[str]] = {},
@@ -49,22 +48,12 @@ def register(app: str, url: str, route: str = "") {
         _routes[app] = route;
         _base_routes[app] = route;
     }
-    _host_overrides.pop(app, None);
-}
-
-def register_host_override(module_name: str, host: str) {
-    _host_overrides[module_name] = host;
-}
-
-def host_override_for(module_name: str) -> str | None {
-    return _host_overrides.get(module_name);
 }
 
 def unregister(app: str) {
     _registry.pop(app, None);
     _base_routes.pop(app, None);
     _routes.pop(app, None);
-    _host_overrides.pop(app, None);
 }
 
 def registered_route(app: str) -> str {

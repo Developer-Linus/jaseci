@@ -10,8 +10,7 @@ import from jaclang.scale.runtime.context.service_routing {
     k8s_service_dns_host,
     resolve_interceptor_service_address,
     resolve_http_activation_config,
-    resolve_service_route,
-    build_k8s_service_routes
+    resolve_service_route
 }
 import from jaclang.scale.deploy.target.kubernetes.manifest_builder { ManifestBuilder }
 import from jaclang.scale.deploy.target.kubernetes.kubernetes_config {
@@ -19,6 +18,10 @@ import from jaclang.scale.deploy.target.kubernetes.kubernetes_config {
 }
 import from jaclang.scale.deploy.autoscale.factory { AutoscalerFactory }
 import from jaclang.scale.deploy.autoscale.keda_autoscaler { KEDAAutoscaler }
+import from jaclang.scale.deploy.target.kubernetes.runtime_resolver {
+    build_k8s_registry_routes
+}
+import from jaclang.scale.config.config_loader { get_scale_config, reset_scale_config }
 
 
 # --- resolve_http_activation_config: precedence and enabled-gating ----------
@@ -123,19 +126,51 @@ test "an underscore-bearing jac.toml name is RFC1123-sanitized the same way on b
 }
 
 
-# --- build_k8s_service_routes: no cross-talk between services ---------------
+# --- build_k8s_registry_routes: no cross-talk between services --------------
+# Exercised through the real production entry point (runtime_resolver.jac),
+# backed by a real on-disk jac.toml, not a hand-built kubernetes_cfg /
+# app_scale_configs pair -- build_k8s_service_routes took those as explicit
+# params but nothing outside this file ever called it; production always
+# resolves per-app config itself through get_scale_config().
 
 test "mixed activation states in one call resolve independently, no cross-talk" {
     import os;
-    saved = os.environ.get("POD_NAMESPACE");
+    import shutil;
+    import tempfile;
+    import from pathlib { Path }
+
+    d = tempfile.mkdtemp(prefix="jac-route-crosstalk-");
+    (Path(d) / "jac.toml").write_text(
+        '[project]\n'
+        'name = "shop"\n'
+        'default-app = "web"\n'
+        '\n'
+        '[apps.web]\n'
+        'kind = "web-app"\n'
+        'entry-point = "main"\n'
+        '\n'
+        '[apps.orders_app]\n'
+        'kind = "service"\n'
+        'entry-point = "orders_app"\n'
+        '\n'
+        '[apps.orders_app.scale.http_activation]\n'
+        'enabled = true\n'
+        '\n'
+        '[apps.cart_app]\n'
+        'kind = "service"\n'
+        'entry-point = "cart_app"\n',
+        encoding="utf-8"
+    );
+    (Path(d) / "main.jac").write_text("with entry {}\n", encoding="utf-8");
+    (Path(d) / "orders_app.jac").write_text("with entry {}\n", encoding="utf-8");
+    (Path(d) / "cart_app.jac").write_text("with entry {}\n", encoding="utf-8");
+
+    saved_ns = os.environ.get("POD_NAMESPACE");
     os.environ["POD_NAMESPACE"] = "shop";
+    reset_scale_config();
     try {
-        routes = {"orders_app": "/orders", "cart_app": "/cart"};
-        kubernetes_cfg = {"http_activation": {"enabled": False}};
-        app_scale_configs = {"orders_app": {"http_activation": {"enabled": True}}};
-        resolved = build_k8s_service_routes(
-            routes, 8000, kubernetes_cfg, app_scale_configs
-        );
+        get_scale_config(project_dir=Path(d));
+        resolved = build_k8s_registry_routes(["orders_app", "cart_app"], 8000);
 
         assert resolved["orders_app"].host_header
             == "orders-app-service.shop.svc.cluster.local";
@@ -143,11 +178,13 @@ test "mixed activation states in one call resolve independently, no cross-talk" 
             == "http://cart-app-service.shop.svc.cluster.local:8000";
         assert resolved["cart_app"].host_header is None;
     } finally {
-        if saved is None {
+        if saved_ns is None {
             os.environ.pop("POD_NAMESPACE", None);
         } else {
-            os.environ["POD_NAMESPACE"] = saved;
+            os.environ["POD_NAMESPACE"] = saved_ns;
         }
+        reset_scale_config();
+        shutil.rmtree(d, ignore_errors=True);
     }
 }
 

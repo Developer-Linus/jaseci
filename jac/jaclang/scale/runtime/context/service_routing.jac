@@ -1,7 +1,6 @@
 import from jaclang.scale.runtime.context.util {
     k8s_safe_service_name,
-    k8s_service_dns_host,
-    in_cluster_namespace
+    k8s_service_dns_host
 }
 
 glob KEDA_INTERCEPTOR_SERVICE_ADDRESS: str = "keda-add-ons-http-interceptor-proxy.keda:8080";
@@ -61,22 +60,4 @@ def resolve_service_route(
         return ServiceRoute(url=f"http://{interceptor_address}", host_header=real_host);
     }
     return ServiceRoute(url=f"http://{real_host}:{port}", host_header=None);
-}
-
-
-def build_k8s_service_routes(
-    routes: dict[str, str],
-    port: int,
-    kubernetes_cfg: dict[str, any],
-    app_scale_configs: dict[str, dict[str, any]] | None = None
-) -> dict[str, ServiceRoute] {
-    namespace: str = in_cluster_namespace();
-    configs: dict[str, dict[str, any]] = app_scale_configs or {};
-    result: dict[str, ServiceRoute] = {};
-    for svc_name in routes.keys() {
-        result[svc_name] = resolve_service_route(
-            svc_name, namespace, port, kubernetes_cfg, configs.get(svc_name, {})
-        );
-    }
-    return result;
 }
