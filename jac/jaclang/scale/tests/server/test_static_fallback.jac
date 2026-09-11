@@ -1,10 +1,32 @@
 import os;
 import tempfile;
 import from pathlib { Path }
-import from jaclang.server.serving.datatypes { Request }
+import from jaclang.server.serving.datatypes { Request, Response }
+import from jaclang.server.serving.app { ServingApp }
+import from jaclang.server.serving.server { ServingServer }
 import from jaclang.scale.runtime.gateway.microservice_gateway { MicroserviceGateway }
-import from jaclang.scale.runtime.gateway.service_registry { ServiceRegistry }
+import from jaclang.scale.runtime.gateway.service_registry {
+    ServiceEntry,
+    ServiceRegistry,
+    ServiceStatus
+}
 import from jaclang.server.serving.static_assets { asset_root_table, resolve_asset }
+
+
+"""A root stub that answers every request with a fixed marker body, so a test
+can prove a request never reached it (rather than merely that its own file
+didn't win) by asserting the marker is absent from the response."""
+def _spawn_root_stub(marker: bytes) -> tuple[any, int] {
+    app = ServingApp(title="root-stub");
+    async def handler(request: Request, call_next: object) -> Response {
+        return Response(content=marker, media_type="application/octet-stream");
+    }
+    app.add_middleware(handler);
+    server = ServingServer(app=app, host="127.0.0.1", port=0);
+    stop = server.serve_background();
+    assert server.bound_port , "root stub did not bind a port";
+    return (stop, server.bound_port);
+}
 
 
 """The monolith (pages.jac's static_file/root_asset) builds its asset table
@@ -57,11 +79,17 @@ test "project /static asset resolves even when a static mount claims the prefix"
 }
 
 
-test "a mount-owned asset miss 404s through full gateway dispatch (no leak, no SPA)" {
+test "a mount-owned asset miss 404s through full gateway dispatch (no leak, no SPA, no root fallthrough)" {
     import shutil;
     project_root = tempfile.mkdtemp();
     empty_dist = tempfile.mkdtemp();
     mount_dir = tempfile.mkdtemp();
+    # A real root member, like `jac start --fleet` always has: the one this
+    # PR's fix must stop dispatch from ever reaching for a mount-owned miss.
+    # Without that fix, forward_to_root would forward the request to this
+    # stub, which (like the monolith's own asset table) knows nothing about
+    # the gateway's static_mounts and would serve its own public/media hit.
+    (root_stop, root_port) = _spawn_root_stub(b"FROM_ROOT_SERVICE");
     try {
         # a project public/ file at the exact path the mount claims: must NOT leak
         media = os.path.join(project_root, "public", "media");
@@ -74,8 +102,21 @@ test "a mount-owned asset miss 404s through full gateway dispatch (no leak, no S
             f.write("<html>SPA</html>");
         }
 
+        reg = ServiceRegistry();
+        reg.register(
+            ServiceEntry(
+                name="app",
+                file="main.jac",
+                prefix="/",
+                port=root_port,
+                url=f"http://127.0.0.1:{root_port}",
+                status=ServiceStatus.HEALTHY,
+                is_root=True,
+                serves_client=True
+            )
+        );
         gw = MicroserviceGateway(
-            registry=ServiceRegistry(),
+            registry=reg,
             client_dist_dir=empty_dist,
             static_mounts=[{"url_prefix": "media", "local_path": mount_dir}]
         );
@@ -88,12 +129,17 @@ test "a mount-owned asset miss 404s through full gateway dispatch (no leak, no S
 
         assert resp.status_code == 404 , (
             "the 'media' mount owns /media exclusively; a miss must 404 through "
-            "the full dispatch -- not serve public/media/logo.png and not the SPA "
-            f"shell; got {resp.status_code}"
+            "the full dispatch -- not serve public/media/logo.png, not the SPA "
+            f"shell, and not the root service; got {resp.status_code}"
         );
         assert b"FROM_PUBLIC" not in resp.content;
         assert b"SPA" not in resp.content;
+        assert b"FROM_ROOT_SERVICE" not in resp.content , (
+            "a mount-owned miss must 404 in handle_static itself, before dispatch "
+            "ever reaches forward_to_root"
+        );
     } finally {
+        root_stop();
         shutil.rmtree(project_root, ignore_errors=True);
         shutil.rmtree(empty_dist, ignore_errors=True);
         shutil.rmtree(mount_dir, ignore_errors=True);

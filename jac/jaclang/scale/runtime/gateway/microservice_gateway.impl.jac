@@ -115,7 +115,9 @@ impl MicroserviceGateway.bootstrap_admin_ui -> None {
     );
 }
 
-impl MicroserviceGateway.serve_admin_asset(asset_path: str) -> Response | None {
+impl MicroserviceGateway.serve_admin_asset(
+    request: Request, asset_path: str
+) -> Response | None {
     admin_dist = Path(self.admin_dist_dir);
 
     if not asset_path or asset_path == "/" {
@@ -134,16 +136,21 @@ impl MicroserviceGateway.serve_admin_asset(asset_path: str) -> Response | None {
         return None;
     }
 
-    import from jaclang.server.serving.static_assets { asset_response }
+    import from jaclang.server.serving.static_assets { asset_cache_policy }
+    import from jaclang.server.serving.files { file_response }
     if not target.is_file() {
         index = admin_dist / "index.html";
         if index.is_file() {
-            return asset_response(index);
+            return file_response(
+                request, str(index), cache_control=asset_cache_policy(index)
+            );
         }
         return None;
     }
 
-    return asset_response(target);
+    return file_response(
+        request, str(target), cache_control=asset_cache_policy(target)
+    );
 }
 
 glob _BUILTIN_PREFIXES: tuple = GATEWAY_BUILTIN_PREFIXES,
@@ -494,14 +501,14 @@ impl MicroserviceGateway.probe_services(
     return not_found(path, message="Not found on any service");
 }
 
-impl MicroserviceGateway.handle_admin(path: str) -> Response | None {
+impl MicroserviceGateway.handle_admin(request: Request, path: str) -> Response | None {
     if path == "/admin" {
         import from jaclang.server.serving.datatypes { RedirectResponse }
         return RedirectResponse(url="/admin/", status_code=302);
     }
     if path.startswith("/admin/") {
         asset_path: str = path[7:];
-        return self.serve_admin_asset(asset_path);
+        return self.serve_admin_asset(request, asset_path);
     }
     return None;
 }
@@ -631,13 +638,25 @@ impl MicroserviceGateway.handle_static(request: Request, path: str) -> Response 
         return None;
     }
 
-    import from jaclang.server.serving.static_assets { resolve_asset, asset_response }
-    hit = resolve_asset(self._get_asset_table(), path);
+    import from jaclang.server.serving.static_assets {
+        resolve_asset,
+        mount_claims,
+        asset_cache_policy
+    }
+    import from jaclang.server.serving.files { file_response }
+    table = self._get_asset_table();
+    hit = resolve_asset(table, path);
     if hit is None {
+        if mount_claims(table, path) {
+            import from jaclang.scale.runtime.context.errors { not_found }
+            return not_found(path);
+        }
         return None;
     }
     (target, _) = hit;
-    return asset_response(target);
+    return file_response(
+        request, str(target), cache_control=asset_cache_policy(target)
+    );
 }
 
 impl MicroserviceGateway.handle_spa_fallback(
@@ -779,7 +798,7 @@ impl MicroserviceGateway.setup -> ServingApp {
                 if gw.server is not None {
                     admin_resp = await next_fn(request);
                 } else {
-                    admin_resp = gw.handle_admin(path);
+                    admin_resp = gw.handle_admin(request, path);
                 }
                 if admin_resp is None {
                     import from jaclang.scale.runtime.context.errors { not_found }

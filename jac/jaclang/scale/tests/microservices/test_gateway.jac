@@ -929,6 +929,10 @@ test "Gateway returns 404 for GET / when no index.html exists" {
     shutil.rmtree(tmp);
 }
 
+def _admin_get(path: str) -> Request {
+    return Request(url=URL(path=path), headers=Headers());
+}
+
 test "serve admin asset returns index.html for root" {
     tmp = tempfile.mkdtemp();
     admin_dir = Path(tmp) / "admin";
@@ -938,7 +942,7 @@ test "serve admin asset returns index.html for root" {
     reg = ServiceRegistry();
     gw = MicroserviceGateway(registry=reg, admin_dist_dir=str(admin_dir));
 
-    resp = gw.serve_admin_asset("");
+    resp = gw.serve_admin_asset(_admin_get("/admin/"), "");
     assert resp is not None;
     assert b"Admin Portal" in resp.body;
 
@@ -956,7 +960,9 @@ test "serve admin asset returns static file" {
     reg = ServiceRegistry();
     gw = MicroserviceGateway(registry=reg, admin_dist_dir=str(admin_dir));
 
-    resp = gw.serve_admin_asset("assets/admin.js");
+    resp = gw.serve_admin_asset(
+        _admin_get("/admin/assets/admin.js"), "assets/admin.js"
+    );
     assert resp is not None;
     assert b"admin" in resp.body;
 
@@ -973,7 +979,7 @@ test "serve admin asset spa fallback for unknown route" {
     reg = ServiceRegistry();
     gw = MicroserviceGateway(registry=reg, admin_dist_dir=str(admin_dir));
 
-    resp = gw.serve_admin_asset("users/list");
+    resp = gw.serve_admin_asset(_admin_get("/admin/users/list"), "users/list");
     assert resp is not None;
     assert b"Admin SPA" in resp.body;
     cache = resp.headers.get("Cache-Control") or "";
@@ -994,14 +1000,16 @@ test "serve admin asset blocks path traversal" {
     reg = ServiceRegistry();
     gw = MicroserviceGateway(registry=reg, admin_dist_dir=str(admin_dir));
 
-    resp = gw.serve_admin_asset("../../etc/passwd");
+    resp = gw.serve_admin_asset(
+        _admin_get("/admin/../../etc/passwd"), "../../etc/passwd"
+    );
     assert resp is None;
 
     import shutil;
     shutil.rmtree(tmp);
 }
 
-test "serve admin asset responses go through the shared asset_response policy" {
+test "serve admin asset responses go through the shared file_response policy" {
     tmp = tempfile.mkdtemp();
     admin_dir = Path(tmp) / "admin";
     assets = admin_dir / "assets";
@@ -1011,13 +1019,16 @@ test "serve admin asset responses go through the shared asset_response policy" {
     reg = ServiceRegistry();
     gw = MicroserviceGateway(registry=reg, admin_dist_dir=str(admin_dir));
 
-    resp = gw.serve_admin_asset("assets/admin.js");
+    resp = gw.serve_admin_asset(
+        _admin_get("/admin/assets/admin.js"), "assets/admin.js"
+    );
     assert resp is not None;
     cache = resp.headers.get("Cache-Control") or "";
     assert "must-revalidate" in cache , (
-        "admin assets must be built through the shared asset_response so the "
+        "admin assets must be built through the shared file_response so the "
         f"one response policy holds everywhere; got Cache-Control: {cache}"
     );
+    assert resp.headers.get("ETag") , "file_response must set an ETag for admin assets";
 
     import shutil;
     shutil.rmtree(tmp);

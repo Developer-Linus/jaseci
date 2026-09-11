@@ -41,6 +41,6 @@ obj EmbeddedGateway(Gateway) {
         service: str, remainder: str, payload: dict[str, any]
     ) -> Response | None;
 
-    def _serve_static(path: str, accept: str) -> Response;
+    def _serve_static(request: Request, path: str, accept: str) -> Response;
     def serve(on_ready: any = None) -> None;
 }

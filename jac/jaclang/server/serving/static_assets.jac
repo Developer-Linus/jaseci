@@ -1,6 +1,5 @@
 import logging;
 import from pathlib { Path }
-import from jaclang.server.serving.datatypes { Response, FileResponse }
 
 glob _logger = logging.getLogger(__name__);
 
@@ -177,15 +176,26 @@ def resolve_asset(
 }
 
 
-def asset_response(target: Path) -> Response {
-    cacheable = target.suffix not in (".html", "");
-    policy = "public, max-age=3600, must-revalidate" if cacheable else "no-cache";
-    headers = {"Cache-Control": policy};
-    if cacheable {
-        import from email.utils { formatdate }
-        st = target.stat();
-        headers["Last-Modified"] = formatdate(st.st_mtime, usegmt=True);
-        headers["ETag"] = f'"{st.st_mtime_ns:x}-{st.st_size:x}"';
+def mount_claims(table: list[AssetRoot], url_path: str) -> bool {
+    """True when url_path falls under a static_mount's exclusive prefix --
+    the same claim resolve_asset uses internally to stop falling through
+    past a mount miss into the built-in web-root roots. A miss under an
+    exclusive claim is a genuine 404, not a "nobody owns this" case a host
+    may keep searching for elsewhere (its own asset table, the SPA shell).
+    The 'static' prefix is excluded: a mount there is an additive overlay
+    on the built-in /static tier (#7020), not an exclusive owner.""";
+    for r in table {
+        rel = _remainder(url_path, r.url_prefix);
+        if rel is None or rel == "" {
+            continue;
+        }
+        return r.source == "mount" and r.url_prefix != "static";
     }
-    return FileResponse(path=str(target), headers=headers);
+    return False;
+}
+
+
+def asset_cache_policy(target: Path) -> str {
+    cacheable = target.suffix not in (".html", "");
+    return "public, max-age=3600, must-revalidate" if cacheable else "no-cache";
 }

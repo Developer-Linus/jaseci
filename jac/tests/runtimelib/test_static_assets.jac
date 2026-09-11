@@ -1,7 +1,7 @@
 """L1 unit tests for the shared static-asset resolver (#8125, RFC #8124).
 
 These test the one core that every run mode (monolith, gateway, embedded, dev)
-will consume: `asset_root_table` / `resolve_asset` / `asset_response` in
+will consume: `asset_root_table` / `resolve_asset` / `asset_cache_policy` in
 `jaclang/runtimelib/serving/static_assets.jac`. Because there is exactly one
 resolver, every resolution invariant is asserted here, once. Host wiring and
 cross-mode parity live in the L2/L3 tests (see 8125_plan.md §8).
@@ -20,7 +20,8 @@ import from jaclang.server.serving.static_assets {
     AssetRoot,
     asset_root_table,
     resolve_asset,
-    asset_response
+    mount_claims,
+    asset_cache_policy
 }
 
 
@@ -195,6 +196,11 @@ test "a mount miss is exclusive: it never falls through to public/, assets/, or 
             f"a static_mount at '{prefix}' owns its prefix exclusively; a miss "
             f"must not fall through to {leak_rel}"
         );
+        assert mount_claims(table, request_path) , (
+            f"mount_claims must agree that '{prefix}' owns {request_path} "
+            "exclusively, so a host can turn this miss into a hard 404 instead "
+            "of falling through to its own asset table or the SPA shell"
+        );
     }
 }
 
@@ -216,6 +222,26 @@ test "a mount on the reserved static prefix still lets project /static assets re
     );
     (path, _) = result;
     assert path.read_bytes() == b"<svg/>";
+    assert not mount_claims(table, "/static/assets/logo.svg") , (
+        "a mount at 'static' is an additive overlay (#7020), not an exclusive "
+        "owner, so a miss under it must not be turned into a hard 404"
+    );
+}
+
+
+test "mount_claims is False when nothing claims the path" {
+    proj = _project();
+    mount_dir = _project();
+
+    table = asset_root_table(
+        proj,
+        proj / ".jac" / "client" / "dist",
+        [{"url_prefix": "files", "local_path": str(mount_dir)}]
+    );
+    assert not mount_claims(table, "/brand/logo.png") , (
+        "a path outside every mount's prefix is nobody's exclusive claim -- a "
+        "host may keep looking elsewhere (its own table, the SPA shell) for it"
+    );
 }
 
 
@@ -250,27 +276,36 @@ test "a genuinely missing asset resolves to None" {
 }
 
 
-# ---- asset_response: response construction --------------------------------
+# ---- asset_cache_policy: cache-control decision ----------------------------
+# Response construction (status, ETag, 304, Range) is shared with the rest of
+# the server through files.jac's file_response; asset_cache_policy only owns
+# the one decision specific to these roots -- whether a hit is cacheable.
 
-test "asset_response serves 200 with the right content type" {
+test "asset_cache_policy caches a static file for an hour, revalidating" {
     proj = _project();
     target = _write(proj, "public/logo.png", b"PNG_DATA");
 
-    resp = asset_response(target);
-    assert resp.status_code == 200;
-    assert resp.body_bytes() == b"PNG_DATA";
-    assert "image/png" in resp.content_type_header();
+    policy = asset_cache_policy(target);
+    assert "max-age=3600" in policy;
+    assert "must-revalidate" in policy;
 }
 
 
-test "asset_response does not blanket-cache mutable files for a year" {
+test "asset_cache_policy never caches an html shell" {
+    proj = _project();
+    target = _write(proj, "public/index.html", b"<html></html>");
+
+    assert asset_cache_policy(target) == "no-cache";
+}
+
+
+test "asset_cache_policy does not blanket-cache mutable files for a year" {
     proj = _project();
     target = _write(proj, "public/logo.png", b"PNG_DATA");
 
-    resp = asset_response(target);
-    cache = resp.headers.get("Cache-Control") or "";
+    policy = asset_cache_policy(target);
     # The monolith's blanket `max-age=31536000` on every file is the bug we are
     # removing. A hashed/immutable long-cache split is #8126; #8125 just must not
     # ship the blanket-immutable regression.
-    assert "31536000" not in cache , "an unhashed, mutable asset must not be cached immutable for a year";
+    assert "31536000" not in policy , "an unhashed, mutable asset must not be cached immutable for a year";
 }

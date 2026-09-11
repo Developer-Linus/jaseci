@@ -68,12 +68,33 @@ impl EmbeddedGateway._get_asset_table -> list[AssetRoot] {
     return self._asset_table;
 }
 
-impl EmbeddedGateway._serve_static(path: str, accept: str) -> Response {
-    import from jaclang.server.serving.static_assets { resolve_asset, asset_response }
-    hit = resolve_asset(self._get_asset_table(), path);
+impl EmbeddedGateway._serve_static(
+    request: Request, path: str, accept: str
+) -> Response {
+    import from jaclang.server.serving.static_assets {
+        resolve_asset,
+        mount_claims,
+        asset_cache_policy
+    }
+    import from jaclang.server.serving.files { file_response }
+    table = self._get_asset_table();
+    hit = resolve_asset(table, path);
     if hit is not None {
         (target, _) = hit;
-        return asset_response(target);
+        return file_response(
+            request, str(target), cache_control=asset_cache_policy(target)
+        );
+    }
+    if mount_claims(table, path) {
+        return JSONResponse(
+            status_code=404,
+            content={
+                "ok": False,
+                "type": "error",
+                "data": None,
+                "error": {"code": "NOT_FOUND", "message": f"Not found: {path}"}
+            }
+        );
     }
 
     dist = Path(self.client_dist_dir);
@@ -118,7 +139,7 @@ impl EmbeddedGateway.dispatch(request: Request) -> Response {
         }
     }
     accept: str = str(request.headers.get("accept") or "");
-    return self._serve_static(path, accept);
+    return self._serve_static(request, path, accept);
 }
 
 
