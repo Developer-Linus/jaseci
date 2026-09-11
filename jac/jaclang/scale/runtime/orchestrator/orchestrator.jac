@@ -55,7 +55,6 @@ obj FleetOrchestrator {
         }
 
         client_dist: str = self._client_dist_dir();
-        self._build_client_bundle_if_needed(client_dist);
 
         registry = self._build_registry();
         logger.info(f"Registry: {len(registry.entries)} apps");
@@ -188,73 +187,6 @@ obj FleetOrchestrator {
             }
         }
         return out;
-    }
-
-    def _client_sources_newer_than(built_at: float) -> bool {
-        import os;
-        src_suffixes = (".jac", ".css", ".toml", ".ts", ".tsx", ".jsx");
-        for (dirpath, dirnames, filenames) in os.walk(".") {
-            dirnames[:] = [
-                d
-                for d in dirnames
-                if not d.startswith(".") and d != "node_modules" and d != "__pycache__"
-            ];
-            for fname in filenames {
-                if fname.endswith(src_suffixes) {
-                    try {
-                        if os.path.getmtime(os.path.join(dirpath, fname)) > built_at {
-                            return True;
-                        }
-                    } except OSError {
-                        continue;
-                    }
-                }
-            }
-        }
-        return False;
-    }
-
-    def _build_client_bundle_if_needed(client_dist: str) -> None {
-        root_member = self.fleet.root_member();
-        client_entry: str = (
-            root_member.file if root_member is not None and root_member.client else ""
-        );
-        if not client_entry {
-            return;
-        }
-        import subprocess;
-        import from pathlib { Path }
-        dist_path = Path(client_dist);
-        index_file = dist_path / "index.html";
-
-        if index_file.exists() {
-            if not self._client_sources_newer_than(index_file.stat().st_mtime) {
-                logger.info("Client already built and up to date, skipping build");
-                return;
-            }
-            console.print("  Client sources changed - rebuilding bundle...");
-        }
-
-        console.print(f"  Building client from {client_entry}...");
-        try {
-            build_result = subprocess.run(
-                ["jac", "build", "--as", "client", client_entry], timeout=600
-            );
-            if build_result.returncode == 0 {
-                console.print("  Client build complete");
-            } else {
-                logger.warning(
-                    "Client build failed - gateway will start without client UI"
-                );
-            }
-        } except subprocess.TimeoutExpired {
-            logger.warning(
-                "Client build exceeded 600s and was terminated - "
-                "the gateway will serve the previous bundle if one exists"
-            );
-        } except FileNotFoundError {
-            logger.warning("jac build command not found");
-        }
     }
 
     def _wait_for_health(
