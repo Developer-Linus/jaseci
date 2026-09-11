@@ -183,13 +183,21 @@ def mount_claims(table: list[AssetRoot], url_path: str) -> bool {
     exclusive claim is a genuine 404, not a "nobody owns this" case a host
     may keep searching for elsewhere (its own asset table, the SPA shell).
     The 'static' prefix is excluded: a mount there is an additive overlay
-    on the built-in /static tier (#7020), not an exclusive owner.""";
+    on the built-in /static tier (#7020), not an exclusive owner. Checks
+    every mount rather than stopping at the first prefix match, so a
+    broader 'static' overlay listed before a nested exclusive mount (e.g.
+    'static/brand') can't mask that nested mount's own claim.""";
     for r in table {
+        if r.source != "mount" {
+            continue;
+        }
         rel = _remainder(url_path, r.url_prefix);
         if rel is None or rel == "" {
             continue;
         }
-        return r.source == "mount" and r.url_prefix != "static";
+        if r.url_prefix != "static" {
+            return True;
+        }
     }
     return False;
 }

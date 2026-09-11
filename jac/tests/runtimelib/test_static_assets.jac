@@ -245,6 +245,31 @@ test "mount_claims is False when nothing claims the path" {
 }
 
 
+test "a static overlay listed before a nested exclusive mount does not mask its claim" {
+    proj = _project();
+    overlay_dir = _project();
+    nested_dir = _project();
+
+    table = asset_root_table(
+        proj,
+        proj / ".jac" / "client" / "dist",
+        [
+            # the additive "static" overlay is listed first, on purpose --
+            # mount_claims must not stop at this first prefix match and
+            # report the path as unclaimed.
+            {"url_prefix": "static", "local_path": str(overlay_dir)},
+            {"url_prefix": "static/brand", "local_path": str(nested_dir)}
+        ]
+    );
+    path = "/static/brand/logo.png";
+    assert resolve_asset(table, path) is None , "no file was placed; expected a miss";
+    assert mount_claims(table, path) , (
+        "the nested 'static/brand' mount owns this path exclusively; the "
+        "broader 'static' overlay appearing first must not mask that claim"
+    );
+}
+
+
 # NOTE — one-law / reserved-segment protection ("public/user/data.json" must not
 # serve at /user/data.json) is a HOST-DISPATCH invariant, not a resolver one: in
 # every host, reserved paths classify before static, so the resolver is never
