@@ -1,7 +1,4 @@
-import from jaclang.scale.runtime.context.util {
-    k8s_safe_service_name,
-    k8s_service_dns_host
-}
+import from jaclang.scale.runtime.context.util { k8s_safe_name, k8s_service_dns_host }
 
 glob KEDA_INTERCEPTOR_SERVICE_ADDRESS: str = "keda-add-ons-http-interceptor-proxy.keda:8080";
 
@@ -50,7 +47,7 @@ def resolve_service_route(
     app_scale_cfg: dict[str, any]
 ) -> ServiceRoute {
     """The one decision point: interceptor-routed vs. direct ClusterIP.""";
-    safe_name = k8s_safe_service_name(svc_name);
+    safe_name = k8s_safe_name(svc_name);
     real_host = k8s_service_dns_host(f"{safe_name}-service", namespace);
     http_cfg = resolve_http_activation_config(
         dict(kubernetes_cfg.get("http_activation", {})), app_scale_cfg
