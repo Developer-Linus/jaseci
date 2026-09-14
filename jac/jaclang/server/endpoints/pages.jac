@@ -96,7 +96,7 @@ def register_page_endpoints(server: JacAPIServer) {
         }
     }
     if not asset_dist and config is not None and config.is_workspace {
-        import from jaclang.client.targets.registry { client_app_dir_for }
+        import from jaclang.project.client_paths { client_app_dir_for }
         entry_path = Jac.get_full_target_path() or '';
         workspace_dist = client_app_dir_for(config, entry_path) / 'dist';
         if workspace_dist.is_dir() {
