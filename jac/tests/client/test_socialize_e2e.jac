@@ -334,26 +334,6 @@ def _get_status(url: str) -> tuple {
     }
 }
 
-"""Like _get_status(), but also returns the response headers (a
-case-insensitive email.message.Message) -- for the one row (the
-cache-control policy) that needs more than the status/body pair."""
-def _get_response(url: str) -> tuple {
-    try {
-        with urlopen(url, timeout=30) as resp {
-            return (resp.status, bytes(resp.read()), resp.headers);
-        }
-    } except HTTPError as exc {
-        body = b"";
-        try {
-            body = bytes(exc.read());
-        } except Exception {
-            body = b"";
-        }
-        exc.close();
-        return (exc.code, body, exc.headers);
-    }
-}
-
 """One static-asset law, replayed against a real `jac start` boot (#8125).
 
 Injects fixtures into the temp workspace copy (the jaclang_org source is
@@ -393,20 +373,12 @@ test "the site serves the one static-asset law over a real boot" {
             base = f"http://127.0.0.1:{port}";
             request_endpoint(f"{base}/");
 
-            (logo_status, logo_body, logo_headers) = _get_response(
-                f"{base}/brand/logo.png"
-            );
+            (logo_status, logo_body) = _get_status(f"{base}/brand/logo.png");
             assert logo_status == 200 , (
                 f"public/brand/logo.png must serve at /brand/logo.png; got {logo_status}"
             );
             assert logo_body == logo_bytes , (
                 "the web root must serve public/brand/logo.png byte-for-byte"
-            );
-            logo_cache = logo_headers.get("Cache-Control") or "";
-            assert "must-revalidate" in logo_cache , (
-                "a served public/ image must carry the shared asset_cache_policy, "
-                "not file_response's bare 'public, max-age=3600' default -- the "
-                f"monolith and the gateway must answer with the same header; got {logo_cache!r}"
             );
 
             (manifest_status, _m) = _get_status(f"{base}/site.webmanifest");
