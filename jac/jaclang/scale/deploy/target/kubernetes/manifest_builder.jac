@@ -1,3 +1,4 @@
+import from jaclang.scale.runtime.context.util { GATEWAY_NAME, k8s_safe_name }
 import from jaclang.server { sv_client }
 import from jaclang.server.settings { ServeSettings }
 import from jaclang.scale.config.app_config { AppConfig }
@@ -20,8 +21,7 @@ import from jaclang.scale.runtime.context.service_routing {
 import from enum { StrEnum }
 
 
-glob GATEWAY_NAME: str = "__gateway__",
-     CONFIG_REVISION_ANNOTATION: str = "jac-scale.config-revision",
+glob CONFIG_REVISION_ANNOTATION: str = "jac-scale.config-revision",
      _EXIT_CUSHION_S: int = 5,
      _CLIENT_BUILD_ATTEMPTS: int = 3,
      _CLIENT_BUILD_RETRY_PAUSE_S: int = 3,
@@ -160,15 +160,6 @@ def _vite_env_keys(base: any) -> dict[str, list[str]] {
         }
     }
     return found;
-}
-
-
-def k8s_safe_name(svc_name: str) -> str {
-    if svc_name == GATEWAY_NAME {
-        return "gateway";
-    }
-    import from jaclang.scale.runtime.context.util { k8s_safe_service_name }
-    return k8s_safe_service_name(svc_name);
 }
 
 
@@ -607,7 +598,7 @@ obj ManifestBuilder {
         candidates: list[str] = [];
         cfg = self._project_config();
         if cfg is not None {
-            import from jaclang.client.targets.registry { client_workspace_app }
+            import from jaclang.project.client_paths { client_workspace_app }
             app = client_workspace_app(
                 cfg, os.path.join(self.project_dir, entry_rel.as_posix())
             );

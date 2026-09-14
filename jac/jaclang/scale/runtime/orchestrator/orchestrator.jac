@@ -245,8 +245,8 @@ def start_gateway_only(fleet: FleetSpec, gateway_config: dict[str, any]) {
 
 def _populate_k8s_urls(registry: ServiceRegistry) {
     try {
-        import from jaclang.scale.plugin { JacScalePlugin }
-        routes: dict[str, any] = JacScalePlugin.get_sv_service_routes();
+        import from jaclang.scale.runtime.provider { JacScaleRuntime }
+        routes: dict[str, any] = JacScaleRuntime.get_sv_service_routes();
     } except Exception as e {
         logger.warning(f"K8s URL population failed: {e}");
         return;

@@ -98,15 +98,15 @@ def _provider_url(app_name: str) -> str {
 def _resolve_call_target(module_name: str) -> tuple[str, str | None] {
     """One bundled lookup for (url, interceptor Host-header override), so
     the two are never resolved independently and can't disagree.
-    Primary source: the live K8s dynamic registry (JacScalePlugin's
+    Primary source: the live K8s dynamic registry (JacScaleRuntime's
     get_sv_service_routes, K8s-mode only) -- it already fails open to {}
     and warns (once per underlying cause) at its own failure sites, so
     there is nothing to catch or re-warn about here. Fallback:
     _provider_url's registry/env-var resolution -- the K8s path never
     reaches here, so no separate host-override table is needed for it.""";
-    import from jaclang.scale.plugin { JacScalePlugin }
+    import from jaclang.scale.runtime.provider { JacScaleRuntime }
 
-    routes: dict[str, any] = JacScalePlugin.get_sv_service_routes();
+    routes: dict[str, any] = JacScaleRuntime.get_sv_service_routes();
     route = routes.get(module_name);
     if route is not None and route.url {
         return (route.url, route.host_header);
