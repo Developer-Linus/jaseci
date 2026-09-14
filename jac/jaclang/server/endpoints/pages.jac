@@ -24,6 +24,7 @@ import from jaclang.server.static_files {
 }
 import from jaclang.server.serving.static_assets {
     AssetRoot,
+    asset_cache_policy,
     asset_root_table,
     resolve_asset
 }
@@ -258,7 +259,9 @@ def register_page_endpoints(server: JacAPIServer) {
             );
         }
         (target, _) = hit;
-        return file_response(request, str(target));
+        return file_response(
+            request, str(target), cache_control=asset_cache_policy(target)
+        );
     }
     server.add_endpoint(
         JEndPoint(
@@ -288,7 +291,9 @@ def register_page_endpoints(server: JacAPIServer) {
         hit = resolve_asset(asset_table, '/' + file_path);
         if hit is not None {
             (target, _) = hit;
-            return file_response(request, str(target));
+            return file_response(
+                request, str(target), cache_control=asset_cache_policy(target)
+            );
         }
         index = client_dist_index(asset_dist);
         if index is not None and not Path(file_path).suffix {

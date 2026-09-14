@@ -631,7 +631,7 @@ impl MicroserviceGateway._get_asset_table -> list[AssetRoot] {
 }
 
 impl MicroserviceGateway.handle_static(request: Request, path: str) -> Response | None {
-    if request.method != "GET" {
+    if request.method not in ("GET", "HEAD") {
         return None;
     }
     if not path.lstrip("/") {

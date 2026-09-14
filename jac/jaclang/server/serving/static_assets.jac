@@ -26,23 +26,10 @@ def _resolve_root(local_dir: str) -> Path {
 
 
 def _assets_dir(project_root: Path) -> Path {
-    default_dir = project_root / "assets";
-    try {
-        import from jaclang.client.config_loader { JacClientConfig }
-        client_config = JacClientConfig(project_root);
-        configured = str(client_config.get_assets_config().get('dir') or '');
-        if configured {
-            configured_dir = project_root / configured;
-            if configured_dir.is_dir() {
-                return configured_dir;
-            }
-        }
-    } except Exception as e {
-        _logger.warning(
-            f"invalid [client.assets] 'dir' config, falling back to project_root/assets: {e}"
-        );
-    }
-    return default_dir;
+    import from jaclang.project.config { get_config_for_dir }
+    import from jaclang.project.client_paths { client_assets_dir }
+    cfg = get_config_for_dir(str(project_root));
+    return client_assets_dir(cfg, project_root);
 }
 
 

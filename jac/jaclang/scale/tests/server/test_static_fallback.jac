@@ -138,6 +138,13 @@ test "a mount-owned asset miss 404s through full gateway dispatch (no leak, no S
             "a mount-owned miss must 404 in handle_static itself, before dispatch "
             "ever reaches forward_to_root"
         );
+
+        head_resp = client.head("/media/logo.png", headers={"accept": "image/png"});
+        assert head_resp.status_code == 404 , (
+            "a HEAD to the same mount-owned miss must 404 the same way GET does -- "
+            "handle_static must not let HEAD skip mount_claims and fall through to "
+            f"forward_to_root; got {head_resp.status_code}"
+        );
     } finally {
         root_stop();
         shutil.rmtree(project_root, ignore_errors=True);
