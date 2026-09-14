@@ -245,6 +245,28 @@ test "mount_claims is False when nothing claims the path" {
 }
 
 
+test "mount_claims is True for the bare mount prefix itself, with or without a trailing slash" {
+    proj = _project();
+    mount_dir = _project();
+
+    table = asset_root_table(
+        proj,
+        proj / ".jac" / "client" / "dist",
+        [{"url_prefix": "docs", "local_path": str(mount_dir)}]
+    );
+    for request_path in ("/docs", "/docs/") {
+        assert mount_claims(table, request_path) , (
+            f"'{request_path}' is exactly the mount's own prefix, which is the "
+            "most obviously owned path there is -- resolve_asset never mistakes "
+            "the empty remainder here for a file, but mount_claims must not "
+            "mistake it for 'nobody claims this' either, or a client-page "
+            "fallback can serve the SPA at the mount's own root instead of a "
+            "mount-owned 404"
+        );
+    }
+}
+
+
 test "a static overlay listed before a nested exclusive mount does not mask its claim" {
     proj = _project();
     overlay_dir = _project();

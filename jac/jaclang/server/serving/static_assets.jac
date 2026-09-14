@@ -179,7 +179,7 @@ def mount_claims(table: list[AssetRoot], url_path: str) -> bool {
             continue;
         }
         rel = _remainder(url_path, r.url_prefix);
-        if rel is None or rel == "" {
+        if rel is None {
             continue;
         }
         if r.url_prefix != "static" {
