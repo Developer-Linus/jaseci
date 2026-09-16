@@ -4,6 +4,7 @@ import from jaclang.cli.console { console }
 import from jaclang.cli.check_report {
     print_file_progress,
     print_failures,
+    print_warnings,
     print_failed_summary,
     print_final_summary,
     print_native_coverage,
@@ -468,6 +469,7 @@ impl check(
 
     multi = len({r['label'] for r in results}) > 1;
     failed_results: list[dict[str, any]] = [];
+    warning_results: list[dict[str, any]] = [];
     total_errors = failed_files=0;
     for res in results {
         errs = _wire_list(res.get('errors'));
@@ -482,18 +484,12 @@ impl check(
             }
         }
         total_errors += len(errs);
+        path = (f"[{res['label']}] " if multi else '') + str(res.get('path'));
         if not res.get('success') {
             failed_files += 1;
-        }
-        if not res.get('success') or (len(warns) > 0 and not nowarn) {
-            failed_results.append(
-                {
-                    'path': (f"[{res['label']}] " if multi else '')
-                        + str(res.get('path')),
-                    'errors': errs,
-                    'warnings': warns
-                }
-            );
+            failed_results.append({'path': path, 'errors': errs, 'warnings': warns});
+        } elif len(warns) > 0 and not nowarn {
+            warning_results.append({'path': path, 'warnings': warns});
         }
     }
     if native_coverage {
@@ -504,6 +500,9 @@ impl check(
     }
     if print_errs and len(failed_results) > 0 {
         print_failures(failed_results, nowarn);
+    }
+    if print_errs and len(warning_results) > 0 {
+        print_warnings(warning_results);
     }
     if failed_files > 0 {
         print_failed_summary(failed_results);

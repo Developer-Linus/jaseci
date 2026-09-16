@@ -10,6 +10,17 @@ def print_guide_hint(code: (str | None), category: (str | None)) -> None {
     }
 }
 
+def print_diag(d: any, is_error: bool) {
+    import from jaclang.cli.console { console }
+    emit = console.error if is_error else console.warning;
+    if isinstance(d, dict) {
+        emit(str(d.get('pretty') or d.get('text') or ''));
+        print_guide_hint(d.get('code'), d.get('category'));
+    } else {
+        emit(str(d));
+    }
+}
+
 impl separator(text: str, char: str = '=', total_width: int = 80) -> str {
     text_part = f" {text} ";
     remaining = total_width - len(text_part);
@@ -33,22 +44,25 @@ impl print_failures(
     for r in failed_results {
         console.print(separator(r['path'], char='_'));
         for e in r['errors'] {
-            if isinstance(e, dict) {
-                console.error(str(e.get('pretty') or e.get('text') or ''));
-                print_guide_hint(e.get('code'), e.get('category'));
-            } else {
-                console.error(str(e));
-            }
+            print_diag(e, is_error=True);
         }
         if not nowarn and r['warnings'] {
             for w in r['warnings'] {
-                if isinstance(w, dict) {
-                    console.warning(str(w.get('pretty') or w.get('text') or ''));
-                    print_guide_hint(w.get('code'), w.get('category'));
-                } else {
-                    console.warning(str(w));
-                }
+                print_diag(w, is_error=False);
             }
+        }
+        console.print("");
+    }
+}
+
+impl print_warnings(warning_results: list[dict[str, any]]) -> None {
+    import from jaclang.cli.console { console }
+    console.print("");
+    console.print(separator("WARNINGS"));
+    for r in warning_results {
+        console.print(separator(r['path'], char='_'));
+        for w in r['warnings'] {
+            print_diag(w, is_error=False);
         }
         console.print("");
     }

@@ -2157,8 +2157,11 @@ test "jac check shows warnings for files with warnings only" {
     # Should exit with code 0 (warnings don't fail the check)
     assert result == 0 , "check should exit with code 0 for warnings only";
 
-    # Should show FAILURES section with warnings
-    assert "FAILURES" in combined , "should display FAILURES section for warnings";
+    # Should show a WARNINGS section, not a FAILURES banner, since the file passed
+    assert "WARNINGS" in combined , "should display WARNINGS section for warnings";
+    assert "FAILURES" not in combined , (
+        "a passing file's warnings must not be reported under a FAILURES banner"
+    );
 
     # Should show the warning messages
     assert "defined but never used" in combined , "should display unused variable warnings";
@@ -2166,7 +2169,8 @@ test "jac check shows warnings for files with warnings only" {
     # Should show warning indicators
     assert "warning" in combined.lower() , "should indicate warnings in output";
 
-    # File should appear in summary with warnings count
+    # File should appear in the ok progress line and in the warnings section
+    assert "ok" in combined , "should show ok status for a passing file with warnings";
     assert "warnings_only.jac" in combined , "should show file path in output";
 }
 
