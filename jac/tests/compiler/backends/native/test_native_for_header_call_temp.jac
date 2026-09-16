@@ -48,11 +48,11 @@ glob FIXTURES = os.path.join(
          "str_header",
          "dict_header"
      ],
-     _MEMO: list = [];
+     _MEMO: list[any] = [];
 
 
 """Compile the fixture once natively; return (engine, module ir)."""
-def _compiled -> tuple {
+def _compiled -> tuple[any, ...] {
     if _MEMO {
         return _MEMO[0];
     }
@@ -79,7 +79,7 @@ def _get(name: str) -> any {
 
 
 """Run one accounting function and split it into (destructions, value)."""
-def _account(name: str, n: int) -> tuple {
+def _account(name: str, n: int) -> tuple[any, ...] {
     encoded = _get(name)(n);
     return (encoded // 1000, encoded % 1000);
 }
@@ -87,7 +87,12 @@ def _account(name: str, n: int) -> tuple {
 
 """Slice one function's textual IR out of the module dump."""
 def _fn_ir(name: str) -> str {
-    (_, ir) = _compiled();
+    options = native_force_opts();
+    options.no_ir_cache = True;
+    options.skip_native_engine = True;
+    prog = JacProgram();
+    ir = prog.compile(file_path=os.path.join(FIXTURES, FIXTURE), options=options);
+    assert not prog.errors_had , [str(e) for e in prog.errors_had];
     out: list[str] = [];
     inside = False;
     for ln in str(ir.gen.llvm_ir).split("\n") {

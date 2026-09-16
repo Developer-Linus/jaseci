@@ -30,7 +30,7 @@ def cluster_node_archs -> list[str] {
     } except ImportError {
         return [];
     }
-    nodes: list = [];
+    nodes: list[any] = [];
     try {
         nodes = list(client.CoreV1Api().list_node(_request_timeout=10).items);
     } except Exception as e {
@@ -245,7 +245,7 @@ def _pick_stable_assets(meta: any, suffix: str) -> tuple[str, str] {
 }
 
 
-glob _deploy_version_memo: dict = {};
+glob _deploy_version_memo: dict[str, any] = {};
 
 
 def resolve_deploy_version(project_dir: str, channel: str) -> str {
@@ -366,7 +366,7 @@ def host_seal_platform -> str {
 }
 
 
-def stable_release_meta(version: str = "") -> dict {
+def stable_release_meta(version: str = "") -> dict[str, any] {
     api = f"https://api.github.com/repos/{GH_REPO}/releases/tags/v{version}"
         if version
         else f"https://api.github.com/repos/{GH_REPO}/releases/latest";
@@ -384,7 +384,7 @@ def stable_release_meta(version: str = "") -> dict {
 }
 
 
-def _no_asset_message(meta: dict, suffix: str, version: str) -> str {
+def _no_asset_message(meta: dict[str, any], suffix: str, version: str) -> str {
     tag = str(meta.get("tag_name", version or "latest"));
     return (
         f"No `jac-*{suffix}` asset on the {GH_REPO} release ({tag}). The node "
@@ -490,44 +490,19 @@ def _write_cache_atomic(cache_file: Path, payload: bytes) {
 def _fetch_verified_asset(
     url: str, checksum_url: str, cache_file: Path, what: str
 ) -> bytes {
-    want = "";
-    if checksum_url {
-        parts = _http_get_bytes(checksum_url).decode("utf-8").split();
-        if not parts {
-            raise RuntimeError(
-                f"Checksum file at {checksum_url} is empty or malformed; "
-                f"cannot verify the download."
-            );
-        }
-        want = parts[0].strip().lower();
-        if cache_file.is_file() {
-            cached_bytes: bytes | None = None;
-            try {
-                cached_bytes = cache_file.read_bytes();
-            } except OSError {}
-            if cached_bytes is not None
-                and hashlib.sha256(cached_bytes).hexdigest() == want {
-                logger.info(f"Using the cached {what} (checksum match).");
-                return cached_bytes;
-            }
-        }
+    import from jaclang.toolchains.store { Artifact, fetch }
+    if not checksum_url {
+        raise RuntimeError(
+            f"No checksum is available for {what}; refusing an unverified download."
+        );
     }
-    payload = _http_get_bytes(url);
-    if want {
-        got = hashlib.sha256(payload).hexdigest();
-        if got != want {
-            raise RuntimeError(
-                f"Checksum mismatch for the downloaded {what} "
-                f"(expected {want}, got {got}); refusing to ship it."
-            );
-        }
-        try {
-            _write_cache_atomic(cache_file, payload);
-        } except Exception as e {
-            logger.warning(f"Could not cache the downloaded {what} ({e}).");
-        }
+    parts = _http_get_bytes(checksum_url).decode("utf-8").split();
+    if not parts {
+        raise RuntimeError(f"Checksum file at {checksum_url} is empty or malformed.");
     }
-    return payload;
+    digest = parts[0].strip().lower();
+    artifact = Artifact("jac-deployment", digest, "asset", url, digest);
+    return fetch(artifact, cache_file).read_bytes();
 }
 
 

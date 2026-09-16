@@ -1,4 +1,4 @@
-import from dataclasses { fields, is_dataclass }
+import from jaclang.runtime.object_interop { fields, is_record }
 import from enum { Enum }
 
 
@@ -6,7 +6,7 @@ def _dump_value(value: any, exclude_none: bool) -> any {
     if isinstance(value, ApiModel) {
         return value.model_dump(exclude_none=exclude_none);
     }
-    if is_dataclass(value) and not isinstance(value, type) {
+    if is_record(value) and not isinstance(value, type) {
         result: dict[str, any] = {};
         for f in fields(value) {
             item = _dump_value(getattr(value, f.name), exclude_none);
@@ -50,7 +50,7 @@ obj ApiModel {
     }
 }
 
-def require_str(data: dict, key: str, label: str = '') -> str {
+def require_str(data: dict[str, any], key: str, label: str = '') -> str {
     value = data.get(key);
     name = label or key;
     if not isinstance(value, str) or not value {

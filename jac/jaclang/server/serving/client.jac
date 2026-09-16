@@ -56,7 +56,7 @@ obj ClientResponse {
         return 200 <= self.status_code < 400;
     }
 
-    async def aiter_raw -> any {
+    async def aiter_raw -> AsyncIterator[bytes] {
         if self.reader is None {
             if self.body {
                 yield self.body;
@@ -107,7 +107,7 @@ obj ClientResponse {
         }
     }
 
-    async def aiter_lines -> any {
+    async def aiter_lines -> AsyncIterator[bytes] {
         buffer = b'';
         async for block in self.aiter_raw() {
             buffer += block;
@@ -203,12 +203,12 @@ async def _read_response_head(reader: any, timeout: float) -> tuple[int, str, He
 async def arequest(
     method: str,
     url: str,
-    headers: (dict | None) = None,
+    headers: (dict[str, any] | None) = None,
     json_body: any = None,
     data: (bytes | str | None) = None,
     timeout: float = DEFAULT_TIMEOUT,
     stream: bool = False,
-    params: (dict | None) = None
+    params: (dict[str, any] | None) = None
 ) -> ClientResponse {
     if params {
         sep = '&' if '?' in url else '?';
@@ -292,7 +292,7 @@ async def arequest(
 }
 
 async def aws_connect(
-    url: str, headers: (dict | None) = None, timeout: float = DEFAULT_TIMEOUT
+    url: str, headers: (dict[str, any] | None) = None, timeout: float = DEFAULT_TIMEOUT
 ) -> WebSocket {
     (scheme, host, port, path) = _split_url(url);
     if scheme in ('http', 'ws') {
@@ -357,7 +357,7 @@ def run_blocking(coro: any) -> any {
 def request_sync(
     method: str,
     url: str,
-    headers: (dict | None) = None,
+    headers: (dict[str, any] | None) = None,
     json_body: any = None,
     data: (bytes | str | None) = None,
     timeout: float = DEFAULT_TIMEOUT
@@ -377,7 +377,7 @@ def request_sync(
 def post_stream_aware_sync(
     url: str,
     json_body: any = None,
-    headers: (dict | None) = None,
+    headers: (dict[str, any] | None) = None,
     timeout: float = DEFAULT_TIMEOUT,
     label: str = 'rpc'
 ) -> tuple[str, any] {

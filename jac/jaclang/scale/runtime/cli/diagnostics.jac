@@ -1,8 +1,8 @@
 import from jaclang.scale.deploy.target.kubernetes.manifest_builder {
-    GATEWAY_NAME,
     is_scale_to_zero_eligible,
     ScalingMode
 }
+import from jaclang.scale.runtime.context.util { GATEWAY_NAME }
 import from jaclang.scale.runtime.cli._narrow {
     bget,
     dget,
@@ -77,20 +77,23 @@ def _mem_to_bytes(val: any) -> int | None {
 
 obj PlanValidator {
     has bundle: any,
-        ms_cfg: any,
-        svc_configs: any,
+        routes: any = {},
+        gateway_cfg: any = {},
+        svc_configs: any = {},
         autoscaler_engine: str = "hpa";
 
     def run -> list[Diagnostic] {
         out: list[Diagnostic] = [];
-        routes = dget(self.ms_cfg, "routes");
+        routes: dict[str, any] = self.routes if isinstance(self.routes, dict) else {};
         deployments = dget(self.bundle, "deployments");
         scaling = dget(self.bundle, "scaling");
 
         self._check_config_keys(out);
         self._check_routes(routes, out);
 
-        cfgs: dict = self.svc_configs if isinstance(self.svc_configs, dict) else {};
+        cfgs: dict[str, any] = self.svc_configs
+            if isinstance(self.svc_configs, dict)
+            else {};
         for svc_name_raw in routes {
             if svc_name_raw == GATEWAY_NAME {
                 continue;
@@ -104,8 +107,8 @@ obj PlanValidator {
                         severity="error",
                         service=svc_name,
                         message=(
-                            f"route '{svc_name}' has no generated Deployment "
-                            "manifest; check that the .jac file exists in the "
+                            f"app '{svc_name}' has no generated Deployment "
+                            "manifest; check that its entry file exists in the "
                             "project directory"
                         )
                     )
@@ -149,15 +152,14 @@ obj PlanValidator {
         }
     }
 
-    def _check_routes(routes: dict, out: list[Diagnostic]) {
+    def _check_routes(routes: dict[str, any], out: list[Diagnostic]) {
         if GATEWAY_NAME in routes {
             out.append(
                 Diagnostic(
                     severity="error",
                     message=(
-                        f"route name '{GATEWAY_NAME}' is reserved for the internal "
-                        "gateway sentinel; rename this microservice in "
-                        "[scale.microservices.routes]"
+                        f"app name '{GATEWAY_NAME}' is reserved for the internal "
+                        "gateway sentinel; rename this app in [apps]"
                     )
                 )
             );
@@ -170,8 +172,8 @@ obj PlanValidator {
                     Diagnostic(
                         severity="error",
                         message=(
-                            f"route path {path_s!r} is claimed by both "
-                            f"'{seen[path_s]}' and '{svc}'; each gateway path "
+                            f"route {path_s!r} is claimed by both "
+                            f"'{seen[path_s]}' and '{svc}'; each app route "
                             "must be unique"
                         )
                     )
@@ -201,8 +203,7 @@ obj PlanValidator {
             reason = (
                 "KEDA scale-to-zero requires a configured trigger "
                 "(CPU/memory targets alone can't reach zero); add "
-                f"[[scale.microservices.services.{svc_name}.triggers]] or "
-                "set hpa.min >= 1"
+                f"[[apps.{svc_name}.scale.triggers]] or set hpa.min >= 1"
             )
                 if self.autoscaler_engine == "keda"
                 else (

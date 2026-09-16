@@ -1,4 +1,4 @@
-def _toml_section(base_path: (str | None), section: str) -> dict {
+def _toml_section(base_path: (str | None), section: str) -> dict[str, any] {
     if not base_path {
         return {};
     }
@@ -20,7 +20,7 @@ def _toml_section(base_path: (str | None), section: str) -> dict {
 
 
 impl promotions_for(base_path: (str | None)) -> dict[str, list[str]] {
-    raw = _toml_section(base_path, 'database').get('indexes') or {};
+    raw: any = _toml_section(base_path, 'database').get('indexes') or {};
     out: dict[str, list[str]] = {};
     for (arch, fields_l) in raw.items() {
         if isinstance(fields_l, list) {
@@ -74,7 +74,10 @@ impl scratch_requested(base_path: (str | None)) -> bool {
         not in ('', '0', 'false', 'no') {
         return True;
     }
-    return bool(base_path) and os.path.abspath(base_path) in _scratch_bases;
+    if not base_path {
+        return False;
+    }
+    return os.path.abspath(base_path) in _scratch_bases;
 }
 
 
@@ -86,7 +89,8 @@ impl scratch_lease(base_path: str) -> ScratchLease {
         _scratch.append(
             ScratchState(
                 database=f"{SCRATCH_PREFIX}{os.getpid()}_{secrets.token_hex(3)}",
-                base_path=base
+                base_path=base,
+                owner_pid=os.getpid()
             )
         );
         atexit.register(drop_scratch_database);
@@ -101,6 +105,10 @@ impl scratch_lease(base_path: str) -> ScratchLease {
 
 impl drop_scratch_database -> None {
     if not _scratch {
+        return;
+    }
+    if _scratch[0].owner_pid != os.getpid() {
+        _scratch.clear();
         return;
     }
     state = _scratch.pop();
@@ -354,7 +362,7 @@ impl Session.get_roots -> Generator[Root, None, None] {
         ];
         root_rows = self.store.load_full(remote);
         for (rid, row) in root_rows.items() {
-            anchor = self._materialize(row, edge_ids=row.adjacency);
+            anchor = self._materialize(row);
             if anchor is not None and isinstance(anchor.archetype, Root) {
                 yield anchor.archetype;
             }
@@ -382,7 +390,7 @@ impl Session.batch_get(ids: list[UUID]) -> dict[UUID, Anchor] {
                 self.read_barrier();
                 loaded = self.store.load_full(missing);
                 for (rid, row) in loaded.items() {
-                    anchor = self._materialize(row, edge_ids=row.adjacency);
+                    anchor = self._materialize(row);
                     if anchor is not None {
                         self._fetch_count += 1;
                         out[rid] = anchor;
@@ -744,16 +752,7 @@ impl Session._flush_locked(full: bool) -> None {
             pending.append((anchor, h));
         }
         if rows or self._deleted {
-            if self.store.txn_isolation() is TxnIsolation.SNAPSHOT_READ_ONLY {
-                if self._ro_units > 0 {
-                    self._raise_ro_retry();
-                }
-                self.store.commit();
-                self._drop_snapshot_reads();
-                self.store.begin(TxnIsolation.SERIALIZABLE);
-            } else {
-                self._ensure_txn();
-            }
+            self.ensure_writable_txn();
         }
         if rows {
             self.store.upsert(rows);
@@ -820,9 +819,8 @@ impl Session._serialize(anchor: Anchor) -> AnchorRow {
 }
 
 
-impl Session._materialize(
-    row: AnchorRow, edge_ids: (list[UUID] | None) = None
-) -> (Anchor | None) {
+impl Session._materialize(row: AnchorRow) -> (Anchor | None) {
+    import from functools { partial }
     import from jaclang.data.serializer { Serializer }
     existing = self.__mem__.get(row.id);
     if existing is not None and existing.is_populated() {
@@ -843,23 +841,11 @@ impl Session._materialize(
         return None;
     }
     anchor: Anchor = got;
-    if isinstance(anchor, NodeAnchor) and self.store is not None {
-        adj = edge_ids if edge_ids is not None else [];
-        live = [
-            i
-            for i in adj
-            if i not in self._deleted
-        ];
-        edges = [];
-        for eid in live {
-            if (stub := Serializer._id_to_stub(EdgeAnchor, str(eid))) is not None
-                and isinstance(stub, EdgeAnchor) {
-                edges.append(stub);
-            }
-        }
-        anchor.edges = edges;
-    }
     if isinstance(anchor, NodeAnchor) {
+        if self.store is not None {
+            anchor.__dict__.pop('edges', None);
+            anchor.__dict__['_edge_loader'] = partial(self._load_edges, anchor);
+        }
         anchor.version = row.version;
     }
     self._version_seen[row.id] = row.version;
@@ -873,6 +859,61 @@ impl Session._materialize(
     return anchor;
 }
 
+
+impl Session._load_edges(nd: NodeAnchor) -> list[EdgeAnchor] {
+    import from jaclang.data.serializer { Serializer }
+    loaded = nd.__dict__.get('edges');
+    if loaded is not None {
+        return loaded;
+    }
+    ids: list[UUID] = [];
+    if self.store is not None and nd.id is not None {
+        self.read_barrier();
+        after: (tuple[int, UUID] | None) = None;
+        while True {
+            page = self.store.adjacency(nd.id, after, EDGE_PAGE);
+            for (seq, eid) in page {
+                if eid not in self._deleted {
+                    ids.append(eid);
+                }
+            }
+            if len(page) < EDGE_PAGE {
+                break;
+            }
+            after = page[-1];
+        }
+    }
+    edges: list[EdgeAnchor] = [];
+    for eid in ids {
+        stub = Serializer._id_to_stub(EdgeAnchor, str(eid));
+        if isinstance(stub, EdgeAnchor) {
+            edges.append(stub);
+        }
+    }
+    nd.__dict__['edges'] = edges;
+    nd.__dict__['_initial_edge_ids'] = frozenset(ids);
+    nd.__dict__.pop('_edge_loader', None);
+    return edges;
+}
+
+
+impl Session.ensure_writable_txn -> None {
+    with self._lock {
+        if self.store is None {
+            return;
+        }
+        if self.store.txn_isolation() is TxnIsolation.SNAPSHOT_READ_ONLY {
+            if self._ro_units > 0 {
+                self._raise_ro_retry();
+            }
+            self.store.commit();
+            self._drop_snapshot_reads();
+            self.store.begin(TxnIsolation.SERIALIZABLE);
+        } elif not self.store.in_txn() {
+            self.store.begin(TxnIsolation.SERIALIZABLE);
+        }
+    }
+}
 
 impl Session.run_request(body: Callable) -> any {
     attempt = 0;

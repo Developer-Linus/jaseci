@@ -4,7 +4,7 @@ import from jaclang.comptime { name as ct_name }
 
 comptime SPEC_FIX: CommandSpec = CommandSpec(
          name="fix",
-         help="Mechanical source migrations. 'jac fix placement' strips removed sv/cl/na placement markers, renames retired .sv.jac/.cl.jac/.na.jac files, preserves service topology as [scale.microservices.routes] entries, and pins any element whose inferred placement differs from its old marker via [placement.pins]",
+         help="Mechanical source migrations. 'jac fix placement' strips removed sv/cl/na placement markers, renames retired .sv.jac/.cl.jac/.na.jac files, declares each imported service module as an [apps.<name>] service app (kind, entry-point, and its old route), and pins any element whose inferred placement differs from its old marker via [placement.pins]",
          args=[
              Arg.create(
                  "target",
@@ -44,5 +44,5 @@ comptime SPEC_FIX: CommandSpec = CommandSpec(
      );
 
 def fix(
-    target: str, paths: list, dry_run: bool = False, strip_only: bool = False
+    target: str, paths: list[str], dry_run: bool = False, strip_only: bool = False
 ) -> int;

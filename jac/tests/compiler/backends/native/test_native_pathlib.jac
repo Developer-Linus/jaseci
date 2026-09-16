@@ -12,9 +12,10 @@ including an `obj` carrying a `Path`-typed `has` field with a `Path("")`
 default -- the shape `compiler/types/types.jac` declares.
 """
 
+import from tests.support { jac_command }
+
 import os;
 import subprocess;
-import sys;
 import tempfile;
 import from pathlib { Path }
 
@@ -23,14 +24,13 @@ glob FIXTURES = str(Path(__file__).resolve().parent / "fixtures");
 def _sv_run(fixture: str) -> str {
     src = os.path.join(FIXTURES, fixture);
     proc = subprocess.run(
-        [sys.executable, "-m", "jaclang", "run", src],
+        jac_command("run", "--backend", "python", src),
         capture_output=True,
         text=True,
         timeout=900
     );
-    assert proc.returncode == 0 , f"sv run failed: {proc.stderr[-800:]
-        if proc.stderr
-        else '(empty)'}";
+    assert proc.returncode == 0 , "sv run failed: "
+        + (proc.stdout + proc.stderr)[-3000:];
     return proc.stdout;
 }
 
@@ -38,14 +38,13 @@ def _na_run(fixture: str) -> str {
     src = os.path.join(FIXTURES, fixture);
     out_bin = os.path.join(tempfile.mkdtemp(), "probe.bin");
     comp = subprocess.run(
-        [sys.executable, "-m", "jaclang", "nacompile", src, "-o", out_bin],
+        jac_command("build", "--native", src, "-o", out_bin),
         capture_output=True,
         text=True,
         timeout=900
     );
-    assert comp.returncode == 0 , f"nacompile failed: {comp.stderr[-800:]
-        if comp.stderr
-        else '(empty)'}";
+    assert comp.returncode == 0 , "nacompile failed: "
+        + (comp.stdout + comp.stderr)[-3000:];
     proc = subprocess.run([out_bin], capture_output=True, text=True, timeout=120);
     assert proc.returncode == 0 , f"binary failed: {proc.stderr[-400:]
         if proc.stderr
@@ -75,7 +74,7 @@ test "a Path member outside the provided surface fails the native compile" {
     src = os.path.join(FIXTURES, "pathlib_unsupported.jac");
     out_bin = os.path.join(tempfile.mkdtemp(), "nope.bin");
     comp = subprocess.run(
-        [sys.executable, "-m", "jaclang", "nacompile", src, "-o", out_bin],
+        jac_command("build", "--native", src, "-o", out_bin),
         capture_output=True,
         text=True,
         timeout=900

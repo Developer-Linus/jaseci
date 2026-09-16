@@ -1,4 +1,5 @@
 import asyncio;
+import type from jaclang.compiler.passes.context { Alert }
 import logging;
 import os;
 import sys;
@@ -14,7 +15,7 @@ import from jaclang.compiler.frontend.constant { SymbolType }
 import from jaclang.compiler.driver.program { JacProgram }
 import from jaclang.cli.console { console }
 import from jaclang.compiler.driver.bccache { discover_base_file, discover_annex_files }
-import from jaclang.compiler.types.type_utils { doc_of_sym, get_completion_items }
+import from jaclang.lsp.server.utils { doc_of_sym, get_completion_items }
 import from jaclang.compiler.types.types {
     ClassType,
     FunctionType,
@@ -35,8 +36,13 @@ import from . { utils }
 import from .module_manager { ModuleManager }
 import from .rwlock { ReadWriteLock }
 
+glob LSP_SHARED_APP_LIMIT: int = 4;
+
 def _uri_of(path: str) -> str;
 def _path_of(uri: str) -> str;
+def _merge_app_alerts(
+    collected: list[tuple[str, list[Alert], list[Alert]]], app_count: int
+) -> tuple[list[Alert], list[Alert]];
 
 obj Task {
     has file_uri: str,
@@ -66,7 +72,7 @@ obj JacLangServer(LanguageServer) {
     def postinit -> None;
     def dispatcher -> None;
 
-    has diagnostics: dict[str, list] { getter; }
+    has diagnostics: dict[str, list[lspt.Diagnostic]] { getter; }
 
     def _clear_alerts_for_file(file_path: str) -> None;
     def update_modules(
@@ -118,6 +124,7 @@ obj JacLangServer(LanguageServer) {
         file_path: str, auto_lint: bool = False
     ) -> list[lspt.TextEdit];
 
+    def get_inlay_hints(file_path: str, range: lspt.Range) -> list[lspt.InlayHint];
     def get_hover_info(
         file_path: str, position: lspt.Position
     ) -> Optional[lspt.Hover];

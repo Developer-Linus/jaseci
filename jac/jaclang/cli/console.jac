@@ -1,7 +1,7 @@
 import os;
 import sys;
 import from contextlib { contextmanager, AbstractContextManager }
-import from typing { cast }
+import from typing { TextIO, cast }
 
 obj Content {
     has text: str;
@@ -17,7 +17,7 @@ obj Span {
 }
 
 obj _Spinner {
-    has text: str,
+    has text: any,
         stream: any,
         frames: list[str],
         style_prefix: str,
@@ -31,7 +31,7 @@ obj _Spinner {
         self._stop = Event();
     }
 
-    def update(text: str = '') {
+    def update(text: any = '') {
         self.text = text;
     }
 
@@ -46,7 +46,8 @@ obj _Spinner {
         idx = 0;
         while not self._stop.is_set() {
             frame = self.frames[idx % len(self.frames)];
-            text = self.text;
+            current = self.text;
+            text = str(current() if callable(current) else current);
             try {
                 width = os.get_terminal_size().columns;
             } except OSError {
@@ -84,7 +85,7 @@ obj _Spinner {
 }
 
 obj _NullStatus {
-    def update(text: str = '') -> None {
+    def update(text: any = '') -> None {
         return;
     }
 
@@ -101,16 +102,19 @@ obj ConsoleRenderer {
     def configure(use_emoji: bool, use_color: bool) -> None;
     def clear_status -> None;
     def emit(spans: list[Span], stream: any = None) -> None;
-    def emit_raw(args: list, stream: any, style: str | None, kwargs: dict) -> None;
+    def emit_raw(
+        args: list[object], stream: any, style: str | None, kwargs: dict[str, any]
+    ) -> None;
+
     def header(title: str, version: str | None = None) -> None;
-    def urls(items: list, symbol: str = '') -> None;
+    def urls(items: list[tuple[str, str]], symbol: str = '') -> None;
     def next_steps(steps: list[str], title: str = 'Next Steps') -> None;
     def table(
         headers: list[str], rows: list[list[str]], title: str | None = None
     ) -> None;
 
     @contextmanager
-    def status_ctx(args: list, kwargs: dict) -> object;
+    def status_ctx(args: list[object], kwargs: dict[str, any]) -> object;
 
     @contextmanager
     def spinner_ctx(text: str) -> object;
@@ -151,7 +155,7 @@ obj JacConsole {
 glob _console_instance: JacConsole | None = None;
 
 def _get_console -> JacConsole;
-def use_line_buffered_output(streams: (list[any] | None) = None) -> int;
+def use_line_buffered_output(streams: (list[TextIO] | None) = None) -> int;
 
 class _ConsoleProxy {
     def __getattr__(self: _ConsoleProxy, name: str) -> any {

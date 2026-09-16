@@ -35,7 +35,12 @@ def _cs(
 }
 
 def _pod(
-    name: str, app: str, phase: str, inits: list, mains: list, deleting: bool = False
+    name: str,
+    app: str,
+    phase: str,
+    inits: list[any],
+    mains: list[any],
+    deleting: bool = False
 ) -> object {
     return SimpleNamespace(
         metadata=SimpleNamespace(
@@ -53,7 +58,7 @@ def _pod(
     );
 }
 
-def _bundle(deploy_name: str, app: str) -> dict {
+def _bundle(deploy_name: str, app: str) -> dict[str, any] {
     return {
         "deployments": {
             app: {
@@ -119,7 +124,7 @@ def _apis(ready: int, pods: list) -> tuple {
 }
 
 def _run(
-    target: any, bundle: dict, apps: object, core: object, timeout: int
+    target: any, bundle: dict[str, any], apps: object, core: object, timeout: int
 ) -> object {
     err = None;
     with unittest.mock.patch.object(
@@ -448,6 +453,40 @@ test "a KEDA min=0 deployment settled at zero completes without timing out" {
     assert err is None , (
         f"a scale-to-zero-eligible deployment settled at zero should not "
         f"time out: {err}"
+    );
+}
+
+
+test "a KEDA min=0 deployment not yet reconciled is not treated as settled zero" {
+    target = KubernetesTarget(
+        config=KubernetesConfig(
+            app_name="jac-shop", namespace="ns", autoscaler_engine="keda"
+        )
+    );
+    (apps, core) = _apis(0, []);
+    apps.read_namespaced_deployment.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(generation=1),
+        spec=SimpleNamespace(replicas=1),
+        status=SimpleNamespace(
+            observed_generation=0,
+            replicas=0,
+            updated_replicas=0,
+            available_replicas=0,
+            ready_replicas=0
+        )
+    );
+    bundle = _bundle_with_autoscaler(
+        "order-service-deployment",
+        "order-service",
+        {"min": 0, "max": 3, "triggers": [{"type": "cron", "metadata": {}}]}
+    );
+
+    err = _run(target, bundle, apps, core, 15);
+
+    assert err is not None and "timed out" in str(err) , (
+        f"a Deployment whose controller has not yet observed the current "
+        f"generation must not be treated as intentionally parked at zero, "
+        f"even though its status counters default to 0: {err}"
     );
 }
 

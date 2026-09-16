@@ -45,6 +45,26 @@ obj CompiledRoute {
     }
 }
 
+def path_param_names(path: (str | None)) -> list[str] {
+    if not path {
+        return [];
+    }
+    names: list[str] = [];
+    for segment in path.split('/') {
+        if segment.startswith('{') and segment.endswith('}') and len(segment) > 2 {
+            raw = segment[1:-1].strip();
+            if raw {
+                name = raw.split(':', 1)[0].strip();
+                if name and name not in names {
+                    names.append(name);
+                }
+            }
+        }
+    }
+    return names;
+}
+
+
 def compile_route(path: str) -> CompiledRoute {
     route = CompiledRoute();
     route.trailing_slash = len(path) > 1 and path.endswith('/');
@@ -70,7 +90,7 @@ def compile_route(path: str) -> CompiledRoute {
     return route;
 }
 
-def route_sort_key(route: CompiledRoute) -> tuple {
+def route_sort_key(route: CompiledRoute) -> tuple[int, int, int, str] {
     path = '';
     if route.endpoint is not None {
         path = route.endpoint.path;

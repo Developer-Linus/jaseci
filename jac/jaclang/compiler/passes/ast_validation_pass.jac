@@ -1,5 +1,7 @@
-import keyword;
 import from jaclang.compiler.frontend.unitree {
+    Module,
+    TreeWalker,
+    UniNode,
     Ability,
     ArchHas,
     Archetype,
@@ -34,7 +36,6 @@ import from jaclang.compiler.frontend.unitree {
     ListVal,
     Literal,
     MatchStmt,
-    Module,
     ModuleCode,
     MultiString,
     Name,
@@ -46,13 +47,14 @@ import from jaclang.compiler.frontend.unitree {
     TryStmt,
     TupleVal,
     UnaryExpr,
-    UniNode,
     WhileStmt,
     WithStmt,
     YieldExpr
 }
+import from jaclang.compiler.passes.context { CompileContext }
+import keyword;
 import from jaclang.compiler.frontend.constant { CodeContext, Tokens as Tok }
-import from jaclang.compiler.passes.uni_pass { UniPass }
+
 import from jaclang.compiler.frontend.diagnostics {
     E0010,
     E0020,
@@ -89,7 +91,18 @@ import from jaclang.compiler.frontend.diagnostics {
     W2021
 }
 
-walker ASTValidationPass(UniPass) {
+walker ASTValidationPass(TreeWalker) {
+    can enter_walk with UniNode entry {
+        self.ctx.enter_node(here);
+    }
+
+    can exit_walk with UniNode exit {
+        self.ctx.exit_node(here);
+    }
+
+    has ctx: CompileContext,
+        module: Module;
+
     can enter_try_stmt with TryStmt entry;
     can enter_match_stmt with MatchStmt entry;
     can enter_module_code with ModuleCode entry;
@@ -109,8 +122,8 @@ walker ASTValidationPass(UniPass) {
     can enter_has_var with HasVar entry;
     can enter_expr_as_item with ExprAsItem entry;
     can enter_delete_stmt with DeleteStmt entry;
-    def _reject_non_bindable(target: object) -> None;
-    def _reject_undeletable(target: object) -> None;
+    def _reject_non_bindable(target: UniNode) -> None;
+    def _reject_undeletable(target: UniNode) -> None;
     can enter_param_var with ParamVar entry;
     can enter_yield_expr with YieldExpr entry;
     can enter_ctrl_stmt with CtrlStmt entry;

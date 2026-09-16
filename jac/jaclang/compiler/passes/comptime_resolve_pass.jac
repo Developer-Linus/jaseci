@@ -1,6 +1,5 @@
 import from jaclang.runtime.osp_kernel { osp_skip_rest }
 import from jaclang.compiler.passes.type_checker_pass { TypeCheckPass }
-import from jaclang.compiler.driver.program { JacProgram }
 import from jaclang.compiler.frontend.unitree {
     Ability,
     AssertStmt,
@@ -75,40 +74,36 @@ walker ComptimeResolvePass(TypeCheckPass) {
     has _armed: bool = False,
         _keep: set[int] = set();
 
-    static has PROVIDES: tuple = ('comptime', ),
-        HOST_PASS: bool = True;
+    static has HOST_PASS: bool = True;
 
-    def init(prog: JacProgram, **kwargs: any) {
-        self._keep = set();
-        self._armed = False;
-        super.init(prog, **kwargs);
-    }
-
-    override def before_pass {
-        self._keep = comptime_reach(self.ir_in);
-        self._armed = bool(self._keep) and not self.ir_in.ct_resolved;
+    can prepare with entry {
+        if self.ctx.nested_depth {
+            return;
+        }
+        self._keep = comptime_reach(self.module);
+        self._armed = bool(self._keep) and not self.module.ct_resolved;
         if self._armed {
-            super.before_pass();
+            self._insert_builtin_symbols();
+            self._install_client_state_setters();
         }
     }
 
-    override def after_pass -> None {
+    can finish with exit {
+        if self.ctx.nested_depth {
+            return;
+        }
         if not self._armed {
             return;
         }
-        self.ir_in.ct_resolved = True;
-        self.evaluator.ct_quiet = self._prev_ct_quiet;
-        if self.evaluator._pass is self {
-            self.evaluator._pass = self._prev_eval_pass;
-        }
+        self.module.ct_resolved = True;
     }
 
     can enter_walk with UniNode entry {
-        if self.is_canceled() or here.ct_pruned {
+        if self.ctx.is_canceled() or here.ct_pruned {
             osp_skip_rest();
             return;
         }
-        self.cur_node = here;
+        self.ctx.current_node = here;
         if not self._armed or id(here) not in self._keep {
             osp_skip_rest();
         }
@@ -119,8 +114,8 @@ walker ComptimeResolvePass(TypeCheckPass) {
             osp_skip_rest();
             return;
         }
-        self.cur_node = here;
-        if self.is_canceled() or not self._armed or id(here) not in self._keep {
+        self.ctx.current_node = here;
+        if self.ctx.is_canceled() or not self._armed or id(here) not in self._keep {
             osp_skip_rest();
         }
     }

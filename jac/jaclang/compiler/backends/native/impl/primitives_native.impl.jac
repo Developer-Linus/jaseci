@@ -1,3 +1,7 @@
+import from jaclang.compiler.frontend.diagnostics { E5092 }
+
+glob SORT_KEY_MSG: str = "comparison requires orderable key values (int, float, bool, str, bytes, tuple, list, set, or frozenset)";
+
 impl NativeIntEmitter.emit_to_bytes(
     self: NativeIntEmitter, ctx: NativeEmitCtx, target: ir.Value, args: list[ir.Value]
 ) -> (ir.Value | None) {
@@ -369,7 +373,7 @@ impl NativeBoolEmitter.emit_op_xor(
 
 impl NativeComplexEmitter._load_parts(
     self: NativeComplexEmitter, ctx: NativeEmitCtx, val: ir.Value
-) -> (tuple | None) {
+) -> (tuple[ir.Value, ir.Value] | None) {
     p = ctx.pass_ref;
     b = get_builder(p);
     i32 = ir.IntType(32);
@@ -902,7 +906,23 @@ impl NativeStrEmitter.emit_rindex(
 impl NativeStrEmitter.emit_startswith(
     self: NativeStrEmitter, ctx: NativeEmitCtx, target: ir.Value, args: list[ir.Value]
 ) -> (ir.Value | None) {
-    if not args {
+    return self._emit_affix(ctx, target, args, suffix=False);
+}
+
+impl NativeStrEmitter.emit_endswith(
+    self: NativeStrEmitter, ctx: NativeEmitCtx, target: ir.Value, args: list[ir.Value]
+) -> (ir.Value | None) {
+    return self._emit_affix(ctx, target, args, suffix=True);
+}
+
+impl NativeStrEmitter._emit_affix(
+    self: NativeStrEmitter,
+    ctx: NativeEmitCtx,
+    target: ir.Value,
+    args: list[ir.Value],
+    suffix: bool
+) -> (ir.Value | None) {
+    if not args or len(args) > 3 {
         return None;
     }
     p = ctx.pass_ref;
@@ -910,32 +930,67 @@ impl NativeStrEmitter.emit_startswith(
     i8p = ir.IntType(8).as_pointer();
     i32 = ir.IntType(32);
     i64 = ir.IntType(64);
-    strncmp_fn = p._get_or_declare_extern("strncmp", i32, [i8p, i8p, i64]);
-    prefix_len = p._call_str_len(b, args[0], name="sw.pfx.len");
-    cmp = b.call(strncmp_fn, [target, args[0], prefix_len], name="sw.cmp");
-    is_zero = b.icmp_signed("==", cmp, ir.Constant(i32, 0), name="sw.eq");
-    return b.zext(is_zero, i64, name="sw.result");
-}
-
-impl NativeStrEmitter.emit_endswith(
-    self: NativeStrEmitter, ctx: NativeEmitCtx, target: ir.Value, args: list[ir.Value]
-) -> (ir.Value | None) {
-    if not args {
+    zero = ir.Constant(i64, 0);
+    candidates: list[ir.Value] = [];
+    if isinstance(args[0].type, ir.LiteralStructType) {
+        for (index, typ) in enumerate(args[0].type.elements) {
+            if typ != i8p {
+                return None;
+            }
+            candidates.append(b.extract_value(args[0], index, name="affix.item"));
+        }
+    } elif args[0].type == i8p {
+        candidates.append(args[0]);
+    } else {
         return None;
     }
-    p = ctx.pass_ref;
-    b = get_builder(p);
-    i32 = ir.IntType(32);
-    i64 = ir.IntType(64);
-    target_len = p._call_str_len(b, target, name="ew.tgt.len");
-    suffix_len = p._call_str_len(b, args[0], name="ew.sfx.len");
-    too_long = b.icmp_unsigned(">", suffix_len, target_len, name="ew.toolong");
-    offset = b.sub(target_len, suffix_len, name="ew.offset");
-    end_ptr = b.gep(target, [offset], name="ew.end.ptr");
-    cmp = p._call_str_cmp(b, end_ptr, args[0], name="ew.cmp");
-    is_match = b.icmp_signed("==", cmp, ir.Constant(i32, 0), name="ew.match");
-    match_i64 = b.zext(is_match, i64, name="ew.match.i64");
-    return b.select(too_long, ir.Constant(i64, 0), match_i64, name="ew.result");
+    for bound in args[1:] {
+        if not isinstance(bound.type, ir.IntType) {
+            return None;
+        }
+    }
+    length = p._call_str_len(b, target, name="affix.length");
+    start = p._coerce_type(args[1], i64) if len(args) > 1 else zero;
+    end = p._coerce_type(args[2], i64) if len(args) > 2 else length;
+    start = b.select(b.icmp_signed("<", start, zero), b.add(start, length), start);
+    start = b.select(b.icmp_signed("<", start, zero), zero, start);
+    end = b.select(b.icmp_signed("<", end, zero), b.add(end, length), end);
+    end = b.select(b.icmp_signed("<", end, zero), zero, end);
+    end = b.select(b.icmp_signed(">", end, length), length, end);
+    available = b.sub(end, start);
+    bounds_ok = b.and_(
+        b.icmp_signed("<=", start, end), b.icmp_signed("<=", start, length)
+    );
+    fn = b.basic_block.function;
+    match_bb = fn.append_basic_block("affix.match");
+    miss = fn.append_basic_block("affix.miss");
+    done = fn.append_basic_block("affix.done");
+    memcmp = p._get_or_declare_extern("memcmp", i32, [i8p, i8p, i64]);
+    for candidate in candidates {
+        size = p._call_str_len(b, candidate, name="affix.size");
+        compare = fn.append_basic_block("affix.compare");
+        next_candidate = fn.append_basic_block("affix.next");
+        fits = b.and_(bounds_ok, b.icmp_signed("<=", size, available));
+        b.cbranch(fits, compare, next_candidate);
+        b.position_at_end(compare);
+        offset = b.sub(end, size) if suffix else start;
+        data = b.gep(target, [offset], name="affix.data");
+        compared = b.call(memcmp, [data, candidate, size]);
+        b.cbranch(
+            b.icmp_signed("==", compared, ir.Constant(i32, 0)), match_bb, next_candidate
+        );
+        b.position_at_end(next_candidate);
+    }
+    b.branch(miss);
+    b.position_at_end(match_bb);
+    b.branch(done);
+    b.position_at_end(miss);
+    b.branch(done);
+    b.position_at_end(done);
+    result = b.phi(i64, name="affix.result");
+    result.add_incoming(ir.Constant(i64, 1), match_bb);
+    result.add_incoming(zero, miss);
+    return result;
 }
 
 impl NativeStrEmitter.emit_replace(
@@ -1150,7 +1205,9 @@ impl NativeStrEmitter.emit_split(
     self: NativeStrEmitter, ctx: NativeEmitCtx, target: ir.Value, args: list[ir.Value]
 ) -> (ir.Value | None) {
     if args {
-        return ctx.pass_ref._codegen_str_split(target, args[0]);
+        return ctx.pass_ref._codegen_str_split(
+            target, args[0], args[1] if len(args) > 1 else None
+        );
     }
     return None;
 }
@@ -1159,7 +1216,9 @@ impl NativeStrEmitter.emit_rsplit(
     self: NativeStrEmitter, ctx: NativeEmitCtx, target: ir.Value, args: list[ir.Value]
 ) -> (ir.Value | None) {
     if args {
-        return ctx.pass_ref._codegen_str_split(target, args[0]);
+        return ctx.pass_ref._codegen_str_split(
+            target, args[0], args[1] if len(args) > 1 else None, True
+        );
     }
     return None;
 }
@@ -2325,7 +2384,7 @@ impl NativeBytesEmitter.emit_decode(
     dec_end = b.gep(new_str, [n], name="dec.end");
     b.store(ir.Constant(ir.IntType(8), 0), dec_end);
 
-    p._stamp_str_len(b, new_str, p._call_str_len_raw(b, new_str, name="dec.len"));
+    p._stamp_str_len(b, new_str, n);
     p._mark_owned(new_str);
     return new_str;
 }
@@ -2661,15 +2720,23 @@ impl NativeListEmitter.emit_extend(
             }
         }
     }
-    elem = b.call(src_helpers["get"], [src, idx], name="ext.elem");
+    elem: ir.Value = b.call(src_helpers["get"], [src, idx], name="ext.elem");
     if elem.type != helpers["elem_type"] {
         elem = p._coerce_type(elem, helpers["elem_type"]);
     }
-    b.call(helpers["append"], [target, elem]);
+    _aos_struct = p._aos_elem_struct(ctx.type_key);
+    b.call(
+        helpers["push"] if _aos_struct is not None else helpers["append"],
+        [target, elem]
+    );
     next_idx = b.add(idx, ir.Constant(i64, 1), name="ext.next");
     idx.add_incoming(next_idx, body_bb);
     b.branch(loop_bb);
     b.position_at_start(done_bb);
+    if _aos_struct is not None and src_helpers is helpers {
+        b.store(ir.Constant(i64, 0), src_len_ptr);
+    }
+    p._release_owned_args(args, op="extend_arg");
     return ir.Constant(i64, 0);
 }
 
@@ -2694,6 +2761,12 @@ impl NativeListEmitter.emit_insert(
         return ir.Constant(i64, 0);
     }
     insert_val = p._coerce_type(args[1], helpers["elem_type"]);
+    _aos_struct = p._aos_elem_struct(ctx.type_key);
+    if _aos_struct is not None {
+        return self._emit_aos_insert(
+            ctx, target, p._coerce_type(insert_idx, i64), insert_val, _aos_struct
+        );
+    }
 
     b.call(helpers["append"], [target, insert_val]);
 
@@ -2735,6 +2808,9 @@ impl NativeListEmitter.emit_remove(
     p = ctx.pass_ref;
     helpers = p.list_helpers.get(ctx.type_key);
     if helpers is None or p._elem_kind(helpers["elem_type"]) == "jacval" {
+        return None;
+    }
+    if p._aos_elem_struct(ctx.type_key) is not None {
         return None;
     }
     b = get_builder(p);
@@ -2841,6 +2917,10 @@ impl NativeListEmitter.emit_pop(
         is_neg = b.icmp_signed("<", raw_idx, ir.Constant(i64, 0), name="pop.idx.neg");
         adj_idx = b.add(raw_idx, cur_len, name="pop.idx.adj");
         pop_idx = b.select(is_neg, adj_idx, raw_idx, name="pop.idx");
+    }
+    _aos_struct = p._aos_elem_struct(ctx.type_key);
+    if _aos_struct is not None {
+        return self._emit_aos_pop(ctx, target, args, _aos_struct);
     }
     popped = b.call(helpers["get"], [target, pop_idx], name="pop.val");
 
@@ -3049,7 +3129,7 @@ impl NativeListEmitter.emit_sort(
     one = ir.Constant(i64, 1);
     elem_type = helpers["elem_type"];
 
-    _kw = ctx?.call_kwargs or {};
+    _kw: dict[str, UniNode] = ctx?.call_kwargs or {};
     _key_node = _kw.get("key");
     _rev_node = _kw.get("reverse");
     _unknown_kw = [
@@ -3058,7 +3138,7 @@ impl NativeListEmitter.emit_sort(
         if k not in ("key", "reverse")
     ];
     if _unknown_kw {
-        p.emit(
+        p.ctx.emit(
             E5092,
             node_override=_key_node or _rev_node,
             kind="sort keyword argument",
@@ -3076,7 +3156,7 @@ impl NativeListEmitter.emit_sort(
             or _key_caps is not None
             or len(_key_val.args) != 1
         ) {
-            p.emit(
+            p.ctx.emit(
                 E5092,
                 node_override=_key_node,
                 kind="sort key",
@@ -3092,6 +3172,9 @@ impl NativeListEmitter.emit_sort(
         if _rev_val is not None {
             rev_i1 = p._to_bool(_rev_val);
         }
+    }
+    if key_fn is None {
+        return self._emit_value_sort(ctx, target, rev_i1);
     }
     len_ptr = b.gep(
         target, [ir.Constant(i32, 0), ir.Constant(i32, 0)], name="sort.len.ptr"
@@ -3134,39 +3217,61 @@ impl NativeListEmitter.emit_sort(
     ej = b.call(helpers["get"], [target, ji], name="sort.ej");
     ej1 = b.call(helpers["get"], [target, j1], name="sort.ej1");
 
-    (cj, cj1) = (ej, ej1);
+    cj: ir.Value = ej;
+    cj1: ir.Value = ej1;
     cmp_type = elem_type;
     if key_fn is not None {
         _kp_type = key_fn.args[0].type;
         cj = b.call(key_fn, [p._coerce_type(ej, _kp_type)], name="sort.kj");
         cj1 = b.call(key_fn, [p._coerce_type(ej1, _kp_type)], name="sort.kj1");
         cmp_type = key_fn.function_type.return_type;
-    }
-    if isinstance(cmp_type, ir.DoubleType) {
-        cmp_gt = b.fcmp_ordered(">", cj, cj1, name="sort.gt");
-        cmp_lt = b.fcmp_ordered("<", cj, cj1, name="sort.lt");
-    } elif isinstance(cmp_type, ir.PointerType) {
-        _i8p_cmp = ir.IntType(8).as_pointer();
-        cmp_result = p._call_str_cmp(
-            b,
-            b.bitcast(cj, _i8p_cmp, name="sort.cj.cast"),
-            b.bitcast(cj1, _i8p_cmp, name="sort.cj1.cast"),
-            name="sort.cmp"
-        );
-        cmp_gt = b.icmp_signed(
-            ">", cmp_result, ir.Constant(ir.IntType(32), 0), name="sort.gt"
-        );
-        cmp_lt = b.icmp_signed(
-            "<", cmp_result, ir.Constant(ir.IntType(32), 0), name="sort.lt"
-        );
-    } else {
-        cmp_gt = b.icmp_signed(">", cj, cj1, name="sort.gt");
-        cmp_lt = b.icmp_signed("<", cj, cj1, name="sort.lt");
+
+        if cj.type != cmp_type {
+            cmp_type = cj.type;
+        }
     }
 
+    cj = p._cast_to_list_elem(b, cj, cmp_type, "sort.cj");
+    cj1 = p._cast_to_list_elem(b, cj1, cmp_type, "sort.cj1");
+    _key_ret = p._sort_key_return_type(_key_node) if key_fn is not None else None;
+    _key_orderable = p._sort_key_orderable(_key_ret);
+    if _key_orderable is False
+        or (_key_orderable is None and not p._sort_key_supported(cmp_type)) {
+        p.ctx.emit(E5092, node_override=_key_node, kind="sort key", name=SORT_KEY_MSG);
+        return None;
+    }
+    _cmp_float = isinstance(cmp_type, (ir.DoubleType, ir.FloatType));
+    _cmp_unsigned = key_fn is not None and p._sort_key_unsigned(_key_node);
+    if _cmp_float {
+        (cj, cj1) = p._promote_to_float(cj, cj1, unsigned=_cmp_unsigned);
+    }
+    _sort_errs = len(p.ctx.errors_had);
+    cmp_gt: (ir.Value | None) = p._emit_comparison(
+        Tok.GT, cj, cj1, _cmp_float, unsigned=_cmp_unsigned, key_ret=_key_ret
+    );
+    cmp_lt: (ir.Value | None) = None;
+    if cmp_gt is not None and rev_i1 is not None {
+        cmp_lt = p._emit_comparison(
+            Tok.LT, cj, cj1, _cmp_float, unsigned=_cmp_unsigned, key_ret=_key_ret
+        );
+    }
+    if cmp_gt is None or (rev_i1 is not None and cmp_lt is None) {
+        if key_fn is not None {
+            p._release_owned_operands(cj, cj1, op="sort_key");
+        }
+        if len(p.ctx.errors_had) == _sort_errs {
+            p.ctx.emit(
+                E5092, node_override=_key_node, kind="sort key", name=SORT_KEY_MSG
+            );
+        }
+        return None;
+    }
     needs_swap = cmp_gt
         if rev_i1 is None
         else b.select(rev_i1, cmp_lt, cmp_gt, name="sort.dir");
+    if key_fn is not None {
+        p._release_owned_operands(cj, cj1, op="sort_key");
+    }
     b.cbranch(needs_swap, swap_bb, no_swap);
 
     b.position_at_start(swap_bb);
@@ -3186,6 +3291,154 @@ impl NativeListEmitter.emit_sort(
     oi.add_incoming(next_oi, outer_next);
     b.branch(outer_bb);
     b.position_at_start(done_bb);
+    return ir.Constant(i64, 0);
+}
+
+impl NativeListEmitter._emit_value_sort(
+    self: NativeListEmitter,
+    ctx: NativeEmitCtx,
+    target: ir.Value,
+    reverse: (ir.Value | None)
+) -> ir.Value {
+    p = ctx.pass_ref;
+    b = get_builder(p);
+    i32 = ir.IntType(32);
+    i64 = ir.IntType(64);
+    i8p = ir.IntType(8).as_pointer();
+    zero = ir.Constant(i64, 0);
+    one = ir.Constant(i64, 1);
+    length = b.load(b.gep(target, [ir.Constant(i32, 0), ir.Constant(i32, 0)]));
+    data = b.load(b.gep(target, [ir.Constant(i32, 0), ir.Constant(i32, 2)]));
+    assert isinstance(data.type, ir.PointerType) and not data.type.is_opaque;
+    elem_type = data.type.pointee;
+    itemsize = p._abi_sizeof(elem_type);
+    fn = b.basic_block.function;
+    allocate = fn.append_basic_block("sort.allocate");
+    outer = fn.append_basic_block("sort.merge.pass");
+    pass_start = fn.append_basic_block("sort.merge.start");
+    pair = fn.append_basic_block("sort.merge.pair");
+    pair_start = fn.append_basic_block("sort.merge.pair.start");
+    merge = fn.append_basic_block("sort.merge.item");
+    left_check = fn.append_basic_block("sort.merge.left.check");
+    right_check = fn.append_basic_block("sort.merge.right.check");
+    compare = fn.append_basic_block("sort.merge.compare");
+    take_left = fn.append_basic_block("sort.merge.left");
+    take_right = fn.append_basic_block("sort.merge.right");
+    advance = fn.append_basic_block("sort.merge.advance");
+    pair_done = fn.append_basic_block("sort.merge.pair.done");
+    pass_done = fn.append_basic_block("sort.merge.pass.done");
+    publish = fn.append_basic_block("sort.publish");
+    done = fn.append_basic_block("sort.done");
+    width_slot = p._entry_alloca(i64, "sort.width");
+    base_slot = p._entry_alloca(i64, "sort.base");
+    left_slot = p._entry_alloca(i64, "sort.left");
+    right_slot = p._entry_alloca(i64, "sort.right");
+    output_slot = p._entry_alloca(i64, "sort.output");
+    source_slot = p._entry_alloca(data.type, "sort.source");
+    target_slot = p._entry_alloca(data.type, "sort.target");
+    b.cbranch(b.icmp_unsigned("<=", length, one), done, allocate);
+    b.position_at_start(allocate);
+    too_large = b.icmp_unsigned(
+        ">", length, ir.Constant(i64, 9223372036854775807 // (itemsize * 2))
+    );
+    p._emit_runtime_raise(too_large, "MemoryError", "sort workspace is too large");
+    nbytes = b.mul(length, ir.Constant(i64, itemsize));
+    malloc = p._get_or_declare_extern("malloc", i8p, [i64]);
+    free = p._get_or_declare_extern("free", ir.VoidType(), [i8p]);
+    memcpy = p._get_or_declare_extern("memcpy", i8p, [i8p, i8p, i64]);
+    raw = b.call(malloc, [b.mul(nbytes, ir.Constant(i64, 2))], name="sort.workspace");
+    p._emit_runtime_raise(
+        b.icmp_unsigned("==", raw, ir.Constant(i8p, None)),
+        "MemoryError",
+        "cannot allocate sort workspace"
+    );
+    first = b.bitcast(raw, data.type);
+    second = b.gep(first, [length]);
+    b.call(memcpy, [raw, b.bitcast(data, i8p), nbytes]);
+    b.store(first, source_slot);
+    b.store(second, target_slot);
+    b.store(one, width_slot);
+    b.branch(outer);
+    b.position_at_start(outer);
+    width = b.load(width_slot);
+    b.cbranch(b.icmp_unsigned("<", width, length), pass_start, publish);
+    b.position_at_start(pass_start);
+    b.store(zero, base_slot);
+    b.branch(pair);
+    b.position_at_start(pair);
+    base = b.load(base_slot);
+    b.cbranch(b.icmp_unsigned("<", base, length), pair_start, pass_done);
+    b.position_at_start(pair_start);
+    middle_raw = b.add(base, width);
+    middle = b.select(b.icmp_unsigned("<", middle_raw, length), middle_raw, length);
+    end_raw = b.add(middle, width);
+    end = b.select(b.icmp_unsigned("<", end_raw, length), end_raw, length);
+    source = b.load(source_slot);
+    destination = b.load(target_slot);
+    b.store(base, left_slot);
+    b.store(middle, right_slot);
+    b.store(base, output_slot);
+    b.branch(merge);
+    b.position_at_start(merge);
+    output = b.load(output_slot);
+    b.cbranch(b.icmp_unsigned("<", output, end), left_check, pair_done);
+    b.position_at_start(left_check);
+    left = b.load(left_slot);
+    right = b.load(right_slot);
+    b.cbranch(b.icmp_unsigned(">=", left, middle), take_right, right_check);
+    b.position_at_start(right_check);
+    b.cbranch(b.icmp_unsigned(">=", right, end), take_left, compare);
+    b.position_at_start(compare);
+    a = b.load(b.gep(source, [left]));
+    c = b.load(b.gep(source, [right]));
+    if isinstance(elem_type, (ir.DoubleType, ir.FloatType)) {
+        before = b.fcmp_ordered("<", c, a);
+        after = b.fcmp_ordered("<", a, c);
+    } elif isinstance(elem_type, ir.PointerType) {
+        result = p._call_str_cmp(
+            b, b.bitcast(a, i8p), b.bitcast(c, i8p), name="sort.compare"
+        );
+        before = b.icmp_signed(">", result, ir.Constant(i32, 0));
+        after = b.icmp_signed("<", result, ir.Constant(i32, 0));
+    } else {
+        collection = ctx.receiver_node;
+        if collection is None and ctx.arg_nodes {
+            collection = ctx.arg_nodes[0];
+        }
+        elements = p._nogc_type_arg_mangles(collection);
+        shape = p._scalar_shape_named(elements[0] if elements else ctx.type_key);
+        unsigned = (elements and elements[0] == "bool")
+            or (shape is not None and not shape.signed);
+        before = b.icmp_unsigned("<", c, a) if unsigned else b.icmp_signed("<", c, a);
+        after = b.icmp_unsigned("<", a, c) if unsigned else b.icmp_signed("<", a, c);
+    }
+    choose_right = before if reverse is None else b.select(reverse, after, before);
+    b.cbranch(choose_right, take_right, take_left);
+    b.position_at_start(take_left);
+    b.store(b.load(b.gep(source, [left])), b.gep(destination, [output]));
+    b.store(b.add(left, one), left_slot);
+    b.branch(advance);
+    b.position_at_start(take_right);
+    b.store(b.load(b.gep(source, [right])), b.gep(destination, [output]));
+    b.store(b.add(right, one), right_slot);
+    b.branch(advance);
+    b.position_at_start(advance);
+    b.store(b.add(output, one), output_slot);
+    b.branch(merge);
+    b.position_at_start(pair_done);
+    b.store(end, base_slot);
+    b.branch(pair);
+    b.position_at_start(pass_done);
+    previous = b.load(source_slot);
+    b.store(b.load(target_slot), source_slot);
+    b.store(previous, target_slot);
+    b.store(b.mul(width, ir.Constant(i64, 2)), width_slot);
+    b.branch(outer);
+    b.position_at_start(publish);
+    b.call(memcpy, [b.bitcast(data, i8p), b.bitcast(b.load(source_slot), i8p), nbytes]);
+    b.call(free, [raw]);
+    b.branch(done);
+    b.position_at_start(done);
     return ir.Constant(i64, 0);
 }
 
@@ -3282,7 +3535,7 @@ impl NativeDictEmitter.emit_get(
     }
     b = get_builder(p);
     i64 = ir.IntType(64);
-    key = args[0];
+    key = p._coerce_type(args[0], helpers["key_type"]);
     found_i1 = b.call(helpers["contains"], [target, key], name="dget.found");
     func = b.basic_block.function;
     found_bb = func.append_basic_block(name="dget.yes");
@@ -3296,7 +3549,7 @@ impl NativeDictEmitter.emit_get(
     result_type = p._jac_optional_type(val_type) if wrap_optional else val_type;
 
     b.position_at_start(found_bb);
-    val = b.call(helpers["get"], [target, key], name="dget.val");
+    val: ir.Value = b.call(helpers["get"], [target, key], name="dget.val");
     if wrap_optional {
         _tagged = b.insert_value(
             ir.Constant(result_type, None),
@@ -3322,12 +3575,14 @@ impl NativeDictEmitter.emit_get(
     result = b.phi(result_type, name="dget.result");
     result.add_incoming(val, found_bb);
     result.add_incoming(default_val, notfound_bb);
-    if isinstance(val_type, ir.PointerType) {
-        if p.rc_retain_fn is None {
-            p._emit_rc_helpers();
-        }
-        _res_cast = b.bitcast(result, ir.IntType(8).as_pointer(), name="dget.ret.cast");
-        b.call(p.rc_retain_fn, [_res_cast]);
+    retained = b.extract_value(result, 1, name="dget.payload")
+        if wrap_optional
+        else result;
+    p._emit_elem_retain(b, val_type, retained);
+    p._release_owned_args(args, op="dict_get_arg");
+    p._release_owned_args([target], op="dict_get_receiver");
+    if p._elem_kind(val_type) != "raw" {
+        p._mark_owned(result);
     }
     return result;
 }
@@ -3375,7 +3630,7 @@ impl NativeDictEmitter.emit_keys(
     at_end = b.icmp_unsigned(">=", idx, dict_len, name="dkeys.atend");
     b.cbranch(at_end, done_bb, body_bb);
     b.position_at_start(body_bb);
-    key = b.call(helpers["get_key"], [target, idx], name="dkeys.key");
+    key: ir.Value = b.call(helpers["get_key"], [target, idx], name="dkeys.key");
     key = p._cast_to_list_elem(b, key, lhelpers["elem_type"], "dkeys.key");
     b.call(lhelpers["append"], [new_list, key]);
     next_idx = b.add(idx, ir.Constant(i64, 1), name="dkeys.next");
@@ -3429,7 +3684,7 @@ impl NativeDictEmitter.emit_values(
     b.cbranch(at_end, done_bb, body_bb);
     b.position_at_start(body_bb);
     key = b.call(helpers["get_key"], [target, idx], name="dvals.key");
-    val = b.call(helpers["get"], [target, key], name="dvals.val");
+    val: ir.Value = b.call(helpers["get"], [target, key], name="dvals.val");
     val = p._cast_to_list_elem(b, val, lhelpers["elem_type"], "dvals.val");
     b.call(lhelpers["append"], [new_list, val]);
     next_idx = b.add(idx, ir.Constant(i64, 1), name="dvals.next");
@@ -3456,17 +3711,6 @@ impl NativeDictEmitter.emit_items(
 
     tuple_type = ir.LiteralStructType([key_type, val_type]);
 
-    kt_str = "i8p"
-        if isinstance(key_type, ir.PointerType)
-        else ("f64" if isinstance(key_type, ir.DoubleType) else "i64");
-    vt_str = "i8p"
-        if isinstance(val_type, ir.PointerType)
-        else ("f64" if isinstance(val_type, ir.DoubleType) else "i64");
-    tkey = f"{kt_str}.{vt_str}";
-    if tkey not in p.tuple_types {
-        p.tuple_types[tkey] = tuple_type;
-    }
-
     p._emit_list_helpers("ptr", i8p);
     lhelpers = p.list_helpers.get("ptr");
     if lhelpers is None {
@@ -3478,10 +3722,6 @@ impl NativeDictEmitter.emit_items(
         target, [ir.Constant(i32, 0), ir.Constant(i32, 0)], name="ditems.len.ptr"
     );
     dict_len = b.load(len_ptr, name="ditems.len");
-
-    null_ptr = ir.Constant(tuple_type.as_pointer(), None);
-    size_gep = b.gep(null_ptr, [ir.Constant(i32, 1)], name="ditems.sizeof.gep");
-    tup_size = b.ptrtoint(size_gep, i64, name="ditems.sizeof");
 
     func = b.basic_block.function;
     entry_bb = b.basic_block;
@@ -3499,21 +3739,15 @@ impl NativeDictEmitter.emit_items(
     key = b.call(helpers["get_key"], [target, idx], name="ditems.key");
     val = b.call(helpers["get"], [target, key], name="ditems.val");
 
-    raw = b.call(p.rc_alloc_fn, [tup_size], name="ditems.alloc");
-    tup_ptr = b.bitcast(raw, tuple_type.as_pointer(), name="ditems.tup");
-    k_ptr = b.gep(
-        tup_ptr, [ir.Constant(i32, 0), ir.Constant(i32, 0)], name="ditems.k.ptr"
-    );
-    v_ptr = b.gep(
-        tup_ptr, [ir.Constant(i32, 0), ir.Constant(i32, 1)], name="ditems.v.ptr"
-    );
-    b.store(key, k_ptr);
-    b.store(val, v_ptr);
-
-    tup_i8p = b.bitcast(tup_ptr, i8p, name="ditems.i8p");
+    pair: ir.Value = ir.Constant(tuple_type, ir.Undefined);
+    pair = b.insert_value(pair, key, 0, name="ditems.key.field");
+    pair = b.insert_value(pair, val, 1, name="ditems.val.field");
+    boxed = p._box_value_tuple(pair);
+    tup_i8p = b.bitcast(boxed, i8p, name="ditems.i8p");
     b.call(lhelpers["append"], [new_list, tup_i8p]);
+    p._emit_rc_release_simple(boxed, op="dict_items", loc="");
     next_idx = b.add(idx, ir.Constant(i64, 1), name="ditems.next");
-    idx.add_incoming(next_idx, body_bb);
+    idx.add_incoming(next_idx, b.basic_block);
     b.branch(loop_bb);
     b.position_at_start(done_bb);
     return new_list;
@@ -3531,7 +3765,7 @@ impl NativeDictEmitter.emit_pop(
         return None;
     }
     b = get_builder(p);
-    key = args[0];
+    key = p._coerce_type(args[0], helpers["key_type"]);
     val_type = helpers["val_type"];
     has_default = len(args) >= 2;
 
@@ -3568,6 +3802,7 @@ impl NativeDictEmitter.emit_pop(
     result = b.phi(val_type, name="dpop.result");
     result.add_incoming(popped_val, _found_pred);
     result.add_incoming(default_val, _notfound_pred);
+    p._release_owned_args([key], op="dict_method_key");
     return result;
 }
 
@@ -3583,11 +3818,12 @@ impl NativeDictEmitter.emit_remove(
         return None;
     }
     b = get_builder(p);
-    key = args[0];
+    key = p._coerce_type(args[0], helpers["key_type"]);
     found_i1 = b.call(helpers["contains"], [target, key], name="drem.has");
     _not_found = b.not_(found_i1, name="drem.miss");
     p._emit_runtime_raise(_not_found, "KeyError", "key not found");
     b.call(helpers["remove"], [target, key]);
+    p._release_owned_args([key], op="dict_method_key");
     return None;
 }
 
@@ -3616,7 +3852,7 @@ impl NativeDictEmitter.emit_popitem(
     last_idx = b.sub(dict_len, ir.Constant(i64, 1), name="dpi.last");
     last_key = b.call(helpers["get_key"], [target, last_idx], name="dpi.key");
 
-    last_key_out = last_key;
+    last_key_out: ir.Value = last_key;
     if isinstance(key_type, ir.PointerType) {
         _i8p_pi = ir.IntType(8).as_pointer();
         if p._nogc_headerless() {
@@ -3679,10 +3915,10 @@ impl NativeDictEmitter.emit_setdefault(
     }
     b = get_builder(p);
     i64 = ir.IntType(64);
-    key = args[0];
+    key = p._coerce_type(args[0], helpers["key_type"]);
     val_type = helpers["val_type"];
     if len(args) >= 2 {
-        default_val = args[1];
+        default_val = p._coerce_type(args[1], val_type);
     } elif p._elem_kind(val_type) != "raw" {
         default_val = ir.Constant(val_type, None);
     } else {
@@ -3708,6 +3944,8 @@ impl NativeDictEmitter.emit_setdefault(
     result = b.phi(val_type, name="sdef.result");
     result.add_incoming(existing, found_bb);
     result.add_incoming(default_val, notfound_bb);
+    p._emit_take_ref(result, op="dict_setdefault_result");
+    p._release_owned_args(args, op="dict_setdefault_arg");
     return result;
 }
 
@@ -3929,7 +4167,7 @@ impl NativeSetEmitter.emit_pop(
     b = get_builder(p);
     last_idx = b.sub(set_len, ir.Constant(i64, 1), name="spop.last");
     last_val = b.call(helpers["get"], [target, last_idx], name="spop.val");
-    out_val = last_val;
+    out_val: ir.Value = last_val;
     if isinstance(elem_type, ir.PointerType) {
         if p._nogc_headerless() {
             if isinstance(elem_type.pointee, ir.IntType)
@@ -4483,7 +4721,7 @@ impl NativeTupleEmitter.emit_op_contains(
 
 impl NativeRangeEmitter._load_range(
     self: NativeRangeEmitter, ctx: NativeEmitCtx, target: ir.Value
-) -> (tuple | None) {
+) -> (tuple[ir.Value, ir.Value, ir.Value] | None) {
     p = ctx.pass_ref;
     b = get_builder(p);
     i32 = ir.IntType(32);
@@ -4704,7 +4942,7 @@ impl NativeBuiltinEmitter.emit_sum(
     i64 = ir.IntType(64);
     list_val = args[0];
 
-    helpers: (dict | None) = None;
+    helpers: (dict[str, any] | None) = None;
     elem_key: (str | None) = None;
     for (lk, lt) in p.list_types.items() {
         if list_val.type == lt.as_pointer() {
@@ -4750,7 +4988,7 @@ impl NativeBuiltinEmitter.emit_sorted(
     p = ctx.pass_ref;
     list_val = args[0];
 
-    helpers: (dict | None) = None;
+    helpers: (dict[str, any] | None) = None;
     elem_key: (str | None) = None;
     for (lk, lt) in p.list_types.items() {
         if list_val.type == lt.as_pointer() {
@@ -4767,7 +5005,11 @@ impl NativeBuiltinEmitter.emit_sorted(
         return None;
     }
     _ctx2 = ctx.__class__(
-        pass_ref=p, type_key=elem_key or "", call_kwargs=(ctx?.call_kwargs or {})
+        pass_ref=p,
+        type_key=elem_key or "",
+        call_kwargs=(ctx?.call_kwargs or {}),
+        arg_nodes=ctx.arg_nodes,
+        call_node=ctx.call_node
     );
 
     sorted_copy = _le.emit_copy(_ctx2, list_val, []);
@@ -4789,7 +5031,7 @@ impl NativeBuiltinEmitter.emit_reversed(
     p = ctx.pass_ref;
     list_val = args[0];
 
-    helpers: (dict | None) = None;
+    helpers: (dict[str, any] | None) = None;
     elem_key: (str | None) = None;
     for (lk, lt) in p.list_types.items() {
         if list_val.type == lt.as_pointer() {
@@ -4849,7 +5091,7 @@ impl NativeBuiltinEmitter.emit_any(
     b = get_builder(p);
     i64 = ir.IntType(64);
     list_val = args[0];
-    helpers: (dict | None) = None;
+    helpers: (dict[str, any] | None) = None;
     for (lk, lt) in p.list_types.items() {
         if list_val.type == lt.as_pointer() {
             helpers = p.list_helpers.get(lk);
@@ -4901,7 +5143,7 @@ impl NativeBuiltinEmitter.emit_all(
     b = get_builder(p);
     i64 = ir.IntType(64);
     list_val = args[0];
-    helpers: (dict | None) = None;
+    helpers: (dict[str, any] | None) = None;
     for (lk, lt) in p.list_types.items() {
         if list_val.type == lt.as_pointer() {
             helpers = p.list_helpers.get(lk);
@@ -5179,7 +5421,13 @@ impl NativeBuiltinEmitter.emit_str(
         "snprintf", ir.IntType(32), [i8p, ir.IntType(64), i8p], var_arg=True
     );
 
-    fmt = p._get_snprintf_fmt("%ld");
+    unsigned = bool(ctx.arg_nodes) and p._is_unsigned_node(ctx.arg_nodes[0]);
+    if isinstance(arg_val.type, ir.IntType) and arg_val.type.width < 64 {
+        arg_val = b.zext(arg_val, ir.IntType(64))
+            if unsigned
+            else b.sext(arg_val, ir.IntType(64));
+    }
+    fmt = p._get_snprintf_fmt("%llu" if unsigned else "%lld");
     fmt_ptr = b.bitcast(fmt, i8p, name="str.fmt.ptr");
     str_n32 = b.call(
         snprintf,
@@ -5333,6 +5581,64 @@ impl NativeBuiltinEmitter.emit_list(
         val = b.extract_value(val, 1, name="l.opt.payload");
     }
 
+    source = ctx.arg_nodes[0] if ctx.arg_nodes else None;
+    if p._tuple_iter_shape(source, val) {
+        sequence = p._tuple_iter_seq(
+            source,
+            val,
+            consume_source=False,
+            element_type=p._list_elem_llvm_of(ctx.call_node),
+            own_elements=True
+        );
+        if sequence is None {
+            return None;
+        }
+        result = sequence[0];
+        if ctx.call_node is not None and not p._container_is_view(ctx.call_node) {
+            p._nogc_stamp_elem_drops(result, p._nogc_type_arg_mangles(ctx.call_node));
+        }
+        return result;
+    }
+
+    if p._jac_iter_type is not None
+        and val.type == p._jac_iter_type.as_pointer()
+        and ctx.arg_nodes {
+        elem_type = p._iter_elem_llvm_of(ctx.arg_nodes[0]);
+        if elem_type is None {
+            return None;
+        }
+        list_type = p._lower_list_for_elem(elem_type);
+        spec = p._spec_from_container_ptr(list_type);
+        if spec is None {
+            return None;
+        }
+        helpers = p.list_helpers.get(spec);
+        if helpers is None {
+            return None;
+        }
+        slot_type = ir.IntType(8).as_pointer()
+            if elem_type == p._str_desc_ty
+            else elem_type;
+        slot = p._entry_alloca(slot_type, "list.iter.element");
+        result = b.call(helpers["new"], [], name="list.iter.result");
+        func = b.basic_block.function;
+        condition = func.append_basic_block("list.iter.next");
+        body = func.append_basic_block("list.iter.append");
+        done = func.append_basic_block("list.iter.done");
+        b.branch(condition);
+        b.position_at_end(condition);
+        available = p._emit_iter_advance(b, val, slot);
+        b.cbranch(available, body, done);
+        b.position_at_end(body);
+        stored_type = helpers["elem_type"];
+        assert isinstance(stored_type, ir.Type);
+        element = p._coerce_type(b.load(slot), stored_type);
+        b.call(helpers["append"], [result, element]);
+        b.branch(condition);
+        b.position_at_end(done);
+        return result;
+    }
+
     for (sk, shelpers) in p.set_helpers.items() {
         stype = p.set_types.get(sk);
         if stype is not None and val.type == stype.as_pointer() {
@@ -5437,8 +5743,21 @@ impl NativeBuiltinEmitter.emit_set(
     for (lk, lhelpers) in p.list_helpers.items() {
         ltype = p.list_types.get(lk);
         if ltype is not None and val.type == ltype.as_pointer() {
-            p._emit_set_helpers(lk, lhelpers["elem_type"]);
-            shelpers = p.set_helpers.get(lk);
+            elem_type = p._list_elem_llvm_of(ctx.arg_nodes[0])
+                if ctx.arg_nodes
+                else None;
+            if elem_type is None {
+                elem_type = lhelpers["elem_type"];
+            }
+            if p._str_desc_ty is not None and elem_type == p._str_desc_ty {
+                elem_type = ir.IntType(8).as_pointer();
+            }
+            if p.jacval_type is not None and elem_type == p.jacval_type {
+                return None;
+            }
+            (key_spec, key_size) = p._hash_key_spec(elem_type);
+            p._emit_set_helpers(key_spec, elem_type, key_size);
+            shelpers = p.set_helpers.get(key_spec);
             if shelpers is None {
                 return None;
             }
@@ -5456,7 +5775,8 @@ impl NativeBuiltinEmitter.emit_set(
             at_end = b.icmp_unsigned(">=", idx, list_len, name="l2s.end");
             b.cbranch(at_end, done_bb, body_bb);
             b.position_at_start(body_bb);
-            elem = b.call(lhelpers["get"], [val, idx], name="l2s.elem");
+            elem: ir.Value = b.call(lhelpers["get"], [val, idx], name="l2s.elem");
+            elem = p._cast_to_list_elem(b, elem, elem_type, "l2s.key");
             b.call(shelpers["add"], [new_set, elem]);
             nidx = b.add(idx, ir.Constant(i64, 1), name="l2s.nidx");
             idx.add_incoming(nidx, body_bb);
@@ -5594,4 +5914,192 @@ impl NativeBuiltinEmitter.emit_complex(
     self: NativeBuiltinEmitter, ctx: NativeEmitCtx, args: list[ir.Value]
 ) -> (ir.Value | None) {
     return None;
+}
+
+
+def _aos_size_of(b: ir.IRBuilder, elem_struct: ir.Type, tag: str) -> ir.Value {
+    i32 = ir.IntType(32);
+    i64 = ir.IntType(64);
+    return b.ptrtoint(
+        b.gep(
+            ir.Constant(elem_struct.as_pointer(), None),
+            [ir.Constant(i32, 1)],
+            name=f"{tag}.szT.p"
+        ),
+        i64,
+        name=f"{tag}.szT"
+    );
+}
+
+def _aos_data_ptr(b: ir.IRBuilder, target: ir.Value, tag: str) -> ir.Value {
+    i32 = ir.IntType(32);
+    return b.load(
+        b.gep(target, [ir.Constant(i32, 0), ir.Constant(i32, 2)], name=f"{tag}.data.p"),
+        name=f"{tag}.data"
+    );
+}
+
+def _aos_memmove(
+    p: NaIRGenPass,
+    b: ir.IRBuilder,
+    data: ir.Value,
+    dst_idx: ir.Value,
+    src_idx: ir.Value,
+    count: ir.Value,
+    sz: ir.Value,
+    tag: str
+) {
+    i8p = ir.IntType(8).as_pointer();
+    i64 = ir.IntType(64);
+    _memmove = p._get_or_declare_extern("memmove", i8p, [i8p, i8p, i64]);
+    b.call(
+        _memmove,
+        [
+            b.bitcast(
+                b.gep(data, [dst_idx], name=f"{tag}.dst"), i8p, name=f"{tag}.dst8"
+            ),
+            b.bitcast(
+                b.gep(data, [src_idx], name=f"{tag}.src"), i8p, name=f"{tag}.src8"
+            ),
+            b.mul(count, sz, name=f"{tag}.bytes")
+        ]
+    );
+}
+
+impl NativeListEmitter._emit_aos_pop(
+    self: NativeListEmitter,
+    ctx: NativeEmitCtx,
+    target: ir.Value,
+    args: list[ir.Value],
+    elem_struct: ir.Type
+) -> ir.Value {
+    p = ctx.pass_ref;
+    b = get_builder(p);
+    i8p = ir.IntType(8).as_pointer();
+    i32 = ir.IntType(32);
+    i64 = ir.IntType(64);
+    helpers = p.list_helpers[ctx.type_key];
+    len_ptr = b.gep(
+        target, [ir.Constant(i32, 0), ir.Constant(i32, 0)], name="pop.len.ptr"
+    );
+    cur_len = b.load(len_ptr, name="pop.len");
+    new_len = b.sub(cur_len, ir.Constant(i64, 1), name="pop.newlen");
+    pop_idx = new_len;
+    if args {
+        raw_idx = p._coerce_type(args[0], i64);
+        is_neg = b.icmp_signed("<", raw_idx, ir.Constant(i64, 0), name="pop.idx.neg");
+        pop_idx = b.select(
+            is_neg, b.add(raw_idx, cur_len, name="pop.idx.adj"), raw_idx, name="pop.idx"
+        );
+    }
+    sz = _aos_size_of(b, elem_struct, "pop");
+    _malloc = p._get_or_declare_extern("malloc", i8p, [i64]);
+    _memcpy = p._get_or_declare_extern("memcpy", i8p, [i8p, i8p, i64]);
+    shell8 = b.call(_malloc, [sz], name="pop.shell8");
+    elem_ptr = b.call(helpers["get"], [target, pop_idx], name="pop.elem");
+    b.call(_memcpy, [shell8, b.bitcast(elem_ptr, i8p, name="pop.elem8"), sz]);
+    data = _aos_data_ptr(b, target, "pop");
+    tail = b.sub(new_len, pop_idx, name="pop.tail");
+    _aos_memmove(
+        p,
+        b,
+        data,
+        pop_idx,
+        b.add(pop_idx, ir.Constant(i64, 1), name="pop.from"),
+        tail,
+        sz,
+        "pop.sh"
+    );
+    b.store(new_len, len_ptr);
+    popped = b.bitcast(shell8, elem_struct.as_pointer(), name="pop.val");
+    p._mark_owned(popped);
+    return popped;
+}
+
+impl NativeListEmitter._emit_aos_del_at(
+    self: NativeListEmitter,
+    ctx: NativeEmitCtx,
+    target: ir.Value,
+    del_idx: ir.Value,
+    elem_struct: ir.Type
+) -> ir.Value {
+    p = ctx.pass_ref;
+    b = get_builder(p);
+    i8p = ir.IntType(8).as_pointer();
+    i32 = ir.IntType(32);
+    i64 = ir.IntType(64);
+    helpers = p.list_helpers[ctx.type_key];
+    len_ptr = b.gep(
+        target, [ir.Constant(i32, 0), ir.Constant(i32, 0)], name="delat.len.ptr"
+    );
+    cur_len = b.load(len_ptr, name="delat.len");
+    new_len = b.sub(cur_len, ir.Constant(i64, 1), name="delat.newlen");
+    _fields_fn = helpers.get("drop_fields");
+    if _fields_fn is not None {
+        elem_ptr = b.call(helpers["get"], [target, del_idx], name="delat.elem");
+        b.call(_fields_fn, [b.bitcast(elem_ptr, i8p, name="delat.elem8")]);
+    }
+    sz = _aos_size_of(b, elem_struct, "delat");
+    data = _aos_data_ptr(b, target, "delat");
+    tail = b.sub(new_len, del_idx, name="delat.tail");
+    _aos_memmove(
+        p,
+        b,
+        data,
+        del_idx,
+        b.add(del_idx, ir.Constant(i64, 1), name="delat.from"),
+        tail,
+        sz,
+        "delat.sh"
+    );
+    b.store(new_len, len_ptr);
+    return ir.Constant(i64, 0);
+}
+
+impl NativeListEmitter._emit_aos_insert(
+    self: NativeListEmitter,
+    ctx: NativeEmitCtx,
+    target: ir.Value,
+    insert_idx: ir.Value,
+    insert_val: ir.Value,
+    elem_struct: ir.Type
+) -> ir.Value {
+    p = ctx.pass_ref;
+    b = get_builder(p);
+    i8p = ir.IntType(8).as_pointer();
+    i32 = ir.IntType(32);
+    i64 = ir.IntType(64);
+    helpers = p.list_helpers[ctx.type_key];
+    b.call(helpers["push"], [target, insert_val]);
+    len_ptr = b.gep(
+        target, [ir.Constant(i32, 0), ir.Constant(i32, 0)], name="ins.len.ptr"
+    );
+    new_len = b.load(len_ptr, name="ins.newlen");
+    last_idx = b.sub(new_len, ir.Constant(i64, 1), name="ins.last");
+    sz = _aos_size_of(b, elem_struct, "ins");
+    data = _aos_data_ptr(b, target, "ins");
+    tail = b.sub(last_idx, insert_idx, name="ins.tail");
+    _aos_memmove(
+        p,
+        b,
+        data,
+        b.add(insert_idx, ir.Constant(i64, 1), name="ins.to"),
+        insert_idx,
+        tail,
+        sz,
+        "ins.sh"
+    );
+    _memcpy = p._get_or_declare_extern("memcpy", i8p, [i8p, i8p, i64]);
+    slot = b.gep(data, [insert_idx], name="ins.slot");
+    b.call(
+        _memcpy,
+        [
+            b.bitcast(slot, i8p, name="ins.slot8"),
+            b.bitcast(insert_val, i8p, name="ins.src8"),
+            sz
+        ]
+    );
+    _free = p._get_or_declare_extern("free", ir.VoidType(), [i8p]);
+    b.call(_free, [b.bitcast(insert_val, i8p, name="ins.shell8")]);
+    return ir.Constant(i64, 0);
 }

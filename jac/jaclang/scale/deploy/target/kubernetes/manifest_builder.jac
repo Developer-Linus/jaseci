@@ -1,11 +1,14 @@
+import from jaclang.scale.runtime.context.util { GATEWAY_NAME, k8s_safe_name }
 import from jaclang.server { sv_client }
+import from jaclang.server.settings { ServeSettings }
 import from jaclang.scale.config.app_config { AppConfig }
 import from jaclang.scale.config.config_loader {
+    GATEWAY_POD_KEYS,
     get_scale_config,
-    load_microservices_config,
-    normalize_microservices_config
+    normalize_gateway_config
 }
-import from jaclang.scale.models.deploy_context { DeployContext }
+import from jaclang.scale.runtime.fleet { FleetSpec, fleet_from_config, solo_fleet }
+import from jaclang.scale.models.deploy_context { DATABASE_URL_ENV, DeployContext }
 import from jaclang.scale.deploy.target.kubernetes.kubernetes_config {
     KubernetesConfig
 }
@@ -20,14 +23,12 @@ import from jaclang.scale.deploy.autoscale.http_activation_config {
 import from enum { StrEnum }
 
 
-glob GATEWAY_NAME: str = "__gateway__",
-     CONFIG_REVISION_ANNOTATION: str = "jac-scale.config-revision",
-     _UVICORN_EXIT_CUSHION_S: int = 5,
-     _RFC1123_MAX_LEN: int = 253,
+glob CONFIG_REVISION_ANNOTATION: str = "jac-scale.config-revision",
+     _EXIT_CUSHION_S: int = 5,
      _CLIENT_BUILD_ATTEMPTS: int = 3,
      _CLIENT_BUILD_RETRY_PAUSE_S: int = 3,
      _DEP_INSTALL_TIMEOUT_S: int = 900,
-     _TRANSIENT_CLIENT_BUILD_MARKERS: tuple = (
+     _TRANSIENT_CLIENT_BUILD_MARKERS: tuple[str, ...] = (
          "dependency installation failed",
          "failed to install dependencies",
          "bun install failed",
@@ -41,7 +42,7 @@ glob GATEWAY_NAME: str = "__gateway__",
          "network request failed",
 
      ),
-     _VITE_BUILD_ENV_FILES: tuple = (
+     _VITE_BUILD_ENV_FILES: tuple[str, ...] = (
          ".env",
          ".env.local",
          ".env.production",
@@ -164,31 +165,6 @@ def _vite_env_keys(base: any) -> dict[str, list[str]] {
 }
 
 
-def k8s_safe_name(svc_name: str) -> str {
-    if svc_name == GATEWAY_NAME {
-        return "gateway";
-    }
-    import re;
-    if "${" in svc_name {
-        raise ValueError(
-            f"'{svc_name}' still contains an unresolved ${{...}} placeholder, so "
-            f"the environment variable it names was not set where this deploy "
-            f"ran. Export it, or replace it with a literal name."
-        );
-    }
-    safe = re.sub(r"[^a-z0-9.-]", "-", svc_name.lower().replace("_", "-"));
-    safe = re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", safe)[:_RFC1123_MAX_LEN];
-    safe = re.sub(r"[^a-z0-9]+$", "", safe);
-    if not safe {
-        raise ValueError(
-            f"'{svc_name}' has no characters usable in a Kubernetes name; names "
-            f"must contain at least one letter or digit."
-        );
-    }
-    return safe;
-}
-
-
 def pdb_spec(
     replica_floor: int, max_unavailable: int, min_available: (int | None) = None
 ) -> dict[str, any] | None {
@@ -199,6 +175,12 @@ def pdb_spec(
         return None;
     }
     return {"maxUnavailable": max_unavailable};
+}
+
+
+def _is_real_trigger_type(trigger_type: any) -> bool {
+    normalized = str(trigger_type or "").strip().lower();
+    return bool(normalized) and normalized not in RESOURCE_ONLY_TRIGGER_TYPES;
 }
 
 
@@ -220,14 +202,14 @@ def is_scale_to_zero_eligible(
     }
 
     return any(
-        str(dict(t).get("type", "")) not in RESOURCE_ONLY_TRIGGER_TYPES
+        _is_real_trigger_type(dict(t).get("type", ""))
         for t in triggers
         if isinstance(t, dict)
     );
 }
 
 
-def _is_named_list(items: list) -> bool {
+def _is_named_list(items: list[object]) -> bool {
     if not items {
         return False;
     }
@@ -257,7 +239,7 @@ def merge_manifest_overlay(base: any, overlay: any) -> any {
         and _is_named_list(overlay)
     ) {
         overlay_by_name = {item["name"]: item for item in overlay};
-        merged_list: list = [];
+        merged_list: list[any] = [];
         for item in base {
             item_name = item["name"];
             if item_name in overlay_by_name {
@@ -308,64 +290,66 @@ obj ManifestBuilder {
         project_dir: str = "",
         _bundle_object_key: str = "",
         _toolchain_object_key: str = "",
-        microservices_config: (dict[str, any] | None) = None,
+        fleet: (FleetSpec | None) = None,
+        gateway_config: (dict[str, any] | None) = None,
+        app_overrides: dict[str, dict[str, any]] = {},
+        client_entry: (str | None) = None,
         dry_run: bool = False,
-        _bundle_services_cache: (dict[str, str] | None) = None;
+        _bundle_files_cache: (dict[str, str] | None) = None,
+        _serve_settings_cache: (ServeSettings | None) = None,
+        _minted_secret: str = "";
 
-    def _ms_cfg -> dict[str, any] {
-        if self.microservices_config is not None {
-            return normalize_microservices_config(
-                self.microservices_config, env_routes_fallback=False
+    def _gateway_cfg -> dict[str, any] {
+        if self.gateway_config is not None {
+            return normalize_gateway_config(self.gateway_config);
+        }
+        return get_scale_config().get_gateway_config();
+    }
+
+    def _project_config -> any {
+        import os;
+        if not self.project_dir or not os.path.isdir(self.project_dir) {
+            return None;
+        }
+        import from jaclang.scale.injector.bundle { _project_config }
+        return _project_config(self.project_dir);
+    }
+
+    def _derive_fleet(app_config: AppConfig) -> FleetSpec {
+        cfg = self._project_config();
+        if cfg is not None and cfg.is_workspace {
+            root_dir = str(cfg.project_root) if cfg.project_root else self.project_dir;
+            fleet = fleet_from_config(
+                cfg,
+                app_config.served_app,
+                project_root=root_dir,
+                relative_to=self.project_dir
+            );
+        } else {
+            name = app_config.app_name or self.k8s_config.app_name;
+            if not name {
+                raise ValueError(
+                    "Cannot name the app's pod: no app_name is set. Set "
+                    "[project].name in jac.toml."
+                );
+            }
+            fleet = solo_fleet(
+                name, app_config.file_name, client=self._has_client_source()
             );
         }
-        return self._with_implicit_solo_route(load_microservices_config());
+        for (app, cfg_over) in self.app_overrides.items() {
+            merged = dict(fleet.overrides.get(app, {}));
+            merged.update(dict(cfg_over) if isinstance(cfg_over, dict) else {});
+            fleet.overrides[app] = merged;
+        }
+        return fleet;
     }
 
-    def _with_implicit_solo_route(ms_cfg: dict[str, any]) -> dict[str, any] {
-        import from jaclang.scale.runtime.routing {
-            resolve_routes,
-            guard_route_name,
-            derive_route_prefix
+    def _fleet(app_config: AppConfig) -> FleetSpec {
+        if self.fleet is None {
+            self.fleet = self._derive_fleet(app_config);
         }
-        try {
-            if resolve_routes(ms_cfg) {
-                return ms_cfg;
-            }
-            name = str(self.k8s_config.app_name or "");
-            if not name {
-                return ms_cfg;
-            }
-            guard_route_name(name);
-            synthesized = dict(ms_cfg);
-            synthesized["routes"] = {name: derive_route_prefix(name)};
-            entry_file = self._solo_entry_file();
-            if entry_file {
-                services = dict(synthesized.get("services", {}));
-                solo_cfg = dict(services.get(name, {}));
-                solo_cfg["file"] = entry_file;
-                services[name] = solo_cfg;
-                synthesized["services"] = services;
-            }
-            return synthesized;
-        } except Exception {
-            return ms_cfg;
-        }
-    }
-
-    def _solo_entry_file(app_config: (AppConfig | None) = None) -> str {
-        if app_config is not None and app_config.file_name {
-            return app_config.file_name;
-        }
-        if not self.project_dir {
-            return "";
-        }
-        try {
-            import from jaclang.scale.injector.bundle { entry_module_rel }
-            rel = entry_module_rel(self.project_dir);
-            return rel.as_posix() if rel is not None else "";
-        } except Exception {
-            return "";
-        }
+        return self.fleet;
     }
 
     def _injector_object_key -> str {
@@ -376,6 +360,8 @@ obj ManifestBuilder {
         import from jaclang.scale.injector.binary_injector { select_injector }
         import from jaclang.scale.injector.pvc_injector { PvcInjector }
         proj = self.project_dir or app_config.code_folder;
+        self.project_dir = proj;
+        fleet = self._fleet(app_config);
         self._build_client_bundle(proj);
         selection = select_injector(
             self.k8s_config.bundle_storage_class,
@@ -384,7 +370,7 @@ obj ManifestBuilder {
             proj,
             dry_run=self.dry_run,
             access_mode=self.k8s_config.bundle_access_mode,
-            ms_config=self._ms_cfg()
+            fleet=fleet
         );
         injector: PvcInjector = selection[0];
         self._toolchain_object_key = str(selection[1]);
@@ -433,19 +419,22 @@ obj ManifestBuilder {
         }
         import from jaclang.scale.runtime.context.util { jac_executable }
         client_entry = self._client_entry();
+        if client_entry
+            and not self._declared_client_entry()
+            and not self._has_client_source() {
+            client_entry = "";
+        }
         if not client_entry {
-            disabled = self._client_entry_setting()[2];
-            if disabled {
+            if self.client_entry is not None {
                 console.print(
-                    "[scale.microservices.client] entry = false is set; "
+                    "The deploy declares no client entry (client_entry = \"\"); "
                     "skipping the client build."
                 );
             } else {
                 console.print(
-                    "[scale.microservices.client] entry is unset and the "
-                    "project has no client source (no pages/ or components/ "
-                    "directory, no [client] table in jac.toml); skipping the "
-                    "client build."
+                    "The served app has no client target and the project has no "
+                    "client source (no pages/ or components/ directory, no "
+                    "[client] table in jac.toml); skipping the client build."
                 );
             }
             return;
@@ -458,34 +447,33 @@ obj ManifestBuilder {
             } except ValueError {
                 raise ValueError(
                     f"The client entry '{client_entry}' is outside the project "
-                    f"tree, so the bundle cannot ship it. Point "
-                    f"[scale.microservices.client] entry at a path relative to "
-                    f"the project root."
+                    f"tree, so the bundle cannot ship it. Point the served app's "
+                    f"entry-point at a path inside the project root."
                 );
             }
         }
         if ".." in entry_rel.parts {
             raise ValueError(
                 f"The client entry '{client_entry}' reaches outside the project "
-                f"tree, so the bundle cannot ship it. Point "
-                f"[scale.microservices.client] entry at a path relative to "
-                f"the project root."
+                f"tree, so the bundle cannot ship it. Point the served app's "
+                f"entry-point at a path inside the project root."
             );
         }
         if not (base / entry_rel).is_file() {
             if self._declared_client_entry() {
                 raise ValueError(
-                    f"The client entry '{client_entry}' set in "
-                    f"[scale.microservices.client] does not exist under "
-                    f"{base}, so the deploy would ship a gateway with no client "
-                    f"to serve. Fix the entry path, or set entry = false to "
-                    f"deploy without a client."
+                    f"The client entry '{client_entry}' does not exist under "
+                    f"{base}, so the deploy would ship a served app with no "
+                    f"client to serve. Fix the app's entry-point, or set "
+                    f"client_entry = \"\" to deploy without a client."
                 );
             }
             console.print(
                 f"No client entry is declared and '{client_entry}' does not "
-                f"exist; skipping the client build. Set "
-                f"[scale.microservices.client] entry to build one."
+                f"exist; skipping the client build. Give the served app a client "
+                f"by making its kind one that ships a client (web-app, "
+                f"web-static, desktop, or mobile under [project] or "
+                f"[apps.<name>]) to build one."
             );
             return;
         }
@@ -495,9 +483,8 @@ obj ManifestBuilder {
                 f"The client entry '{entry_rel.as_posix()}' never ships: "
                 f"{excluded.exclusion_reason(entry_rel)}. The client build runs "
                 f"on exactly what the bundle ships, so it cannot build from "
-                f"this file. Drop the exclusion, or point "
-                f"[scale.microservices.client] entry at a module the bundle "
-                f"ships."
+                f"this file. Drop the exclusion, or point the served app's "
+                f"entry-point at a module the bundle ships."
             );
         }
         for (env_name, keys) in _vite_env_keys(base).items() {
@@ -528,9 +515,11 @@ obj ManifestBuilder {
         }
         stage_root = _stage_app(base, sanitized_jac_toml(base));
         stage = str(stage_root / "app");
-        dist = os.path.join(stage, ".jac", "client", "dist");
+        dist_candidates = self._client_dist_candidates(stage, entry_rel);
         try {
-            shutil.rmtree(dist, ignore_errors=True);
+            for stale in dist_candidates {
+                shutil.rmtree(stale, ignore_errors=True);
+            }
             dep_error = self._install_app_deps(stage, jac_bin, jac_env);
             if dep_error {
                 console.warning(
@@ -548,7 +537,7 @@ obj ManifestBuilder {
                 attempt += 1;
                 try {
                     result = subprocess.run(
-                        [jac_bin, "build", entry_rel.as_posix(), "--client", "web"],
+                        [jac_bin, "build", "--as", "client", entry_rel.as_posix()],
                         cwd=stage,
                         capture_output=True,
                         text=True,
@@ -602,11 +591,20 @@ obj ManifestBuilder {
                     f"redeploy.\n{tail}{cause}{parked}"
                 );
             }
-            if not os.path.isfile(os.path.join(dist, "index.html")) {
+            dist = "";
+            for candidate in dist_candidates {
+                if os.path.isfile(os.path.join(candidate, "index.html")) {
+                    dist = candidate;
+                    break;
+                }
+            }
+            if not dist {
+                looked = ", ".join(
+                    [os.path.relpath(d, stage) for d in dist_candidates]
+                );
                 raise RuntimeError(
-                    f"client build produced no index.html under "
-                    f".jac/client/dist ({client_entry}); the gateway would "
-                    f"have nothing to serve."
+                    f"client build produced no index.html under {looked} "
+                    f"({client_entry}); the gateway would have nothing to serve."
                 );
             }
             target = os.path.join(project_dir, ".jac", "client", "dist");
@@ -627,9 +625,28 @@ obj ManifestBuilder {
         console.print("Client bundle built; shipping it to the gateway pod.");
     }
 
+    def _client_dist_candidates(stage: str, entry_rel: any) -> list[str] {
+        import os;
+        client_dir = os.path.join(stage, ".jac", "client");
+        candidates: list[str] = [];
+        cfg = self._project_config();
+        if cfg is not None {
+            import from jaclang.project.client_paths { client_workspace_app }
+            app = client_workspace_app(
+                cfg, os.path.join(self.project_dir, entry_rel.as_posix())
+            );
+            if app is not None {
+                candidates.append(os.path.join(client_dir, app.name, "dist"));
+            }
+        }
+        candidates.append(os.path.join(client_dir, "dist"));
+        return candidates;
+    }
+
     def generate_manifests(app_config: AppConfig, image: str) -> dict[str, any] {
         self.project_dir = self.project_dir or app_config.code_folder;
-        self._bundle_services(app_config);
+        fleet = self._fleet(app_config);
+        self._bundle_files();
         injector = self._prepare_injector(app_config);
         self._bundle_object_key = injector._object_key;
 
@@ -657,7 +674,9 @@ obj ManifestBuilder {
             "services": services,
             "scaling": scaling,
             "pdbs": pdbs,
-            "pod_specs": pod_specs
+            "pod_specs": pod_specs,
+            "fleet": fleet,
+            "gateway_config": self._gateway_cfg()
         };
 
         bundle["injector"] = injector;
@@ -681,7 +700,7 @@ obj ManifestBuilder {
         if user_secret is not None {
             bundle["user_secret"] = user_secret;
         }
-        ingress_cfg: dict[str, any] = self._ms_cfg().get("ingress", {});
+        ingress_cfg: dict[str, any] = self._gateway_cfg().get("ingress", {});
         ingress = self._build_ingress_manifest(ingress_cfg);
         if ingress is not None {
             bundle["ingress"] = ingress;
@@ -706,34 +725,154 @@ obj ManifestBuilder {
                 );
             }
         }
+        self._check_pod_config_resolves(deployments, user_secret);
         return bundle;
+    }
+
+    def check_pod_config(app_config: AppConfig, image: str) {
+        self.project_dir = self.project_dir or app_config.code_folder;
+        pod_specs = self.generate_service_pod_specs(app_config, image);
+        deployments = {
+            svc_name: self._build_deployment_manifest(svc_name, pod_spec)
+            for (svc_name, pod_spec) in pod_specs.items()
+        };
+        self._check_pod_config_resolves(
+            deployments, self._build_user_secret_manifest()
+        );
+    }
+
+    def _check_pod_config_resolves(
+        deployments: dict[str, dict[str, any]], user_secret: dict[str, any] | None
+    ) {
+        import from pathlib { Path }
+        import from jaclang.scale.injector.bundle {
+            nested_sanitized_tomls,
+            sanitized_jac_toml,
+            source_filter_for,
+            unresolved_toml_references
+        }
+        base = Path(self.project_dir);
+        base_toml = sanitized_jac_toml(base);
+        if base_toml is None {
+            return;
+        }
+        nested = nested_sanitized_tomls(base);
+        excluded = source_filter_for(base);
+        secret_keys = set(dict(dict(user_secret or {}).get("stringData", {})).keys());
+        affected: dict[str, list[str]] = {};
+        for (svc_name, deployment) in deployments.items() {
+            container = deployment["spec"]["template"]["spec"]["containers"][0];
+            environ = self._pod_environ(container, secret_keys);
+            if environ is None {
+                continue;
+            }
+            tomls = self._pod_tomls(base, excluded, "jac.toml", base_toml, environ);
+            nearest = self._nearest_nested_toml(nested, environ.get("JAC_SV_FILE", ""));
+            if nearest {
+                tomls.update(
+                    self._pod_tomls(base, excluded, nearest, nested[nearest], environ)
+                );
+            }
+            for (rel, text) in tomls.items() {
+                for problem in unresolved_toml_references(text, environ) {
+                    affected.setdefault(f"{rel}: {problem}", []).append(svc_name);
+                }
+            }
+        }
+        if not affected {
+            return;
+        }
+        lines: list[str] = [];
+        for (problem, pods) in affected.items() {
+            scope = "every pod" if len(pods) == len(deployments) else ", ".join(pods);
+            lines.append(f"  {problem} ({scope})");
+        }
+        raise ValueError(
+            "jac.toml reads environment variables the deployed pods will not have, "
+            "so these settings cannot resolve at boot:\n"
+                + "\n".join(lines)
+                + "\nSupply each one through [scale.secrets] or the app's env, or give "
+                "it a ${VAR:-default}."
+        );
+    }
+
+    def _pod_environ(
+        container: dict[str, any], secret_keys: set[str]
+    ) -> dict[str, str] | None {
+        environ: dict[str, str] = {
+            name: ""
+            for name in (
+                "HOSTNAME",
+                "KUBERNETES_SERVICE_HOST",
+                "KUBERNETES_SERVICE_PORT"
+            )
+        };
+        for `entry in container.get("env", []) or [] {
+            environ[str(`entry.get("name"))] = str(`entry.get("value", ""));
+        }
+        for source in container.get("envFrom", []) or [] {
+            if dict(source.get("secretRef") or {}).get("name")
+                != self._user_secret_name() {
+                return None;
+            }
+            for key in secret_keys {
+                environ.setdefault(key, "");
+            }
+        }
+        if self.k8s_config.database_enabled() {
+            environ.setdefault(DATABASE_URL_ENV, "");
+        }
+        return environ;
+    }
+
+    def _pod_tomls(
+        base: any, excluded: any, toml_rel: str, toml_text: str, environ: dict[str, str]
+    ) -> dict[str, str] {
+        import tomllib;
+        import from pathlib { Path, PurePosixPath }
+        environment = dict(tomllib.loads(toml_text).get("environment", {}) or {});
+        profile = environ.get("JAC_PROFILE", "").strip()
+            or str(environment.get("default_profile", "") or "").strip();
+        names = [f"jac.{profile}.toml"] if profile else [];
+        names.append("jac.local.toml");
+        folder = PurePosixPath(toml_rel).parent;
+        tomls = {toml_rel: toml_text};
+        for name in names {
+            rel = (folder / name).as_posix();
+            path = Path(base) / rel;
+            if path.is_file() and not excluded.excludes(Path(rel)) {
+                tomls[rel] = path.read_text(encoding="utf-8");
+            }
+        }
+        return tomls;
+    }
+
+    def _nearest_nested_toml(nested: dict[str, str], sv_file: str) -> str {
+        import from pathlib { PurePosixPath }
+        nearest = "";
+        for rel in nested {
+            if sv_file
+                and PurePosixPath(sv_file).is_relative_to(PurePosixPath(rel).parent)
+                and len(rel) > len(nearest) {
+                nearest = rel;
+            }
+        }
+        return nearest;
     }
 
     def generate_service_pod_specs(
         app_config: AppConfig, image: str
     ) -> dict[str, dict[str, any]] {
-        app_name = app_config.app_name or self.k8s_config.app_name;
-
-        import from jaclang.scale.runtime.routing { resolve_routes }
-        ms_cfg = dict(self._ms_cfg());
-        routes: dict[str, str] = resolve_routes(ms_cfg);
-        ms_cfg["routes"] = routes;
-        self.microservices_config = ms_cfg;
-
-        if not routes {
-            routes = self._solo_route(app_config);
-            services = dict(ms_cfg.get("services", {}));
-            solo_name = list(routes.keys())[0];
-            solo_cfg = dict(services.get(solo_name, {}));
-            solo_cfg["file"] = self._solo_entry_file(app_config);
-            services[solo_name] = solo_cfg;
-            ms_cfg["services"] = services;
-            ms_cfg["routes"] = routes;
-            self.microservices_config = ms_cfg;
+        fleet = self._fleet(app_config);
+        if fleet.is_empty() {
+            raise ValueError(
+                "Nothing to deploy: the fleet has no apps. Declare [apps] in "
+                "jac.toml or set [project].name."
+            );
         }
 
         specs: dict[str, dict[str, any]] = {};
-        for svc_name in routes.keys() {
+        for svc_name in fleet.names() {
             specs[svc_name] = self._build_service_pod_spec(svc_name, image);
         }
         specs[GATEWAY_NAME] = self._build_gateway_pod_spec(image);
@@ -741,123 +880,137 @@ obj ManifestBuilder {
         if self.logger {
             self.logger.info(
                 f"Generated {len(specs)} pod-spec stubs "
-                f"(1 gateway + {len(routes)} services)",
+                f"(1 gateway + {len(fleet.members)} apps)",
                 {"image": image, "namespace": self.k8s_config.namespace}
             );
         }
         return specs;
     }
 
-    def _solo_route(app_config: AppConfig) -> dict[str, str] {
-        import from jaclang.scale.runtime.routing {
-            derive_route_prefix,
-            guard_route_name
-        }
-        name = app_config.app_name or self.k8s_config.app_name;
-        if not name {
-            raise ValueError(
-                "Cannot name the app's service: no app_name is set. Set "
-                "[project].name in jac.toml, or declare "
-                "[scale.microservices.routes] to cut the app into services."
+    def _serve_settings -> ServeSettings {
+        if self._serve_settings_cache is None {
+            project = get_scale_config().get_jac_config();
+            self._serve_settings_cache = ServeSettings.load(
+                str(project.project_root or self.project_dir or '.'), config=project
             );
         }
-        guard_route_name(name);
-        return {name: derive_route_prefix(name)};
-    }
-
-    def _solo_aware_ms_cfg(app_config: AppConfig) -> dict[str, any] {
-        if self.microservices_config is not None {
-            return self._ms_cfg();
-        }
-        import from jaclang.scale.runtime.routing { resolve_routes }
-        try {
-            ms_cfg = dict(get_scale_config().get_microservices_config());
-        } except Exception {
-            return self._ms_cfg();
-        }
-        if resolve_routes(ms_cfg) {
-            return self._ms_cfg();
-        }
-        routes = self._solo_route(app_config);
-        entry_file = self._solo_entry_file(app_config);
-        services = dict(ms_cfg.get("services", {}));
-        solo_name = list(routes.keys())[0];
-        solo_cfg = dict(services.get(solo_name, {}));
-        solo_cfg["file"] = entry_file;
-        services[solo_name] = solo_cfg;
-
-        main_cfg = dict(services.get("main", {}));
-        if not main_cfg.get("file") {
-            main_cfg["file"] = entry_file;
-            services["main"] = main_cfg;
-        }
-        ms_cfg["services"] = services;
-        ms_cfg["routes"] = routes;
-        return ms_cfg;
+        return self._serve_settings_cache;
     }
 
     def _drain_timeout -> int {
-        return int(self._ms_cfg().get("drain_timeout_seconds", 10));
+        return int(self._serve_settings().timeouts.drain);
+    }
+
+    def _signing_secret -> str {
+        import secrets;
+        configured = str(self.secrets.get("JAC_SERVE_AUTH_SECRET") or "").strip();
+        if configured {
+            return configured;
+        }
+        from_project = self._serve_settings().auth.secret.strip();
+        if from_project {
+            return from_project;
+        }
+        if not self._minted_secret {
+            self._minted_secret = secrets.token_urlsafe(48);
+        }
+        return self._minted_secret;
+    }
+
+    def _serve_env(svc_name: str, svc_cfg: dict[str, any]) -> list[dict[str, any]] {
+        settings = self._serve_settings();
+        workers = str(svc_cfg.get("workers") or settings.workers.count);
+        env: list[dict[str, any]] = [
+            {"name": "JAC_SERVE_WORKERS", "value": workers},
+            {"name": "JAC_SERVE_ACCESS_LOG_FORMAT", "value": "json"},
+            {"name": "JAC_SERVE_ACCESS_LOG_SUPPRESS_HEALTH", "value": "1"},
+            {"name": "JAC_SERVE_DRAIN_TIMEOUT", "value": str(self._drain_timeout())}
+        ];
+        threads = svc_cfg.get("threads");
+        if threads is not None {
+            env.append({"name": "JAC_SERVE_THREADS", "value": str(threads)});
+        }
+        trusted = list(settings.proxy.trusted);
+        if svc_name != GATEWAY_NAME {
+            trusted = trusted or ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"];
+        }
+        if trusted {
+            env.append({"name": "JAC_SERVE_PROXY_TRUSTED", "value": ",".join(trusted)});
+        }
+        return env;
     }
 
     def _service_config(svc_name: str) -> dict[str, any] {
-        return dict(self._ms_cfg().get("services", {}).get(svc_name, {}));
+        merged: dict[str, any] = {};
+        if svc_name == GATEWAY_NAME {
+            gw = self._gateway_cfg();
+            merged.update(
+                {
+                    key: gw[key]
+                    for key in GATEWAY_POD_KEYS
+                    if key in gw
+                }
+            );
+        }
+        if self.fleet is not None {
+            merged.update(self.fleet.app_config(svc_name));
+        }
+        extra = self.app_overrides.get(svc_name);
+        if isinstance(extra, dict) {
+            merged.update(extra);
+        }
+        return merged;
     }
 
-    def _bundle_services(app_config: (AppConfig | None) = None) -> dict[str, str] {
-        if self._bundle_services_cache is None {
-            import from jaclang.scale.injector.bundle { resolved_bundle_services }
-            ms_cfg = (
-                self._solo_aware_ms_cfg(app_config)
-                    if app_config is not None
-                    else self._ms_cfg()
-            );
-            self._bundle_services_cache = (
-                resolved_bundle_services(self.project_dir, ms_cfg)
-                    if self.project_dir
+    def _bundle_files -> dict[str, str] {
+        if self._bundle_files_cache is None {
+            import from jaclang.scale.injector.bundle { resolve_fleet_entries }
+            self._bundle_files_cache = (
+                resolve_fleet_entries(self.project_dir, self.fleet)
+                    if self.project_dir and self.fleet is not None
                     else {}
             );
         }
-        return self._bundle_services_cache;
-    }
-
-    def _client_entry_setting -> tuple[str, str, bool] {
-        import from jaclang.scale.config.config_loader {
-            get_scale_config,
-            normalize_microservices_config
-        }
-        if self.microservices_config is not None {
-            raw = self.microservices_config;
-        } else {
-            raw = get_scale_config().load().get("microservices", {}) or {};
-        }
-        declared = dict(raw.get("client", {}) or {}).get("entry", None);
-        resolved = normalize_microservices_config(raw, env_routes_fallback=False)[
-            "client"
-        ]["entry"];
-        return (
-            str(resolved or "").strip(),
-            declared.strip() if isinstance(declared, str) else "",
-            declared is False
-        );
+        return self._bundle_files_cache;
     }
 
     def _declared_client_entry -> str {
-        return self._client_entry_setting()[1];
+        if self.client_entry is not None {
+            return self.client_entry.strip();
+        }
+        root_member = self.fleet.root_member() if self.fleet is not None else None;
+        if root_member is not None and root_member.client {
+            return root_member.file;
+        }
+        return "";
     }
 
     def _client_entry -> str {
-        (resolved, _, disabled) = self._client_entry_setting();
-        if disabled {
+        if self.client_entry is not None {
+            return self.client_entry.strip();
+        }
+        declared = self._declared_client_entry();
+        if declared {
+            return declared;
+        }
+        cfg = self._project_config();
+        if cfg is not None and cfg.is_workspace {
             return "";
         }
-        if resolved {
-            return resolved;
+        if cfg is not None {
+            entry_point = str(cfg.project.entry_point or "").strip();
+            import os;
+            import from jaclang.project.apps { resolve_entry_path }
+            return os.path.relpath(
+                resolve_entry_path(entry_point or "main", self.project_dir),
+                self.project_dir
+            );
         }
-        if self._has_client_source() {
-            return "main.jac";
+        root_member = self.fleet.root_member() if self.fleet is not None else None;
+        if root_member is not None and root_member.file {
+            return root_member.file;
         }
-        return "";
+        return "main.jac";
     }
 
     def _has_client_source -> bool {
@@ -887,7 +1040,7 @@ obj ManifestBuilder {
     }
 
     def _shared_volumes_config -> list[dict[str, any]] {
-        raw = self._ms_cfg().get("shared_volumes", []);
+        raw = self._gateway_cfg().get("shared_volumes", []);
         if not isinstance(raw, list) {
             return [];
         }
@@ -906,11 +1059,11 @@ obj ManifestBuilder {
         volumes: list[dict[str, any]] = [];
         mounts: list[dict[str, any]] = [];
         for vol in self._shared_volumes_config() {
-            services = vol.get("services", []);
-            if not isinstance(services, list) {
+            apps = vol.get("apps", []);
+            if not isinstance(apps, list) {
                 continue;
             }
-            if svc_name not in services {
+            if svc_name not in apps {
                 continue;
             }
             name = str(vol.get("name", "")).strip();
@@ -954,8 +1107,8 @@ obj ManifestBuilder {
             if not mount_path {
                 continue;
             }
-            services = vol.get("services", []);
-            if not isinstance(services, list) or not services {
+            apps = vol.get("apps", []);
+            if not isinstance(apps, list) or not apps {
                 continue;
             }
 
@@ -995,9 +1148,8 @@ obj ManifestBuilder {
     }
 
     def _build_user_secret_manifest -> dict[str, any] | None {
-        if not self.secrets {
-            return None;
-        }
+        data: dict[str, str] = {k: str(v) for (k, v) in self.secrets.items()};
+        data["JAC_SERVE_AUTH_SECRET"] = self._signing_secret();
         return {
             "apiVersion": "v1",
             "kind": "Secret",
@@ -1011,7 +1163,7 @@ obj ManifestBuilder {
                 }
             },
             "type": "Opaque",
-            "stringData": {k: str(v) for (k, v) in self.secrets.items()}
+            "stringData": data
         };
     }
 
@@ -1021,16 +1173,13 @@ obj ManifestBuilder {
 
     def _owner_labels -> dict[str, str] {
         return {
-            str(k): str(v) for (k, v) in dict(self.k8s_config.labels or {}).items()
+            str(k): str(v)
+            for (k, v) in dict[str, any](self.k8s_config.labels or {}).items()
         };
     }
 
     def _service_account_name -> str {
         return str(getattr(self.k8s_config, "service_account_name", "") or "").strip();
-    }
-
-    def _microservice_routes -> dict[str, str] {
-        return dict(self._ms_cfg().get("routes", {}));
     }
 
     def _peer_dns_url(peer_name: str) -> str {
@@ -1049,16 +1198,17 @@ obj ManifestBuilder {
             {"name": "K8S_APP_NAME", "value": self.k8s_config.app_name},
             {"name": "K8S_NAMESPACE", "value": self.k8s_config.namespace}
         ];
-        svc_file: str = self._bundle_services().get(svc_name, "");
-        if not svc_file {
-            svc_file = str(svc_cfg.get("file") or "");
+        svc_file: str = self._bundle_files().get(svc_name, "");
+        if not svc_file and self.fleet is not None {
+            member = self.fleet.member(svc_name);
+            svc_file = member.file if member is not None else "";
         }
         if svc_file {
             env.append({"name": "JAC_SV_FILE", "value": svc_file});
         }
 
-        ms_trace_cfg: dict = dict(self._ms_cfg().get("tracing", {}));
-        if ms_trace_cfg.get("enabled", False) {
+        trace_cfg: dict[str, any] = dict(self._gateway_cfg().get("tracing", {}));
+        if trace_cfg.get("enabled", False) {
             env.append(
                 {
                     "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
@@ -1067,18 +1217,15 @@ obj ManifestBuilder {
             );
         }
 
-        routes: dict[str, str] = self._microservice_routes();
-
-        if routes {
-            import json;
-            env.append({"name": "JAC_SV_ROUTES", "value": json.dumps(dict(routes))});
+        import from jaclang.scale.runtime.fleet { FLEET_ENV }
+        peers: list[str] = [];
+        if self.fleet is not None and not self.fleet.is_empty() {
+            env.append({"name": FLEET_ENV, "value": self.fleet.to_env()});
+            peers = self.fleet.names();
         }
         seen_peer_keys: set = set();
-        for peer_name in routes {
-            if peer_name == svc_name {
-                continue;
-            }
-            if peer_name == GATEWAY_NAME {
+        for peer_name in peers {
+            if peer_name == svc_name or peer_name == GATEWAY_NAME {
                 continue;
             }
             key = sv_client.peer_url_env_key(peer_name);
@@ -1092,13 +1239,15 @@ obj ManifestBuilder {
         for `entry in self.deploy_context.env_list {
             env.append(`entry);
         }
+        env.extend(self._serve_env(svc_name, svc_cfg));
 
         extra: dict[str, any] = svc_cfg.get("env", {});
         for (k, v) in extra.items() {
-            if k in ("JAC_SV_NAME", "JAC_SV_FILE", "JAC_SV_SIBLING") {
+            if k in ("JAC_SV_NAME", "JAC_SV_FILE", "JAC_SV_SIBLING", FLEET_ENV) {
                 continue;
             }
-            if k.startswith("JAC_SV_") and k.endswith("_URL") {
+            if k.startswith("JAC_APP_")
+                and (k.endswith("_URL") or k.endswith("_ROUTE")) {
                 continue;
             }
             env.append({"name": k, "value": str(v)});
@@ -1462,8 +1611,7 @@ obj ManifestBuilder {
             return deployment_name;
         }
         k8s_name = deployment_name[:-len(suffix)];
-        ms_cfg = self._ms_cfg();
-        candidates: list[str] = list(ms_cfg.get("routes", {}).keys());
+        candidates: list[str] = list(self.fleet.names()) if self.fleet is not None else [];
         candidates.append(GATEWAY_NAME);
         for key in candidates {
             if k8s_safe_name(str(key)) == k8s_name {
@@ -1647,7 +1795,7 @@ obj ManifestBuilder {
                 "    exit 1; "
                 "  fi; "
                 '  if [ ! -f "$SV_FILE" ]; then '
-                '    echo "jac-scale boot: service $JAC_SV_NAME resolves to $SV_FILE, which the shipped bundle does not contain; fix [scale.microservices] and re-deploy." >&2; '
+                '    echo "jac-scale boot: app $JAC_SV_NAME resolves to $SV_FILE, which the shipped bundle does not contain; check [apps] in jac.toml and re-deploy." >&2; '
                 "    exit 1; "
                 "  fi; "
                 '  exec jac run --serve "$SV_FILE"; '
@@ -1700,13 +1848,11 @@ obj ManifestBuilder {
             container["volumeMounts"] = shared_mounts;
         }
 
-        if self.secrets {
-            container["envFrom"] = [{"secretRef": {"name": self._user_secret_name()}}];
-        }
+        container["envFrom"] = [{"secretRef": {"name": self._user_secret_name()}}];
         spec: dict[str, any] = {
             "containers": [container],
             "terminationGracePeriodSeconds": drain_t
-                + _UVICORN_EXIT_CUSHION_S
+                + _EXIT_CUSHION_S
                 + self._alb_deregistration_cushion()
         };
         sa_name = self._service_account_name();

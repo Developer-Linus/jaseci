@@ -21,7 +21,7 @@ import from jaclang.scale.scheduler.scheduler {
     TriggerSpec
 }
 
-glob _holder: dict = {},
+glob _holder: dict[str, any] = {},
      _DOCS_DDL = (
          'CREATE TABLE IF NOT EXISTS jac_docs ('
          'collection text NOT NULL, id text NOT NULL, doc jsonb NOT NULL, '
@@ -52,7 +52,7 @@ def _pod(store: PgStore, collection: str) -> JacScaleScheduler {
 }
 
 
-def _job(job_id: str, interval: float) -> dict {
+def _job(job_id: str, interval: float) -> dict[str, any] {
     return {
         'job_id': job_id,
         'name': 'tick',
@@ -205,7 +205,9 @@ test "two live pods fire a due job exactly once and DELETE stops both" {
 
 
 test "events url scheme is validated with a clean error" {
-    import from jaclang.scale.server.serve { _validate_events_url }
+    import from jaclang.scale.server.extensions {
+        validate_events_url as _validate_events_url
+    }
     _validate_events_url(None);
     _validate_events_url('postgresql://u:p@h:5432/db');
     _validate_events_url('postgres://u:p@h:5432/db');

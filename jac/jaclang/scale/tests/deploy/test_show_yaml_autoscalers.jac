@@ -11,6 +11,7 @@ import from jaclang.scale.deploy.target.kubernetes.manifest_builder {
     ScalingMode
 }
 import from jaclang.scale.config.app_config { AppConfig }
+import from jaclang.scale.runtime.fleet { fleet_of }
 
 
 test "hpa engine renders the HPA manifest the apply path would build" {
@@ -139,7 +140,9 @@ test "keda engine renders the TriggerAuthentication apply() would create for an 
 # Drive the real bundle the deploy builds, then render the autoscaler objects
 # the apply path would send, so a declared bound is followed all the way to the
 # manifest instead of being asserted at an intermediate hop.
-def _applied_hpas(k8s_config: KubernetesConfig, services: dict) -> list[dict] {
+def _applied_hpas(
+    k8s_config: KubernetesConfig, services: dict[str, any]
+) -> list[dict[str, any]] {
     import tempfile;
     import from pathlib { Path }
     with tempfile.TemporaryDirectory() as project {
@@ -148,10 +151,11 @@ def _applied_hpas(k8s_config: KubernetesConfig, services: dict) -> list[dict] {
         }
         builder = ManifestBuilder(
             k8s_config=k8s_config,
-            microservices_config={
-                "routes": {name: f"/{name}" for name in services},
-                "services": services
-            },
+            fleet=fleet_of(
+                {name: f"/{name}" for name in services},
+                overrides=services,
+                files={name: f"{name}.jac" for name in services}
+            ),
             dry_run=True
         );
         bundle = builder.generate_manifests(

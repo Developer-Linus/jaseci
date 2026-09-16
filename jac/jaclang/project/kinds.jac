@@ -1,152 +1,29 @@
 import os;
+import from jaclang.jac0core.ext_registry { base_stem }
+import from jaclang.project.apps { AppConfig, implicit_app }
 import from jaclang.project.config { JacConfig }
-import from jaclang.jac0core.ext_registry { base_stem, MODULE_SUFFIXES }
 
-obj KindSpec {
-    has name: str,
-        description: str,
-        `entry: str,
-        action: str,
-        verb: str,
-        summary: str,
-        flags: dict[str, any] = {},
-        needs_entry: bool = True,
-        output_dir: str = "",
-        codespace: str = "";
-}
-
-glob KIND_SPECS: dict[str, KindSpec] = {
-         spec.name: spec
-         for spec in [
-             KindSpec(
-                 name="cli",
-                 description="Command-line Jac project",
-                 `entry="main.jac",
-                 action="execute",
-                 verb="run",
-                 summary="Execute {kind} entry-point {entry}"
-             ),
-             KindSpec(
-                 name="cli-native",
-                 description="Natively-compiled Jac program (compiled and run)",
-                 `entry="main.jac",
-                 action="execute",
-                 verb="run",
-                 summary="Execute {kind} entry-point {entry}"
-             ),
-             KindSpec(
-                 name="native-binary",
-                 description="Natively-compiled standalone binary (built into dist/)",
-                 `entry="main.jac",
-                 action="build",
-                 verb="nacompile",
-                 summary="Build native binary -> {output}",
-                 output_dir="dist"
-             ),
-             KindSpec(
-                 name="native-lib",
-                 description="Natively-compiled shared library (.so / .dylib / .dll)",
-                 `entry="main.jac",
-                 action="build",
-                 verb="nacompile",
-                 summary="Build shared library (.so / .dylib / .dll)",
-                 flags={"shared": True}
-             ),
-             KindSpec(
-                 name="service",
-                 description="Headless Jac API service (server walkers, no client)",
-                 `entry="main.jac",
-                 action="serve",
-                 verb="run",
-                 summary="Serve headless API service",
-                 flags={"no_client": True}
-             ),
-             KindSpec(
-                 name="service-mesh",
-                 description="Jac microservice (server walkers; auto-starts providers)",
-                 `entry="main.jac",
-                 action="serve",
-                 verb="run",
-                 summary="Serve microservice consumer (auto-starts providers)"
-             ),
-             KindSpec(
-                 name="py-package",
-                 description="Distributable Python package (built into a wheel)",
-                 `entry="lib.jac",
-                 action="build",
-                 verb="build",
-                 summary="Build PyPI wheel into dist/",
-                 flags={"as": "wheel"},
-                 needs_entry=False
-             ),
-             KindSpec(
-                 name="js-package",
-                 description="Distributable npm package (built into a tarball)",
-                 `entry="lib.jac",
-                 action="build",
-                 verb="build",
-                 summary="Build npm package into dist/",
-                 flags={"as": "npm"},
-                 needs_entry=False,
-                 codespace="client"
-             ),
-             KindSpec(
-                 name="web-app",
-                 description="Minimal full-stack Jac app (server walkers + client UI)",
-                 `entry="main.jac",
-                 action="serve",
-                 verb="run",
-                 summary="Serve full-stack app with client (dev mode)",
-                 flags={"dev": True}
-             ),
-             KindSpec(
-                 name="web-static",
-                 description="Client-only Jac app (runs in the browser, no backend)",
-                 `entry="main.jac",
-                 action="serve",
-                 verb="run",
-                 summary="Serve client-only app as a static page (no backend)"
-             ),
-             KindSpec(
-                 name="desktop",
-                 description="Jac desktop app (OS webview + nacompile)",
-                 `entry="main.jac",
-                 action="serve",
-                 verb="run",
-                 summary="Run desktop app (OS webview)",
-                 flags={"client": "desktop"}
-             ),
-             KindSpec(
-                 name="mobile",
-                 description="Jac mobile client app (Capacitor + Vite)",
-                 `entry="main.jac",
-                 action="build",
-                 verb="build",
-                 summary="Build mobile app bundle",
-                 flags={"client": "mobile"}
-             )
-         ]
-     },
-     VALID_KINDS: list[str] = list(KIND_SPECS.keys());
-
-def kind_spec(kind: str) -> KindSpec | None {
-    return KIND_SPECS.get(kind);
-}
-
-def kind_entry(kind: str) -> str {
-    spec = KIND_SPECS.get(kind);
-    return spec.`entry if spec else "main.jac";
-}
-
-def is_valid_kind(kind: str) -> bool {
-    return kind in KIND_SPECS;
+import from jaclang.project.app_kinds {
+    KindSpec,
+    KIND_SPECS,
+    VALID_KINDS,
+    UI_DOM,
+    UI_MOBUI,
+    MOBILE_PLATFORMS,
+    kind_spec,
+    kind_entry,
+    is_valid_kind,
+    kind_ui,
+    kind_has_client,
+    kind_is_mobui
 }
 
 obj RunPlan {
     has spec: KindSpec,
         entry_path: str,
         flags: dict[str, any],
-        summary: str;
+        summary: str,
+        app: str = "";
 
     has kind: str {
         getter {
@@ -167,8 +44,12 @@ obj RunPlan {
     }
 
     def command_line -> str {
-        parts = ["jac", self.verb];
-        if self.entry_path {
+        parts = ["jac", "build", "--native"]
+            if self.verb == "native"
+            else ["jac", self.verb];
+        if self.app {
+            parts.append(self.app);
+        } elif self.entry_path {
             parts.append(os.path.basename(self.entry_path));
         }
         for (k, v) in self.flags.items() {
@@ -186,10 +67,6 @@ obj RunPlan {
     }
 }
 
-def _entry_stem(path: str) -> str {
-    return base_stem(path);
-}
-
 def _has_client(config: JacConfig) -> bool {
     if "jac-client" in config.dependencies {
         return True;
@@ -202,31 +79,34 @@ def _has_client(config: JacConfig) -> bool {
     return False;
 }
 
-def resolve_entry(config: JacConfig, project_root: str) -> str {
-    ep = config.project.entry_point or "main.jac";
-    direct = ep if os.path.isabs(ep) else os.path.join(project_root, ep);
-    if os.path.isfile(direct) {
-        return os.path.abspath(direct);
-    }
-    stem = _entry_stem(ep);
-
-    base = os.path.join(project_root, os.path.dirname(ep), stem);
-    for suf in list(MODULE_SUFFIXES) + [".py"] {
-        cand = base + suf;
-        if os.path.isfile(cand) {
-            return os.path.abspath(cand);
-        }
-    }
-    return "";
+def resolve_entry(config: JacConfig, project_root: str, app: AppConfig) -> str {
+    path = app.entry_path(project_root);
+    return path if os.path.isfile(path) else "";
 }
 
-def resolve_project_kind(config: JacConfig, entry_path: str) -> str {
-    explicit = config.project.kind.strip() if config.project.kind else "";
+def resolve_app_kind(config: JacConfig, app: AppConfig, entry_path: str) -> str {
+    explicit = app.kind.strip() if app.kind else "";
     if explicit {
         return explicit;
     }
-    import from jaclang.compiler.placement.placement_facts { pinned_module_space }
-    entry_pin = pinned_module_space(entry_path) if entry_path else '';
+    if not app.implicit {
+        return "cli";
+    }
+    project_kind = config.project.kind.strip() if config.project.kind else "";
+    if project_kind {
+        return project_kind;
+    }
+    import from jaclang.project.placement { match_pin, validate_pins }
+    import from jaclang.project.workspace { workspace_for_path }
+    workspace = workspace_for_path(entry_path) if entry_path else None;
+    entry_pin = '';
+    if workspace is not None {
+        configured = workspace.app(app.name);
+        pins = configured.pins if configured is not None else workspace.base_pins;
+        entry_pin = match_pin(
+            entry_path, workspace.project_root, validate_pins(pins, workspace.toml_path)
+        );
+    }
     if (entry_pin == 'native') {
         return "cli-native";
     }
@@ -239,20 +119,28 @@ def resolve_project_kind(config: JacConfig, entry_path: str) -> str {
     return "cli";
 }
 
-def plan_project_run(
-    config: JacConfig, project_root: str, entry_override: str = ""
-) -> (RunPlan | None) {
+def plan_app_run(
+    config: JacConfig, project_root: str, app: AppConfig, entry_override: str = ""
+) -> RunPlan {
+    eff = config.effective_for_app(app.name) if app.name in config.apps else config;
     entry_path = (
         os.path.abspath(entry_override)
             if entry_override
-            else resolve_entry(config, project_root)
+            else resolve_entry(eff, project_root, app)
     );
-    spec = KIND_SPECS.get(resolve_project_kind(config, entry_path));
+    kind = resolve_app_kind(eff, app, entry_path);
+    spec = KIND_SPECS.get(kind);
     if spec is None {
-        return None;
+        raise ValueError(
+            f"App '{app.name}' has unknown kind '{kind}'; expected one of "
+            f"{', '.join(VALID_KINDS)}"
+        );
     }
     if spec.needs_entry and not entry_path {
-        return None;
+        raise ValueError(
+            f"App '{app.name}' ({spec.name}) has no entry file; expected "
+            f"{app.entry_path(project_root)}"
+        );
     }
     if not spec.needs_entry and not entry_override {
         entry_path = "";
@@ -261,13 +149,21 @@ def plan_project_run(
     flags = dict(spec.flags);
     output = "";
     if spec.output_dir {
-        stem = _entry_stem(entry_path) if entry_path else config.project.name;
-        output = os.path.join(project_root, spec.output_dir, stem);
+        stem = base_stem(entry_path) if entry_path else app.name;
+        out_dir = (
+            os.path.join(project_root, spec.output_dir)
+                if app.implicit
+                else os.path.join(project_root, spec.output_dir, app.name)
+        );
+        output = os.path.join(out_dir, stem);
         flags["output"] = output;
     }
+    if app.platform {
+        flags["platform"] = app.platform;
+    }
 
-    if spec.action == "serve" and config.serve.port != 8000 {
-        flags["port"] = config.serve.port;
+    if spec.action == "serve" and eff.serve.port != 8000 {
+        flags["port"] = eff.serve.port;
     }
 
     return RunPlan(
@@ -276,6 +172,12 @@ def plan_project_run(
         flags=flags,
         summary=spec.summary.format(
             kind=spec.name, `entry=os.path.basename(entry_path), output=output
-        )
+        ),
+        app="" if app.implicit else app.name
     );
+}
+
+def plan_workspace(config: JacConfig, project_root: str) -> list[RunPlan] {
+    apps = list(config.apps.values()) or [implicit_app(config)];
+    return [plan_app_run(config, project_root, app) for app in apps];
 }

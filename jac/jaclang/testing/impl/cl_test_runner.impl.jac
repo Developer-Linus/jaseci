@@ -11,7 +11,9 @@ import from contextlib { suppress }
 import from pathlib { Path }
 import from jaclang.cli.console { console }
 
-impl compile_cl_module(filepath: str) -> tuple[str, list, dict, list] {
+impl compile_cl_module(
+    filepath: str
+) -> tuple[str, list[any], dict[str, any], list[any]] {
     import from jaclang.compiler.driver.program { JacProgram }
     prog = JacProgram();
     mod = prog.compile(str(filepath));
@@ -26,30 +28,15 @@ impl compile_cl_module(filepath: str) -> tuple[str, list, dict, list] {
     return (mod.gen.js, tests, imports, server_imports);
 }
 
-impl _compile_runtime_js -> str {
-    import from jaclang.compiler.driver.modresolver { resolve_jac_virtual_module_path }
+impl _compile_runtime -> tuple[str, str] {
+    import from jaclang.project.modresolver { resolve_jac_virtual_module_path }
 
     runtime_src = resolve_jac_virtual_module_path("@jac/runtime");
     if (not runtime_src) or (not Path(runtime_src).exists()) {
         raise RuntimeError("could not resolve @jac/runtime to a client runtime source");
     }
     (js, _tests, _imports, _server_imports) = compile_cl_module(runtime_src);
-    return js;
-}
-
-impl _compile_runtime_core_js -> str {
-    import from jaclang.compiler.driver.modresolver { resolve_jac_virtual_module_path }
-
-    runtime_src = resolve_jac_virtual_module_path("@jac/runtime");
-    if (not runtime_src) or (not Path(runtime_src).exists()) {
-        raise RuntimeError("could not resolve @jac/runtime to a client runtime source");
-    }
-    core_path = Path(runtime_src).parent / "client_runtime_core.jac";
-    if not core_path.exists() {
-        raise RuntimeError("could not resolve client_runtime_core sibling source");
-    }
-    (js, _tests, _imports, _server_imports) = compile_cl_module(str(core_path));
-    return js;
+    return (runtime_src, js);
 }
 
 impl _point_at_staged_runtime(js: str) -> str {
@@ -111,7 +98,10 @@ impl _stub_npm_imports(
 }
 
 impl _build_harness(
-    module_js: str, tests: list, api_base_url: str = "", storage: (dict | None) = None
+    module_js: str,
+    tests: list[any],
+    api_base_url: str = "",
+    storage: (dict[str, any] | None) = None
 ) -> str {
     imports = "\n".join([m.group(0).strip() for m in _IMPORT_LINE.finditer(module_js)]);
     body = _IMPORT_LINE.sub("", module_js);
@@ -143,11 +133,11 @@ impl _build_harness(
 }
 
 impl _collect_local_imports(
-    module_js: str, source_dir: str, entry_path: str
-) -> tuple[dict, dict] {
+    module_js: str, source_dir: str, entry_path: str, allow_runtime: bool = False
+) -> tuple[dict[str, any], dict[str, any]] {
     staged: dict[str, str] = {};
     merged_imports: dict[str, str] = {};
-    requested: dict = {};
+    requested: dict[str, set[str]] = {};
     pending: list[str] = [module_js];
     while pending {
         js = pending.pop(0);
@@ -166,7 +156,8 @@ impl _collect_local_imports(
                     "same-directory './module.js' imports are supported"
                 );
             }
-            if name in ("jac_runtime.js", "client_runtime_core.js") {
+            if not allow_runtime
+                and name in ("jac_runtime.js", "client_runtime_core.js") {
                 raise RuntimeError(
                     f"cl test harness cannot stage local import '{spec}': the "
                     "name is reserved for the staged client runtime"
@@ -292,7 +283,7 @@ impl _serve_in_background(server_entry: str, base_path: str) -> Iterator[int] {
     port = sock.getsockname()[1];
     sock.close();
 
-    env = dict(os.environ);
+    env: dict[str, str] = dict(os.environ);
     env["JAC_DATA_PATH"] = base_path;
 
     log_path = Path(base_path) / "cl_test_server.log";
@@ -372,7 +363,7 @@ impl run_cl_test_file(
     filepath: str,
     api_base_url: (str | None) = None,
     test_name: (str | None) = None,
-    storage: (dict | None) = None,
+    storage: (dict[str, any] | None) = None,
     serve: bool = True,
     timeout: float = 120.0
 ) -> list[ClTestResult] {
@@ -424,10 +415,10 @@ impl run_cl_test_file(
 
 impl _run_harness(
     module_js: str,
-    tests: list,
-    imports: dict,
+    tests: list[any],
+    imports: dict[str, any],
     api_base_url: str,
-    storage: (dict | None),
+    storage: (dict[str, any] | None),
     timeout: float,
     source_path: (str | None) = None
 ) -> list[ClTestResult] {
@@ -463,16 +454,22 @@ impl _run_harness(
                 dep_files[dep_name] = _point_at_staged_runtime(dep_files[dep_name]);
             }
 
-            runtime_js = _compile_runtime_js();
+            (runtime_src, runtime_js) = _compile_runtime();
             core_match = re.search(
-                r'from\s+[\'\"]([^\'\"]*client_runtime_core\.js)[\'\"]', runtime_js
+                r"[\"'](\.[^\"']*client_runtime_core\.js)[\"']", runtime_js
             );
             if core_match {
                 runtime_js = runtime_js.replace(
                     core_match.group(1), "./client_runtime_core.js"
                 );
-                staged["client_runtime_core.js"] = _compile_runtime_core_js();
             }
+            (support, support_imports) = _collect_local_imports(
+                runtime_js,
+                str(Path(runtime_src).parent),
+                runtime_src,
+                allow_runtime=True
+            );
+            staged.update(support);
             staged["jac_runtime.js"] = runtime_js;
         }
 
@@ -521,7 +518,7 @@ impl _run_harness(
     }
 }
 
-impl _parse_results(stdout: str, tests: list) -> (list[ClTestResult] | None) {
+impl _parse_results(stdout: str, tests: list[any]) -> (list[ClTestResult] | None) {
     for line in stdout.splitlines() {
         if line.startswith(_RESULT_SENTINEL) {
             payload = json.loads(line[len(_RESULT_SENTINEL):]);
@@ -595,7 +592,7 @@ impl is_cl_test_file_for_discovery(filepath: str) -> bool {
     return module_is_client(filepath);
 }
 
-impl register_results_into_jactestcheck(filepath: str, results: list) -> None {
+impl register_results_into_jactestcheck(filepath: str, results: list[any]) -> None {
     import from jaclang.testing.test { JacTestCheck }
 
     for res in results {

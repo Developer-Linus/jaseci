@@ -10,7 +10,7 @@ library linked perfectly clean and then died at `dlopen` with
     libjac_unitree.so: undefined symbol: __aarch64_ldadd4_relax
 
 Executables link the same floor archives and pay the same debt. Once the
-launcher stopped being a Zig-linked stub and became `jac nacompile --strict
+launcher stopped being a Zig-linked stub and became `jac build --native --strict
 launcher/launcher.jac` (#8468), nothing supplied compiler_rt for it any more,
 and the linux/arm64 `jac` binary linked clean and then refused to start with
 
@@ -57,10 +57,10 @@ that, which is why the object-emission test below runs in a subprocess.
 There are two object-emission tests, and the difference between them is the
 whole point. One calls `init_object_codegen` itself and proves the emitter
 works: every helper assembles and reaches the symbol table, on any host. It
-does NOT prove that `jac nacompile` calls that initialization, so the
+does NOT prove that `jac build --native` calls that initialization, so the
 executable path could drop it and that test would stay green -- which is the
 shape of the original miss, one level up. The other drives the real
-`jac nacompile` CLI and pins the property that actually broke the release:
+`jac build --native` CLI and pins the property that actually broke the release:
 the executable compile path registers an asm parser for ITS target.
 
 Not pinned here at all, because it needs an aarch64 machine: the semantics. Each
@@ -69,9 +69,10 @@ value, the stored new value, sub-word CAS's zero-extension of a caller's wide
 `expected`, and cas16's paired compare -- all four orderings of all of it.
 """
 
+import from tests.support { jac_command }
+
 import os;
 import subprocess;
-import sys;
 import tempfile;
 import from pathlib { Path }
 import jaclang.compiler.backends.native.llvm.binding as llvm;
@@ -79,7 +80,7 @@ import from jaclang.compiler.backends.native.shared_emit {
     aarch64_floor_atomics_ir,
     aarch64_outline_atomics_ir
 }
-import from jaclang.cli.commands.nacompile { _finalize_native_ir }
+import from jaclang.compiler.backends.native.entry_points { finalize_native_ir }
 
 glob EXEC_STUB = 'define void @"jac_entry"() {\nentry:\n  ret void\n}\n',
      FIXTURES = str(Path(__file__).resolve().parent / "fixtures");
@@ -206,7 +207,7 @@ test "the asm block is well-formed IR on every host, not just aarch64" {
 }
 
 
-"""The IR `jac nacompile` hands to LLVM for one target, straight off the
+"""The IR `jac build --native` hands to LLVM for one target, straight off the
 production finalization point. Every argument but the ones a test varies is
 the launcher's own shape: a plain executable, not shared, not Windows, not
 macOS."""
@@ -217,7 +218,7 @@ def _finalized(
     is_macos: bool = False,
     static_musl: bool = False
 ) -> str {
-    (out, _exports) = _finalize_native_ir(
+    (out, _exports) = finalize_native_ir(
         llvm_ir_str=EXEC_STUB,
         triple=triple,
         clib_paths=clib_paths,
@@ -269,7 +270,7 @@ test "the static-musl executable path defines them too" {
 test "the aarch64 shared-library path defines them too" {
     ir = _finalized("aarch64-unknown-linux-gnu", ["libz.so"], shared=True);
     assert "__aarch64_ldset8_acq_rel" in ir , (
-        "`jac nacompile --shared` links the floor archives as well; this is "
+        "`jac build --native --lib` links the floor archives as well; this is "
         "the dlopen failure the family was first written for"
     );
 }
@@ -334,14 +335,11 @@ test "the aarch64 executable path assembles to a real object (#8788)" {
     # The whole point of this one is that it does NOT stop at parse_assembly.
     # Emitting the object is where the missing asm parser aborts, and abort is
     # not catchable, so the emit runs in its own process. On an x86_64 host this
-    # is also the cross-compilation case (`jac nacompile --target aarch64-...`),
+    # is also the cross-compilation case (`jac build --native --target aarch64-...`),
     # where a host-only asm parser is no help at all.
     fixture = os.path.join(FIXTURES, "emit_aarch64_atomics_obj.jac");
     res = subprocess.run(
-        [sys.executable, "-m", "jaclang", "run", fixture],
-        capture_output=True,
-        text=True,
-        timeout=900
+        jac_command("run", fixture), capture_output=True, text=True, timeout=900
     );
     assert res.returncode == 0 , (
         f"emitting an aarch64 object out of the executable path exited "
@@ -356,68 +354,66 @@ test "the aarch64 executable path assembles to a real object (#8788)" {
 }
 
 
-test "jac nacompile itself registers a parser for its target (#8788)" {
+test "jac build --native itself registers a parser for its target (#8788)" {
     # The property that broke the aarch64 release build, driven through the real
     # CLI rather than through a helper the test initializes for itself: revert
-    # nacompile.impl.jac's `init_object_codegen()` to the bare
+    # native_build.impl.jac's `init_object_codegen()` to the bare
     # initialize_all_targets/asmprinters pair and this goes red, which is the
     # control the previous test did not answer.
     #
     # The C floor import is what puts `module asm` in this module at all, so
-    # JAC_DUMP_IR is read back first: it holds the finalized module, written
-    # just BEFORE emission, and is therefore present in the aborting case too.
-    # Without that check a fixture that quietly lost its clib import would make
-    # this pass while proving nothing.
+    # the produced ELF is read back first: the outline-atomics helpers ride on
+    # that import and land in the binary's symbol table, so a fixture that
+    # quietly lost its clib import would make this pass while proving nothing.
     #
     # No aarch64 toolchain is involved. The abort is at object emission, which
     # is upstream of linking, so cross-compiling from any host reaches it.
     work = tempfile.mkdtemp();
-    dump = os.path.join(work, "finalized.ll");
-    env = dict(os.environ);
-    env["JAC_DUMP_IR"] = dump;
+    out_bin = os.path.join(work, "crc32_aarch64");
     res = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "jaclang",
-            "nacompile",
+        jac_command(
+            "build",
+            "--native",
+            "--debug",
             "--target",
             "aarch64-unknown-linux-gnu",
             os.path.join(FIXTURES, "static_archive_crc32.jac"),
             "-o",
-            os.path.join(work, "crc32_aarch64")
-        ],
+            out_bin
+        ),
         capture_output=True,
         text=True,
-        timeout=900,
-        env=env
+        timeout=900
     );
     out = res.stdout + res.stderr;
-
-    assert os.path.isfile(dump) , (
-        f"nacompile never dumped its finalized module, so nothing here says "
-        f"whether the run carried module asm at all.\n{out[-800:]}"
-    );
-    with open(dump) as _f {
-        finalized = _f.read();
+    if "Static musl runtime not found" in out {
+        testskip(
+            "aarch64 musl runtime not vendored on this host (zig build vendor-musl-linux-aarch64)"
+        );
     }
-    assert "__aarch64_ldset8_acq_rel" in finalized , (
+    assert os.path.isfile(out_bin) , (
+        f"jac build --native produced no binary for the aarch64 target, so "
+        f"nothing here says whether the run carried module asm at all.\n{out[-800:]}"
+    );
+    with open(out_bin, "rb") as _f {
+        image = _f.read();
+    }
+    assert b"__aarch64_ldset8_acq_rel" in image , (
         "the fixture compiled without the outline-atomics helpers in its "
         "module, so this run exercised nothing: the helpers ride on a C floor "
         "import, and static_archive_crc32.jac must keep one"
     );
-
     assert "Inline asm not supported by this streamer" not in out , (
-        f"jac nacompile aborted assembling the outline-atomics `module asm` "
+        f"jac build --native aborted assembling the outline-atomics `module asm` "
         f"for an aarch64 target: the executable compile path registered no asm "
         f"parser for the target it was emitting.\n{out[-800:]}"
     );
     assert res.returncode not in [134, -6] , (
-        f"jac nacompile died on SIGABRT ({res.returncode}) emitting for "
+        f"jac build --native died on SIGABRT ({res.returncode}) emitting for "
         f"aarch64.\n{out[-800:]}"
     );
     assert "Object code emitted" in out , (
-        f"jac nacompile never got past object emission for an aarch64 target, "
+        f"jac build --native never got past object emission for an aarch64 target, "
         f"which is where a missing asm parser kills it.\n{out[-800:]}"
     );
 }

@@ -1,6 +1,30 @@
 import from jaclang.compiler.backends.native.llvm { ir }
 
-def scalar_layout(llt: (ir.Type | None)) -> tuple {
+def struct_layouts(module: ir.Module) -> dict[str, tuple[list[int], int]] {
+    """Read identified struct offsets and sizes from LLVM's target ABI.""";
+    import from jaclang.compiler.backends.native.llvm { binding }
+    probe = ir.Module(name="layout", context=module.context);
+    probe.data_layout = module.data_layout;
+    for (name, struct) in module.context.identified_types.items() {
+        if not struct.is_opaque {
+            ir.GlobalVariable(probe, struct, name=name);
+        }
+    }
+    layouts: dict[str, tuple[list[int], int]] = {};
+    with binding.parse_assembly(str(probe)) as bound, binding.create_target_data(
+        str(module.data_layout)
+    ) as target_data {
+        for value in bound.global_variables {
+            count = len(module.context.identified_types[value.name].elements);
+            layouts[value.name] = target_data.get_global_struct_layout(value, count);
+        }
+    }
+    return layouts;
+}
+
+def scalar_layout(
+    llt: (ir.Type | None)
+) -> tuple[int, int, list[tuple[int, bool, int]]] {
     if isinstance(llt, ir.DoubleType) {
         return (8, 8, [(0, True, 64)]);
     }
@@ -22,7 +46,9 @@ def scalar_layout(llt: (ir.Type | None)) -> tuple {
     return (8, 8, [(0, False, 64)]);
 }
 
-def classify_struct_sysv(size: int, align: int, scalars: list) -> dict {
+def classify_struct_sysv(
+    size: int, align: int, scalars: list[tuple[int, bool, int]]
+) -> dict[str, any] {
     if size == 0 {
         return {
             "size": 0,
@@ -45,9 +71,9 @@ def classify_struct_sysv(size: int, align: int, scalars: list) -> dict {
         };
     }
     num_eb = (size + 7) // 8;
-    eb_cls: list = [];
-    eb_dbl: list = [];
-    eb_nfloat: list = [];
+    eb_cls: list[str] = [];
+    eb_dbl: list[bool] = [];
+    eb_nfloat: list[int] = [];
     for _e in range(num_eb) {
         eb_cls.append("NONE");
         eb_dbl.append(False);
@@ -74,7 +100,7 @@ def classify_struct_sysv(size: int, align: int, scalars: list) -> dict {
             }
         }
     }
-    coerce: list = [];
+    coerce: list[ir.Type] = [];
     for eb in range(num_eb) {
         used = size - (eb * 8);
         if used > 8 {
@@ -110,7 +136,9 @@ def classify_struct_sysv(size: int, align: int, scalars: list) -> dict {
     };
 }
 
-def classify_struct_aapcs(size: int, align: int, scalars: list) -> dict {
+def classify_struct_aapcs(
+    size: int, align: int, scalars: list[tuple[int, bool, int]]
+) -> dict[str, any] {
     if size == 0 {
         return {
             "size": 0,
@@ -153,9 +181,9 @@ def classify_struct_aapcs(size: int, align: int, scalars: list) -> dict {
     }
 
     if size <= 8 {
-        coerce: list = [ir.IntType(64)];
+        coerce: list[ir.Type] = [ir.IntType(64)];
     } else {
-        coerce: list = [ir.ArrayType(ir.IntType(64), 2)];
+        coerce: list[ir.Type] = [ir.ArrayType(ir.IntType(64), 2)];
     }
     return {
         "size": size,
@@ -167,7 +195,9 @@ def classify_struct_aapcs(size: int, align: int, scalars: list) -> dict {
     };
 }
 
-def classify_struct(size: int, align: int, scalars: list, triple: str) -> dict {
+def classify_struct(
+    size: int, align: int, scalars: list[tuple[int, bool, int]], triple: str
+) -> dict[str, any] {
     if "aarch64" in triple or "arm64" in triple {
         return classify_struct_aapcs(size, align, scalars);
     }
@@ -175,11 +205,11 @@ def classify_struct(size: int, align: int, scalars: list, triple: str) -> dict {
 }
 
 def classify_foreign_fn(
-    structs: dict,
+    structs: dict[str, list[tuple[str, str | None]]],
     params: list[tuple[(str | None), (str | None)]],
     ret_tname: (str | None),
     triple: str
-) -> (dict | None) {
+) -> (dict[str, any] | None) {
     import from jaclang.compiler.backends.native.foreign { foreign_struct_layout }
     has_struct = ret_tname is not None and ret_tname in structs;
     for (_pn, _tn) in params {
@@ -190,8 +220,8 @@ def classify_foreign_fn(
     if not has_struct {
         return None;
     }
-    sig: list = [];
-    param_plan: list = [];
+    sig: list[tuple[str, str | int | ir.Type]] = [];
+    param_plan: list[dict[str, any]] = [];
     for (i, (pname, tname)) in enumerate(params) {
         pn = pname or f"arg{i}";
         if tname is not None and tname in structs {
@@ -233,8 +263,8 @@ def classify_foreign_fn(
         }
     }
     sret = False;
-    sig_ret: tuple = ("scalar", );
-    ret_plan: dict = {"kind": "scalar"};
+    sig_ret: tuple[str] | tuple[str, list[ir.Type]] = ("scalar", );
+    ret_plan: dict[str, any] = {"kind": "scalar"};
     if ret_tname is not None and ret_tname in structs {
         (rsz, ral, rleaves) = foreign_struct_layout(structs, ret_tname);
         rcls = classify_struct(rsz, ral, rleaves, triple);

@@ -7,7 +7,7 @@ foreign `jac build`, which then fails with "bundle not found" because the
 foreign project's dist was never populated.
 
 These tests drive the real helpers against real on-disk sealed layouts, and
-the end-to-end case runs a real `jac build --client web` subprocess from a
+the end-to-end case runs a real `jac build --as client` subprocess from a
 project nested under a decoy sealed root; no mocks."""
 
 import json;
@@ -24,7 +24,7 @@ import from jaclang.server.sealed_serve {
 import from .test_helpers { get_jac_command }
 
 
-def _sealed_root(tmp: str, manifest: (dict | None) = None) -> str {
+def _sealed_root(tmp: str, manifest: (dict[str, any] | None) = None) -> str {
     img_root = os.path.join(tmp, "app");
     os.makedirs(os.path.join(img_root, "_precompiled"));
     dist = os.path.join(img_root, ".jac", "client", "dist");
@@ -50,7 +50,15 @@ def _sealed_root(tmp: str, manifest: (dict | None) = None) -> str {
     with open(
         os.path.join(img_root, ".jac", "serve_manifest.json"), "w", encoding="utf-8"
     ) as f {
-        f.write('{"client": {"exports": [], "globals": []}}');
+        f.write(
+            json.dumps(
+                {
+                    'module_manifests': {
+                        'main.jac': {'client': {'exports': [], 'globals': []}}
+                    }
+                }
+            )
+        );
     }
     return img_root;
 }
@@ -134,7 +142,7 @@ test "jac build inside a sealed host builds the nested project's bundle" {
         project = os.path.join(staging, "todo");
 
         built = subprocess.run(
-            [*jac_cmd, "build", "main.jac", "--client", "web"],
+            [*jac_cmd, "build", "--as", "client", "main.jac"],
             cwd=project,
             capture_output=True,
             text=True,
@@ -154,5 +162,74 @@ test "jac build inside a sealed host builds the nested project's bundle" {
         assert "host image bundle" not in bundles[0].read_text(encoding="utf-8") , "the host image's bundle leaked into the nested project";
     } finally {
         shutil.rmtree(tmp, ignore_errors=True);
+    }
+}
+
+test "sealed static endpoints use the image even with an unrelated runtime base" {
+    import from types { SimpleNamespace }
+    import from unittest.mock { MagicMock, patch }
+    import from jaclang.server.endpoints.pages { register_page_endpoints }
+    import from jaclang.server.server { JacAPIServer, ModuleIntrospector }
+
+    with tempfile.TemporaryDirectory() as tmp {
+        img_root = _sealed_root(tmp);
+        dist = Path(img_root) / ".jac" / "client" / "dist";
+        wasm = bytes.fromhex("0061736d01000000");
+        html = '<html><head><link rel="stylesheet" href="/static/client.HOSTHASH.css"></head><body>sealed app</body></html>';
+        (dist / "index.html").write_text(html);
+        (dist / "client.HOSTHASH.css").write_text(
+            ".uppercase{text-transform:uppercase}"
+        );
+        (dist / "arena.wasm").write_bytes(wasm);
+        (dist / "arena.wasm.imports.json").write_text('{"imports":{}}');
+        (Path(img_root) / "jac.toml").write_text(
+            '[project]\nname="sealed-assets"\n[client.assets]\ndir="brand"\n'
+        );
+        assets = Path(img_root) / "brand";
+        assets.mkdir();
+        (assets / "logo.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg"/>');
+        unrelated = Path(tmp) / "elsewhere";
+        unrelated.mkdir();
+        server: any = MagicMock(spec=JacAPIServer);
+        server.introspector = MagicMock(spec=ModuleIntrospector);
+        server.module = SimpleNamespace(__file__=str(Path(img_root) / "main.jac"));
+        server.introspector.resolve_root_app.return_value = "app";
+        server.resolved_settings.return_value = SimpleNamespace(client_dist="");
+        with patch("jaclang.server.endpoints.pages.get_config", return_value=None), patch(
+            "jaclang.server.endpoints.pages.Jac.get_context",
+            return_value=SimpleNamespace(base_path_dir=str(unrelated))
+        ), patch("jaclang.project.config.get_explicit_config", return_value=None) {
+            register_page_endpoints(server);
+            routes = {
+                call.args[0].path: call.args[0].callback
+                for call in server.add_endpoint.call_args_list
+            };
+            request = SimpleNamespace(method="GET", headers={});
+            for (route, args) in [("/", []), ("/{file_path:path}", ["wait-wuuut"])] {
+                response = routes[route](request, *args);
+                assert response.status_code == 200;
+                assert response.body.decode() == html;
+            }
+            response = routes["/static/{file_path:path}"](
+                request, "client.HOSTHASH.css"
+            );
+            assert response.status_code == 200;
+            assert b"text-transform:uppercase" in response.body;
+            response = routes["/static/{file_path:path}"](request, "arena.wasm");
+            assert response.status_code == 200;
+            assert response.body == wasm;
+            assert response.content_type_header() == "application/wasm";
+            response = routes["/static/{file_path:path}"](
+                request, "arena.wasm.imports.json"
+            );
+            assert response.status_code == 200;
+            assert json.loads(response.body) == {"imports": {}};
+            response = routes["/static/{file_path:path}"](request, "assets/logo.svg");
+            assert response.status_code == 200;
+            assert response.body == (assets / "logo.svg").read_bytes();
+            response = routes["/{file_path:path}"](request, "logo.svg");
+            assert response.status_code == 200;
+            assert response.body == (assets / "logo.svg").read_bytes();
+        }
     }
 }

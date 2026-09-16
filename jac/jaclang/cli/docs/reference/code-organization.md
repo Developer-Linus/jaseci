@@ -433,6 +433,31 @@ Work through this decision tree from top to bottom, and you will arrive at the a
 
 ---
 
+## Apps and Shared Code
+
+The patterns above organize one module. A project that ships more than one
+thing (a site, a mobile client, a command-line tool, a service or two) is
+organized one level up as a [workspace](apps.md): each deliverable is an app
+with its own root, and everything under no app's root is shared code.
+
+```
+acme/
+  jac.toml           [apps.web] path = "web"; [apps.cli] path = "cli"; ...
+  core/              shared: domain types, walkers, pure logic; no JSX, no DOM
+    social_graph.jac     claimed by a file-rooted [apps.social_graph] service app
+    scoring.jac
+    impl/                the impl/ folder works the same for shared modules
+  web/               the web app: pages/, components/, main.jac
+  cli/               the command-line app: main.jac, commands/
+```
+
+Ordinary imports participate in the selected app's compilation context. Imports
+through another declared app entry use its public functions and walkers;
+`E2039` diagnoses access outside that surface. File location does not establish
+ownership. Declaration and implementation annexes work within every app context.
+
+---
+
 ## Packages and `__init__.jac`
 
 A **package** in Jac is simply a directory that contains `.jac` files. Unlike Python, Jac does **not** require an `__init__.jac` file to recognize a directory as a package -- any directory containing `.jac` files is automatically treated as an importable package.
@@ -540,7 +565,7 @@ def _ensure_jac_runtime -> None {
     # ... helper logic
 }
 
-def _proc_file(filename: str) -> tuple {
+def _proc_file(filename: str) -> tuple[any, any, any] {
     # ... helper logic
 }
 

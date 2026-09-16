@@ -6,7 +6,7 @@ import from jaclang.scale.runtime.gateway.service_registry {
     ServiceEntry
 }
 import from jaclang.server { sv_client }
-import from jaclang.scale.deploy.target.kubernetes.manifest_builder { k8s_safe_name }
+import from jaclang.scale.runtime.context.util { k8s_safe_name }
 import from jaclang.scale.runtime.context.util {
     k8s_service_dns_url,
     in_cluster_namespace,
@@ -71,7 +71,7 @@ obj K8sRuntimeServiceResolver(ServiceDeployer) {
         return False;
     }
 
-    def status -> dict[str, dict] {
+    def status -> dict[str, dict[str, any]] {
         return {};
     }
 
@@ -97,12 +97,12 @@ obj K8sRuntimeServiceResolver(ServiceDeployer) {
 
 
 def build_k8s_registry(
-    routes: dict[str, str], port: int = DEFAULT_GATEWAY_PORT
+    apps: list[str] | dict[str, str], port: int = DEFAULT_GATEWAY_PORT
 ) -> dict[str, str] {
     namespace: str = in_cluster_namespace();
     registry: dict[str, str] = {};
-    for svc_name in routes.keys() {
-        registry[svc_name] = resolve_peer_url(svc_name, namespace, port);
+    for svc_name in list(apps) {
+        registry[str(svc_name)] = resolve_peer_url(str(svc_name), namespace, port);
     }
     return registry;
 }

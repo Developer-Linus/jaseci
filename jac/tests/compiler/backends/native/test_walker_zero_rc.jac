@@ -1,6 +1,6 @@
 """Walker-engine zero-RC factoring (#7870 item 5): the enforced build
 of a build-traverse-discard walker kernel over an owned region graph
-passes the --assert-no-rc audit, links, runs, and reproduces the
+passes the audit, links, runs, and reproduces the
 managed digest exactly -- the inherited acceptance from #7857. The OSP
 kernel compiles under the user module's memory mode (headerless when
 enforced); graph archetypes and the engine's own structs (WalkScope,
@@ -12,9 +12,8 @@ double-free."""
 
 import os;
 import subprocess;
-import sys;
 import tempfile;
-import from tests.support { TESTS_DIR }
+import from tests.support { jac_command, TESTS_DIR }
 
 glob FIXTURE = os.path.join(
          TESTS_DIR, "compiler", "backends", "native", "fixtures", "own_walk_kernel.jac"
@@ -24,19 +23,9 @@ test "enforced walker kernel runs rc-free with the managed digest" {
     with tempfile.TemporaryDirectory() as tmp {
         out_bin = os.path.join(tmp, "ownwalk_none");
         res = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "jaclang",
-                "nacompile",
-                FIXTURE,
-                "--enforce-nogc",
-                "--gc",
-                "none",
-                "--assert-no-rc",
-                "-o",
-                out_bin
-            ],
+            jac_command(
+                "build", "--native", FIXTURE, "--memory", "nogc", "-o", out_bin
+            ),
             capture_output=True,
             text=True
         );
@@ -44,17 +33,7 @@ test "enforced walker kernel runs rc-free with the managed digest" {
         assert os.path.exists(out_bin) , "no binary written";
         rc_bin = os.path.join(tmp, "ownwalk_rc");
         rcc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "jaclang",
-                "nacompile",
-                FIXTURE,
-                "--gc",
-                "rc",
-                "-o",
-                rc_bin
-            ],
+            jac_command("build", "--native", FIXTURE, "--memory", "rc", "-o", rc_bin),
             capture_output=True,
             text=True
         );
@@ -63,17 +42,9 @@ test "enforced walker kernel runs rc-free with the managed digest" {
         assert rc_out.returncode == 0 , rc_out.stderr;
         cy_bin = os.path.join(tmp, "ownwalk_cy");
         cyc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "jaclang",
-                "nacompile",
-                FIXTURE,
-                "--gc",
-                "cycles",
-                "-o",
-                cy_bin
-            ],
+            jac_command(
+                "build", "--native", FIXTURE, "--memory", "managed", "-o", cy_bin
+            ),
             capture_output=True,
             text=True
         );

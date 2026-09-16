@@ -9,8 +9,7 @@ import from collections { OrderedDict, deque }
 import from collections.abc { Callable, Coroutine, Iterable, Mapping, Sequence }
 import from concurrent.futures { Future, ThreadPoolExecutor }
 import from contextvars { ContextVar }
-import dataclasses;
-import from dataclasses { dataclass, field }
+import from jaclang.runtime.object_model { make_object }
 import from inspect { getfile }
 import from logging { getLogger }
 import from typing { TYPE_CHECKING, Literal, ParamSpec, Protocol, TypeAlias, TypeVar }
@@ -34,7 +33,7 @@ import from jaclang.runtime.archetype {
     light_hop,
     light_hop_answers
 }
-import from jaclang.compiler.frontend.constant { EdgeDir, colors }
+import from jaclang.runtime.constants { EdgeDir, colors }
 import from jaclang.runtime.graph_query { GraphQuery, QHop }
 import from jaclang.runtime.constructs {
     AccessLevel,
@@ -50,13 +49,13 @@ import from jaclang.runtime.constructs {
     WalkerAnchor,
     WalkerArchetype
 }
-import from jaclang.compiler.driver.modresolver {
+import from jaclang.project.modresolver {
     infer_language,
     find_jac_project_root,
     push_import_base,
     pop_import_base
 }
-import from jaclang.compiler.driver.mtp { Info }
+import from jaclang.runtime.semantic { Info }
 import type from jaclang.byllm.mtir { MTRuntime }
 import type from jaclang.cli.console { JacConsole as ConsoleImpl }
 import type from jaclang.compiler.driver.compiler { JacCompiler }
@@ -65,7 +64,8 @@ import type from jaclang.compiler.driver.selfhost { SelfHostCache }
 import type from jaclang.client.client_bundle { ClientBundle, ClientBundleBuilder }
 import type from jaclang.runtime.context { ExecutionContext }
 import type from jaclang.server.server { JacAPIServer as JacServer }
-import type from jaclang.server.server { ModuleIntrospector, UserManager }
+import type from jaclang.server.identity.user_manager { UserManager }
+import type from jaclang.server.server { ModuleIntrospector, ServerExtension }
 
 glob logger = getLogger(__name__),
      T = TypeVar('T'),
@@ -81,14 +81,14 @@ glob logger = getLogger(__name__),
      _request_context: ContextVar[ExecutionContext | None] = ContextVar(
          'request_context', `default=None
      ),
-     _default_base_path_dir: list = [os.getcwd()],
-     _default_full_target_path: list = [None],
-     _shared_root_resolver: list = [None, None];
+     _default_base_path_dir: list[str | None] = [os.getcwd()],
+     _default_full_target_path: list[str | None] = [None],
+     _shared_root_resolver: list[any] = [None, None];
 
-glob _scale_provider_cache: list = [],
-     _scale_provider_error: list = [None];
+glob _scale_provider_cache: list[type | None] = [],
+     _scale_provider_error: list[Exception | None] = [None];
 
-glob _persistent_memory_provider: list = [None];
+glob _persistent_memory_provider: list[Callable | None] = [None];
 
 def _scale_provider -> any {
     if _scale_provider_cache {
@@ -96,8 +96,8 @@ def _scale_provider -> any {
     }
     result: any = None;
     try {
-        import from jaclang.scale.plugin { JacScalePlugin }
-        result = JacScalePlugin;
+        import from jaclang.scale.runtime.provider { JacScaleRuntime }
+        result = JacScaleRuntime;
     } except ImportError as e {
         _scale_provider_error[0] = e;
     }
@@ -105,7 +105,7 @@ def _scale_provider -> any {
     return result;
 }
 
-def scale_provider_error -> any {
+def scale_provider_error -> Exception | None {
     return _scale_provider_error[0];
 }
 
@@ -231,7 +231,7 @@ class JacPersistence {
     static def peek_item(container: any, key: any) -> any;
     static def get_user_manager(base_path: str) -> UserManager;
     static def store(base_path: str = './storage', create_dirs: bool = True) -> any;
-    static def get_persistent_memory(config: dict) -> any;
+    static def get_persistent_memory(config: dict[str, any]) -> any;
     static def set_persistent_memory_provider(provider: Callable | None) -> None;
 }
 
@@ -298,7 +298,7 @@ class JacGraph {
         right: (NodeArchetype | list[NodeArchetype]),
         `edge: type[EdgeArchetype] | EdgeArchetype | None = None,
         undir: bool = False,
-        conn_assign: (tuple[(tuple, tuple)] | None) = None,
+        conn_assign: (tuple[(tuple[str, ...], tuple[any, ...])] | None) = None,
         edges_only: bool = False
     ) -> (NodeArchetype | list[NodeArchetype] | list[EdgeArchetype]);
 
@@ -310,7 +310,7 @@ class JacGraph {
     ) -> bool;
 
     static def assign_all(
-        target: list[T], attr_val: tuple[(tuple[str], tuple[any])]
+        target: list[T], attr_val: tuple[(tuple[str, ...], tuple[any, ...])]
     ) -> list[T];
 
     static def root -> Root;
@@ -318,7 +318,7 @@ class JacGraph {
     static def build_edge(
         is_undirected: bool,
         conn_type: type[EdgeArchetype] | EdgeArchetype | None,
-        conn_assign: (tuple[(tuple, tuple)] | None)
+        conn_assign: (tuple[(tuple[str, ...], tuple[any, ...])] | None)
     ) -> Callable[([NodeAnchor, NodeAnchor], EdgeArchetype)];
 
     static def heavy_edge(
@@ -326,12 +326,12 @@ class JacGraph {
         target: NodeAnchor,
         conn_type: type[EdgeArchetype] | EdgeArchetype | None,
         is_undirected: bool,
-        conn_assign: (tuple[(tuple, tuple)] | None)
+        conn_assign: (tuple[(tuple[any, ...], tuple[any, ...])] | None)
     ) -> EdgeArchetype;
 
     static def hop(
         origin: any, dir: int, edge_type: (type | None) = None, edges_only: bool = False
-    ) -> list;
+    ) -> list[any];
 
     static def clear_edges(
         origin: any, dir: int, edge_type: (type | None) = None
@@ -370,10 +370,6 @@ class JacWalker {
 
 class JacArchetype {
     static def make_archetype(cls: type[Archetype]) -> type[Archetype];
-    static def field(
-        factory: (Callable[([], T)] | None) = None, `init: bool = True
-    ) -> T;
-
     static def on_entry(func: Callable) -> Callable;
     static def on_exit(func: Callable) -> Callable;
     static def set_trigger(
@@ -420,12 +416,14 @@ class JacIntrospection {
     static def list_nodes(module_name: str) -> list[str];
     static def list_edges(module_name: str) -> list[str];
     static def spawn_node(
-        node_name: str, attributes: (dict | None) = None, module_name: str = '__main__'
+        node_name: str,
+        attributes: (dict[str, any] | None) = None,
+        module_name: str = '__main__'
     ) -> NodeArchetype;
 
     static def spawn_walker(
         walker_name: str,
-        attributes: (dict | None) = None,
+        attributes: (dict[str, any] | None) = None,
         module_name: str = '__main__'
     ) -> WalkerArchetype;
 
@@ -462,12 +460,7 @@ class JacServe {
     ) -> ClientBundle;
 
     static def get_api_server_class -> type;
-    static def ensure_sv_service(module_name: str, base_path: str) -> None;
-    static def sv_service_call(module_name: str, func_name: str, args: dict) -> any;
-    static def sv_walker_call(
-        module_name: str, walker_name: str, args: dict, stub_cls: any
-    ) -> any;
-
+    static def get_server_extensions -> list[ServerExtension];
     static def get_sv_registry -> dict[str, str];
     static def create_server(
         jac_server: JacServer, host: str, port: int, max_retries: int = 10
@@ -567,4 +560,5 @@ class JacRuntime(JacRuntimeInterface) {
     static def set_context(context: ExecutionContext) -> None;
     static def push_request_context(context: ExecutionContext) -> any;
     static def reset_request_context(token: any) -> None;
+    static def after_fork_in_child -> None;
 }

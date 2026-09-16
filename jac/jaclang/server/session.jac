@@ -18,6 +18,7 @@ import from jaclang.data.store { AnchorRow, ConnInfo, PgStore, Store, TxnIsolati
 
 glob logger = logging.getLogger(__name__),
      MAX_RETRIES = 5,
+     EDGE_PAGE = 1000,
      SCRATCH_ENV = 'JAC_DB_SCRATCH',
      RETENTION_ENV = 'JAC_DB_RETENTION_DAYS',
      RO_UNITS_ENV = 'JAC_DB_RO_UNITS',
@@ -94,7 +95,8 @@ obj RuntimeLease {
 
 obj ScratchState {
     has database: str,
-        base_path: str;
+        base_path: str,
+        owner_pid: int = 0;
 }
 
 
@@ -146,6 +148,7 @@ obj Session(Memory) {
     def read_scope_exit -> None;
     def flush(full: bool = False) -> None;
     def _flush_locked(full: bool) -> None;
+    def ensure_writable_txn -> None;
     def read_barrier -> None;
     def _recover_conflict -> None;
     def _ensure_txn -> None;
@@ -153,10 +156,8 @@ obj Session(Memory) {
     def _register_ro_writers -> str;
     def _raise_ro_retry -> None;
     def _drop_snapshot_reads -> None;
-    def _materialize(
-        row: AnchorRow, edge_ids: (list[UUID] | None) = None
-    ) -> (Anchor | None);
-
+    def _materialize(row: AnchorRow) -> (Anchor | None);
+    def _load_edges(nd: NodeAnchor) -> list[EdgeAnchor];
     def _serialize(anchor: Anchor) -> AnchorRow;
     def _evict_uncommitted -> None;
 }

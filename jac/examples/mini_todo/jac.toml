@@ -2,7 +2,7 @@
 name = "mini-todo"
 version = "1.0.0"
 description = "Minimal full-stack AI todo app"
-entry-point = "main.jac"
+entry-point = "main"
 
 [dependencies]
 python-dateutil = ">=2.9.0"
@@ -25,8 +25,6 @@ typescript = "^5.3.3"
 [dev-dependencies]
 watchdog = ">=3.0.0"
 
-[serve]
-base_route_app = "app"
 
 [scale]
 

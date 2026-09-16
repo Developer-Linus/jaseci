@@ -1591,6 +1591,35 @@ impl DocIRGenPass.exit_list_val with uni.ListVal exit {
     here.gen.doc_ir = self.format_comma_collection(here);
 }
 
+impl DocIRGenPass.exit_graph_expr with uni.GraphExpr exit {
+    parts: list[doc.DocType] = [];
+    for (index, child) in enumerate(here.kid[2:-1]) {
+        if isinstance(child, uni.Expr) {
+            parts.extend([self.line(), child.gen.doc_ir]);
+            following = here.kid[index + 3];
+            if not (isinstance(following, uni.Token) and following.name == Tok.SEMI) {
+                parts.append(self.text(";"));
+            }
+        } else {
+            parts.append(child.gen.doc_ir);
+        }
+    }
+    here.gen.doc_ir = self.group(
+        self.concat(
+            [
+                here.kid[0].gen.doc_ir,
+                self.space(),
+                here.kid[1].gen.doc_ir,
+                self.indent(self.concat(parts), ast_node=here),
+                self.line(),
+                here.kid[-1].gen.doc_ir
+            ],
+            ast_node=here
+        ),
+        ast_node=here
+    );
+}
+
 impl DocIRGenPass.exit_atom_trailer with uni.AtomTrailer exit {
     parts: list[doc.DocType] = [];
     for i in here.kid {
@@ -2467,7 +2496,7 @@ impl DocIRGenPass._assign_space_group(nd: uni.UniNode) -> None {
 }
 
 impl DocIRGenPass._assign_operator_chain(
-    nd: uni.UniNode, operands: list, ops: list
+    nd: uni.UniNode, operands: list[uni.UniNode], ops: list[uni.UniNode]
 ) -> None {
     rest: list[doc.DocType] = [];
     for i in range(len(ops)) {
@@ -2683,7 +2712,7 @@ impl DocIRGenPass.finish_doc_comments with uni.UniNode exit {
 
 impl DocIRGenPass._comment_is_live(c: uni.CommentToken) -> bool {
     if self._live_comment_ids is None {
-        src = self.ir_in.source if isinstance(self.ir_in, uni.Module) else None;
+        src = self.module.source if isinstance(self.module, uni.Module) else None;
         self._live_comment_ids = {id(lc) for lc in (src.comments if src else [])};
     }
     return id(c) in self._live_comment_ids;

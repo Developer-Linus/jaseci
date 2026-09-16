@@ -22,9 +22,9 @@ down with it.
 import ctypes;
 import os;
 import subprocess;
-import sys;
 import tempfile;
 import from tests.support {
+    jac_command,
     TESTS_DIR,
     compile_native,
     get_func,
@@ -49,17 +49,20 @@ def compile_na_inline(label: str, code: str) -> JacProgram {
 
 """Like `compile_na_inline`, but also hand back the compiled module so a
 granular demotion (epic #8201) is observable through the native layout."""
-def compile_na_inline_ir(label: str, code: str) -> tuple {
+def compile_na_inline_ir(label: str, code: str) -> tuple[any, ...] {
     path = os.path.join(FIXTURES, f"_varargs_{label}.jac");
     prog = JacProgram();
-    ir = prog.compile(file_path=path, use_str=code, options=native_force_opts());
+    options = native_force_opts();
+    options.no_ir_cache = True;
+    options.skip_native_engine = True;
+    ir = prog.compile(file_path=path, use_str=code, options=options);
     return (prog, ir, );
 }
 
 """Run a fixture on the server pathway, where CPython is the oracle."""
 def sv_run(fixture: str) -> str {
     proc = subprocess.run(
-        [sys.executable, "-m", "jaclang", "run", os.path.join(FIXTURES, fixture)],
+        jac_command("run", os.path.join(FIXTURES, fixture)),
         capture_output=True,
         text=True,
         timeout=900
@@ -74,15 +77,9 @@ def sv_run(fixture: str) -> str {
 def na_run(fixture: str) -> str {
     out_bin = os.path.join(tempfile.mkdtemp(), "probe.bin");
     comp = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "jaclang",
-            "nacompile",
-            os.path.join(FIXTURES, fixture),
-            "-o",
-            out_bin
-        ],
+        jac_command(
+            "build", "--native", os.path.join(FIXTURES, fixture), "-o", out_bin
+        ),
         capture_output=True,
         text=True,
         timeout=900
@@ -320,7 +317,12 @@ test "a pack of a generic archetype's erased T answers what CPython answers" {
 }
 
 test "a generic pack slot is a native list, not the bare erased pointer" {
-    (eng, ir) = compile_native("varargs_generic.jac");
+    prog = JacProgram();
+    options = native_force_opts();
+    options.no_ir_cache = True;
+    options.skip_native_engine = True;
+    ir = prog.compile(os.path.join(FIXTURES, "varargs_generic.jac"), options=options);
+    assert not prog.errors_had , str(prog.errors_had);
     layout = ir.gen.native_layout;
     assert layout is not None , "whole-module native compile aborted";
     assert "Cell.get" in layout.methods , (
@@ -343,15 +345,13 @@ test "a generic pack slot is a native list, not the bare erased pointer" {
 test "a generic pack at a by-value type argument is refused, not lowered" {
     out_bin = os.path.join(tempfile.mkdtemp(), "nope.bin");
     comp = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "jaclang",
-            "nacompile",
+        jac_command(
+            "build",
+            "--native",
             os.path.join(FIXTURES, "varargs_generic_scalar.jac"),
             "-o",
             out_bin
-        ],
+        ),
         capture_output=True,
         text=True,
         timeout=900

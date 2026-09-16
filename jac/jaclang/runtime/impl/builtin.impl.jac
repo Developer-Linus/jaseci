@@ -4,8 +4,8 @@ impl _jac_graph_json(file: (str | None) = None) -> str {
     visited_nodes: set = set();
     connections: set = set();
     edge_ids: set = set();
-    nodes: list[dict] = [];
-    edges: list[dict] = [];
+    nodes: list[dict[str, any]] = [];
+    edges: list[dict[str, any]] = [];
     `root = jac.`root();
     collect_node_connections(`root, visited_nodes, connections, edge_ids);
     nodes.append({'id': id(`root), 'label': 'root'});
@@ -214,7 +214,7 @@ impl new(cls: any, *args: any) -> any {
     return cls(*args);
 }
 
-impl unsafe_html(html: any) -> dict {
+impl unsafe_html(html: any) -> dict[str, any] {
     return {"__jacUnsafeHtml": str(html) if (html is not None) else ""};
 }
 
@@ -299,6 +299,18 @@ impl restspec(**specs: any) -> Callable {
             );
         }
     }
+    scheme = specs.get('scheme');
+    if scheme is not None {
+        raw_s = str(scheme).strip().lower();
+        if raw_s not in ('', 'jac', 'github') {
+            raise ValueError(
+                f"@restspec scheme={scheme!r} is not recognized. Expected "
+                "'jac' (api key plus timestamped HMAC, the default) or "
+                "'github' (X-Hub-Signature-256 over the raw body)."
+            );
+        }
+        specs['scheme'] = '' if raw_s == 'jac' else raw_s;
+    }
 
     def decorator(cls: type) -> type {
         spec = SpecsCls(**specs);
@@ -322,6 +334,14 @@ def _validate_restspec_target(spec: any, target: any) {
             f"@restspec(protocol=WEBHOOK) on '{name}': webhook endpoints are "
             "walker-only; a plain def cannot receive webhooks. Use a walker "
             "or drop the webhook protocol."
+        );
+    }
+    scheme = getattr(spec, 'scheme', '') or '';
+    if scheme and proto != APIProtocol.WEBHOOK {
+        raise ValueError(
+            f"@restspec(scheme={scheme!r}) on '{name}' requires "
+            "protocol=WEBHOOK; a signature scheme has no meaning on "
+            f"{proto} endpoints."
         );
     }
     if getattr(spec, 'broadcast', False) and proto != APIProtocol.WEBSOCKET {
@@ -394,11 +414,52 @@ impl JacListView.__iter__ -> any {
     return iter([self.backing[k] for k in range(self.start, self.stop)]);
 }
 
-impl _jac_chunks(xs: any, n: int) -> list {
+impl _jac_take_attr(owner: any, name: str) -> any {
+    value = getattr(owner, name);
+    setattr(owner, name, None);
+    return value;
+}
+
+impl _jac_take_item(seq: any, key: any) -> any {
+    value = seq[key];
+    seq[key] = None;
+    return value;
+}
+
+impl _jac_replace_attr(owner: any, name: str, value: any) -> any {
+    old = getattr(owner, name);
+    setattr(owner, name, value);
+    return old;
+}
+
+impl _jac_replace_item(seq: any, key: any, value: any) -> any {
+    old = seq[key];
+    seq[key] = value;
+    return old;
+}
+
+impl _jac_swap_places(
+    owner_a: any, key_a: any, attr_a: bool, owner_b: any, key_b: any, attr_b: bool
+) -> None {
+    value_a = getattr(owner_a, key_a) if attr_a else owner_a[key_a];
+    value_b = getattr(owner_b, key_b) if attr_b else owner_b[key_b];
+    if attr_a {
+        setattr(owner_a, key_a, value_b);
+    } else {
+        owner_a[key_a] = value_b;
+    }
+    if attr_b {
+        setattr(owner_b, key_b, value_a);
+    } else {
+        owner_b[key_b] = value_a;
+    }
+}
+
+impl _jac_chunks(xs: any, n: int) -> list[any] {
     if n < 1 {
         n = 1;
     }
-    out: list = [];
+    out: list[any] = [];
     i = 0;
     total = len(xs);
     while i < total {

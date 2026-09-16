@@ -1,15 +1,15 @@
 impl cfg_dot_from_file(file_name: str) -> str {
-    import from jaclang.compiler.driver.pass_driver { run_pass }
+    import from jaclang.compiler.driver.pipeline { run_utility, UtilityProduct }
     import from jaclang.compiler.driver.program { JacProgram }
     with open(file_name, encoding="utf-8") as f {
         file_source = f.read();
     }
     ir = (prog := JacProgram()).compile(use_str=file_source, file_path=file_name);
-    cfg_pass = run_pass(CoalesceBBPass, ir, prog);
+    import from typing { cast }
+    cfg_pass = cast(CoalesceBBPass, run_utility(UtilityProduct.CFG_DOT, ir, prog));
     dot = cfg_pass.printgraph_cfg();
     return dot;
 }
-
 
 impl CoalesceBBPass.printgraph_cfg -> str {
     bb_tails: dict[int, (UniCFGNode | None)] = {};
@@ -248,12 +248,13 @@ impl CoalesceBBPass.get_bb(nd: UniCFGNode) -> list[UniCFGNode] {
     return bb_list;
 }
 
-impl CoalesceBBPass.before_pass -> None {
+impl CoalesceBBPass.prepare with entry {
+    if self.ctx.nested_depth {
+        return;
+    }
     self.basic_blocks = {};
     self.bb_counter = 0;
 }
-
-impl CFGBuildPass.before_pass -> None {}
 
 impl CFGBuildPass.link_bbs(source: UniCFGNode, target: UniCFGNode) -> None {
     if source and target {

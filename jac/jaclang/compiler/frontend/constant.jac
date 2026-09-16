@@ -106,18 +106,6 @@ class JacSemTokenModifier(IntFlag) {
     static def as_str_list -> list[str];
 }
 
-class Constants(StrEnum) {
-    with entry {
-        HERE = 'here';
-        ROOT = 'root';
-        VISITOR = 'visitor';
-        GUEST = '__guest__';
-        SUPER_ROOT_UUID = '00000000-0000-0000-0000-000000000000';
-    }
-
-    def __str__(self: Constants) -> str;
-}
-
 enum CodeContext {
     SERVER = 'server',
     CLIENT = 'client',
@@ -134,8 +122,6 @@ enum CodeContext {
         has is_native: bool { getter; }
     }
 }
-
-enum EdgeDir: int { IN = 1, OUT = 2, ANY = 3 }
 
 enum ParamKind: int { POSONLY = 0, NORMAL = 1, VARARG = 2, KWONLY = 3, KWARG = 4 }
 
@@ -336,6 +322,13 @@ glob BROWSER_SEED_GLOBALS: frozenset[str] = frozenset(
          }
      );
 
+def client_state_setter_name(var_name: str) -> str {
+    if not var_name {
+        return "";
+    }
+    return f"set{var_name[0].upper()}{var_name[1:]}";
+}
+
 def is_borrow_kind(k: OwnershipKind) -> bool {
     return k == OwnershipKind.BORROW or k == OwnershipKind.MUT_BORROW;
 }
@@ -489,6 +482,7 @@ class Tokens(StrEnum) {
         KW_PROT = 'KW_PROT';
         KW_HAS = 'KW_HAS';
         KW_GLOBAL = 'KW_GLOBAL';
+        KW_GRAPH = 'KW_GRAPH';
         COMMA = 'COMMA';
         KW_CAN = 'KW_CAN';
         KW_DEF = 'KW_DEF';
@@ -676,6 +670,7 @@ glob TOKEN_MAP: dict[str, str] = {
          'KW_FOREVER': 'forever',
          'KW_FROM': 'from',
          'KW_GLOBAL': 'glob',
+         'KW_GRAPH': 'graph',
          'KW_HAS': 'has',
          'KW_HERE': 'here',
          'KW_IF': 'if',
@@ -796,38 +791,11 @@ glob TOKEN_MAP: dict[str, str] = {
          Tokens.RPAREN: ')',
          Tokens.RETURN_HINT: '->',
          Tokens.DOT: '.'
-     },
-     colors = [
-         '#FFE9E9',
-         '#F0FFF0',
-         '#F5E5FF',
-         '#FFFFE0',
-         '#D2FEFF',
-         '#E8FFD7',
-         '#FFDEAD',
-         '#FFF0F5',
-         '#F5FFFA',
-         '#FFC0CB',
-         '#7FFFD4',
-         '#C0C0C0',
-         '#ADD8E6',
-         '#FFFAF0',
-         '#f4f3f7',
-         '#f5efff',
-         '#b5d7fd',
-         '#ffc0cb',
-         '#FFC0CB',
-         '#e1d4c0',
-         '#FCDFFF',
-         '#F0FFFF',
-         '#F0F8FF',
-         '#F8F8FF',
-         '#F0FFFF'
-     ];
+     };
 
-glob NON_ESCAPED_KEYWORDS: set = {'float', 'int', 'str', 'bool', 'self'};
+glob NON_ESCAPED_KEYWORDS: set[str] = {'float', 'int', 'str', 'bool', 'self'};
 
-glob RESERVED_IDENT_NAMES: set = {
+glob RESERVED_IDENT_NAMES: set[str] = {
          v
          for v in TOKEN_MAP.values()
          if v not in NON_ESCAPED_KEYWORDS

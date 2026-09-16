@@ -67,7 +67,7 @@ obj PgEventStream(EventStreamBroker) {
         if self._store is None {
             import from jaclang.server.session { conninfo_from_url }
             import from jaclang.data.store { PgStore }
-            import from jaclang.scale.persistence.pg { scale_db_url }
+            import from jaclang.server.shared_store { scale_db_url }
             url = self.config.get('url') or scale_db_url();
             assert url , "PgEventStream needs a database url (JAC_DB_URL)";
             store = PgStore(conninfo=conninfo_from_url(str(url)));
@@ -141,7 +141,7 @@ obj PgEventStream(EventStreamBroker) {
         self._positioned.add(key);
     }
 
-    def _claim(topic: str, group: str, max_messages: int) -> list {
+    def _claim(topic: str, group: str, max_messages: int) -> list[any] {
         store = self._ensure_store();
         store.begin(TxnIsolation.READ_COMMITTED);
         try {

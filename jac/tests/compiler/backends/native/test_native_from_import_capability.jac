@@ -57,7 +57,7 @@ def _opts -> CompileOptions {
 
 
 """Compile a fixture on the native pathway; return (program, module)."""
-def _compile_native(fixture: str) -> tuple {
+def _compile_native(fixture: str) -> tuple[any, ...] {
     prog = JacProgram();
     ir = prog.compile(file_path=os.path.join(FIXTURES, fixture), options=_opts());
     return (prog, ir, );
@@ -65,7 +65,7 @@ def _compile_native(fixture: str) -> tuple {
 
 
 """Compile a fixture under the demotion coverage; return (program, module, coverage)."""
-def _compile_with_coverage(fixture: str) -> tuple {
+def _compile_with_coverage(fixture: str) -> tuple[any, ...] {
     prog = JacProgram();
     na_coverage_begin();
     try {
@@ -127,7 +127,7 @@ def _native_int_fn(ir: any, name: str) -> any {
 
 
 """The coverage seam list recorded for a fixture path."""
-def _seams_of(coverage: dict, fixture: str) -> list[str] {
+def _seams_of(coverage: dict[str, any], fixture: str) -> list[str] {
     rec = coverage.get(os.path.realpath(os.path.join(FIXTURES, fixture)));
     if rec is None {
         return [];
@@ -333,34 +333,37 @@ test "a body-scoped from-import demotes only its owning function" {
 }
 
 
-test "a dataclasses field import is a compile-time declaration" {
-    assert _rejected_imports("dataclasses_field_default.jac") == [] , (
-        "`field` only ever appears as a has-field default, where the "
+test "a Jac field import is a compile-time declaration" {
+    assert _rejected_imports("object_field_default.jac") == [] , (
+        "`ObjectField` only ever appears as a has-field default, where the "
         "declaration site consumes it; the native lane never calls it, so "
         "the import belongs in the compile-time vocabulary"
     );
-    assert _scan_verdict(_module_with("import from dataclasses { field }")) == "OK" , (
+    assert _scan_verdict(
+        _module_with("import from jaclang.runtime.object_model { ObjectField }")
+    )
+        == "OK" , (
         "the inferred-placement scanner reads the same vocabulary, so a "
-        "`field` import must stop demoting the module there too"
+        "`ObjectField` import must stop demoting the module there too"
     );
 }
 
 
-test "a non-marker dataclasses name still refuses" {
+test "a Python dataclass decorator still refuses" {
     verdict = _scan_verdict(_module_with("import from dataclasses { dataclass }"));
     assert verdict != "OK" , (
-        "the vocabulary is per name: `field` erases at the declaration site "
+        "the vocabulary is per name: `ObjectField` erases at the declaration site "
         f"and `dataclass` does not, so listing it must still refuse: {verdict}"
     );
 }
 
 
 test "a field-defaulted archetype lowers and builds its defaults" {
-    (prog, ir) = _compile_native("dataclasses_field_default.jac");
+    (prog, ir) = _compile_native("object_field_default.jac");
     assert not prog.errors_had , f"{[str(e) for e in prog.errors_had]}";
     assert ir is not None and ir.gen.llvm_ir , (
         "no native IR for an archetype whose has-fields default through "
-        "`dataclasses.field`"
+        "`jaclang.runtime.object_model.ObjectField`"
     );
     layout = ir.gen.native_layout;
     assert layout is not None , "whole-module native compile aborted";

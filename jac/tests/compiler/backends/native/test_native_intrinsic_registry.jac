@@ -33,7 +33,10 @@ glob BITS_1_5 = 4609434218613702656,  # 0x3FF8000000000000
 
 
 def _native_opts(gc_mode: str | None = None) -> any {
-    kwargs: dict = {"force_codespace": "native", "force_target_program": True};
+    kwargs: dict[str, any] = {
+        "force_codespace": "native",
+        "force_target_program": True
+    };
     if gc_mode is not None {
         kwargs["na_gc_mode"] = gc_mode;
     }
@@ -41,7 +44,7 @@ def _native_opts(gc_mode: str | None = None) -> any {
 }
 
 """Compile a probe source in an isolated tempdir; return (prog, module)."""
-def _compile_src(source: str, gc_mode: str | None = None) -> tuple {
+def _compile_src(source: str, gc_mode: str | None = None) -> tuple[any, ...] {
     with tempfile.TemporaryDirectory() as tmp {
         src = os.path.join(tmp, "intrinsic_probe.jac");
         with open(src, "w") as f {
@@ -98,10 +101,19 @@ def _probe_source(intr: any) -> str {
         return "def probe(x: int) -> int { " + intr.name + "(); return x + 7; }\n";
     }
     if intr.dispatch in (IntrinsicDispatch.MEM_LOAD, IntrinsicDispatch.MEM_STORE) {
+        spec = intr.result_spec
+            if intr.dispatch == IntrinsicDispatch.MEM_LOAD
+            else intr.param_specs[1];
         return (
             RAW_MEM_IMPORTS
-            + "def probe(x: int) -> int { p = malloc(8); __mem_store_i64(p, x + 7); "
-            "v = __mem_load_i64(p); free(p); return v; }\n"
+            + "def probe(x: int) -> int { p = malloc(8); __mem_store_"
+            + spec
+            + "(p, "
+            + spec
+            + "(x + 7)); "
+            + "v = __mem_load_"
+            + spec
+            + "(p); free(p); return int(v); }\n"
         );
     }
     if intr.dispatch == IntrinsicDispatch.ATOMIC_XCHG {
@@ -160,6 +172,23 @@ test "every registry intrinsic lowers through its registered emitter" {
             assert fn(35) == 42 , f"{intr.name}: probe did not execute cleanly";
         }
     }
+}
+
+test "32 bit memory operations preserve adjacent storage and signed values" {
+    (prog, ir_mod) = _compile_src(
+        RAW_MEM_IMPORTS
+            + "def probe(x: int) -> int { p = malloc(8); "
+            + "__mem_store_i32(p, 123); __mem_store_i32(p + 4, i32(x)); "
+            + "lo = int(__mem_load_i32(p)); hi = int(__mem_load_i32(p + 4)); "
+            + "free(p); return lo + hi; }\n"
+    );
+    assert not prog.errors_had , str(prog.errors_had);
+    eng = ir_mod.gen.native_engine;
+    assert eng is not None;
+    fn = _get_func(eng, "probe", ctypes.c_int64, ctypes.c_int64);
+    assert fn(-123) == 0;
+    assert fn(2147483647) == 2147483770;
+    assert fn(-2147483648) == -2147483525;
 }
 
 test "gc-gated intrinsic is a declared no-op outside its gc mode" {

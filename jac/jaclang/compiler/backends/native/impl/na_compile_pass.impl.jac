@@ -16,53 +16,30 @@ def _mod_bitcode(mod: ModuleRef) -> bytes {
     return bitcode;
 }
 
-impl native_compiler_fingerprint(options: any) -> str {
-    import glob as _cgl;
-    import hashlib as _cfh_hash;
-    import os as _cfp_os;
-    import jaclang as _jlm;
-    _jl_dir = _cfp_os.path.dirname(_cfp_os.path.abspath(_jlm.__file__));
-    _nat_dir = _cfp_os.path.join(_jl_dir, "compiler", "backends", "native");
-    _comp_h = _cfh_hash.sha256();
-    import from jaclang.compiler.driver.jir { FORMAT_VERSION }
-    _comp_h.update(str(FORMAT_VERSION).encode());
-    for _cp in [
-        _cfp_os.path.join(_nat_dir, "impl", "*.jac"),
-        _cfp_os.path.join(_nat_dir, "na_ir_gen", "*.jac"),
-        _cfp_os.path.join(_jl_dir, "compiler", "types", "*.jac"),
-        _cfp_os.path.join(_jl_dir, "compiler", "types", "*", "*.jac"),
-        _cfp_os.path.join(_jl_dir, "compiler", "type_registry.jac"),
-        _cfp_os.path.join(_jl_dir, "runtime", "scalars.jac")
-    ] {
-        for _cf in sorted(_cgl.`glob(_cp)) {
-            try {
-                with open(_cf, "rb") as _cfh {
-                    _comp_h.update(_cfh.read());
-                }
-            } except Exception {}
-        }
-    }
-    _comp_h.update(options.codegen_identity().encode());
-    return _comp_h.hexdigest()[:8];
+impl native_compiler_fingerprint(options: CompileOptions) -> str {
+    import hashlib;
+    import from jaclang.compiler.driver.jir { FORMAT_VERSION, running_compiler_digest }
+    identity = f"{FORMAT_VERSION};{running_compiler_digest()};{options.codegen_identity()}";
+    return hashlib.sha256(identity.encode()).hexdigest()[:16];
 }
 
-impl native_dep_cache_paths(real_path: str, options: any) -> tuple {
-    import hashlib as _dcp_hash;
+impl native_dep_cache_paths(
+    real_path: str, options: CompileOptions
+) -> tuple[str, str] {
     import os as _dcp_os;
-    import from jaclang.compiler.driver.jir { get_native_cache_dir }
+    import from jaclang.compiler.driver.jir { ct_dep_digest, get_native_cache_dir }
     _ir_cache_dir = str(get_native_cache_dir(real_path));
-    _src_stem = _dcp_os.path.splitext(_dcp_os.path.basename(real_path))[0];
-    with open(real_path, "rb") as _sf {
-        _source_hash = _dcp_hash.sha256(_sf.read()).hexdigest()[:12];
-    }
-    _fp = native_compiler_fingerprint(options);
+    import from jaclang.compiler.frontend.codeinfo { native_module_key }
+    (module_stem, module_location) = native_module_key(real_path).rsplit(":", 1);
+    source_hash = ct_dep_digest(real_path, with_annexes=True)[:12];
+    prefix = f"{module_stem}.{module_location}.{native_compiler_fingerprint(options)}";
     return (
-        _dcp_os.path.join(_ir_cache_dir, f"{_src_stem}.{_source_hash}.{_fp}.ir_cache"),
-        _dcp_os.path.join(_ir_cache_dir, f"{_src_stem}.{_source_hash}.{_fp}.ir_meta")
+        _dcp_os.path.join(_ir_cache_dir, f"{prefix}.{source_hash}.ir_cache"),
+        _dcp_os.path.join(_ir_cache_dir, f"{prefix}.{source_hash}.ir_meta")
     );
 }
 
-impl DepClibMeta.to_meta -> dict {
+impl DepClibMeta.to_meta -> dict[str, any] {
     return {
         "clib_paths": self.clib_paths,
         "clib_symbol_lib": self.clib_symbol_lib,
@@ -78,7 +55,7 @@ impl DepClibMeta.to_meta -> dict {
     };
 }
 
-impl DepClibMeta.from_meta(meta: dict) -> DepClibMeta {
+impl DepClibMeta.from_meta(meta: dict[str, any]) -> DepClibMeta {
     return DepClibMeta(
         clib_paths=meta.get("clib_paths", []),
         clib_symbol_lib=meta.get("clib_symbol_lib", {}),
@@ -95,7 +72,7 @@ impl DepClibMeta.from_meta(meta: dict) -> DepClibMeta {
 }
 
 impl native_verdict_blast_guard(
-    prog: any, composed: int, aot_lane: bool = False
+    prog: JacProgram, composed: int, aot_lane: bool = False
 ) -> str {
     _bg_taint = 0;
     _bg_mods = 0;
@@ -160,7 +137,7 @@ impl native_ir_live_externs(llvm_ir_text: str) -> set[str] {
 }
 
 impl native_prune_live_record(
-    pending: dict, declared: set[str]
+    pending: dict[str, list[str]] | dict[str, set[str]], declared: set[str]
 ) -> dict[str, set[str]] {
     pruned: dict[str, set[str]] = {};
     for (_pr_callee, _pr_names) in (pending or {}).items() {
@@ -173,10 +150,10 @@ impl native_prune_live_record(
 }
 
 impl native_unit_demotions(
-    prog: any, real_path: str, options: any
+    prog: JacProgram, real_path: str, options: CompileOptions
 ) -> (set[str] | None) {
     import os as _ud_os;
-    `entry: any = prog.scratch.na_dep_units.get(real_path);
+    `entry: uni.Module | str | None = prog.scratch.na_dep_units.get(real_path);
     _ud_mid_compile = False;
     if `entry is None {
         for _ud_key in (real_path, _ud_os.path.abspath(real_path)) {
@@ -207,7 +184,7 @@ impl native_unit_demotions(
         import from jaclang.compiler.driver.jir {
             native_ir_cache_suspended as _ud_suspended
         }
-        if not (getattr(options, "no_ir_cache", False) or _ud_suspended()) {
+        if not (options.no_ir_cache or _ud_suspended()) {
             try {
                 import json as _ud_json;
                 (_, _ud_meta_path) = native_dep_cache_paths(real_path, options);
@@ -232,7 +209,9 @@ impl native_unit_demotions(
         } finally {
             prog.scratch.na_verdict_resolving.discard(real_path);
         }
-        prog.scratch.na_dep_units[real_path] = `entry;
+        if `entry is not None {
+            prog.scratch.na_dep_units[real_path] = `entry;
+        }
     }
     if `entry is None or isinstance(`entry, str) or `entry.gen.llvm_ir is None {
         prog.scratch.na_verdict_misses += 1;
@@ -242,11 +221,9 @@ impl native_unit_demotions(
         if _ud_tree is None {
             return None;
         }
-        _ud_all: set = set();
+        _ud_all: set[str] = set();
         import jaclang.compiler.frontend.unitree as _ud_uni;
-        import from jaclang.compiler.backends.py.module_codegen_pass {
-            ModuleCodegenPass as _UdWalk
-        }
+        import from jaclang.compiler.frontend.module_facts { ModuleFacts as _UdWalk }
         for _ud_stmt in _UdWalk.iter_context_stmts(_ud_tree) {
             if isinstance(_ud_stmt, _ud_uni.Ability) and _ud_stmt.name_ref {
                 _ud_all.add(_ud_stmt.name_ref.sym_name);
@@ -268,7 +245,9 @@ impl native_unit_demotions(
 }
 
 impl native_live_call_conflicts(
-    prog: any, pending: dict, options: any
+    prog: JacProgram,
+    pending: dict[str, list[str]] | dict[str, set[str]],
+    options: CompileOptions
 ) -> dict[str, set[str]] {
     conflicts: dict[str, set[str]] = {};
     for (_cc_callee, _cc_names) in (pending or {}).items() {
@@ -283,6 +262,21 @@ impl native_live_call_conflicts(
     return conflicts;
 }
 
+impl require_native_ir(llvm_ir_text: str) -> None {
+    import from jaclang.compiler.backends.native.lowering { native_lowering_issues }
+    issues = native_lowering_issues(llvm_ir_text);
+    symbols = set(native_demoted_ir_symbols(llvm_ir_text));
+    symbols.update(issue.symbol for issue in issues);
+    if symbols {
+        details = "\n".join(issue.detail for issue in issues);
+        raise ValueError(
+            "Native-only compilation cannot use Python fallback or erased fields: "
+                + ", ".join(sorted(symbols))
+                + ("\n" + details if details else "")
+        );
+    }
+}
+
 impl native_demoted_ir_symbols(llvm_ir_text: str) -> list[str] {
     import re as _ds_re;
     _ds_def = _ds_re.compile(
@@ -290,7 +284,15 @@ impl native_demoted_ir_symbols(llvm_ir_text: str) -> list[str] {
         r'|([A-Za-z0-9_.$\-]+\.__jac_demoted))\(',
         _ds_re.MULTILINE
     );
-    found: set[str] = set();
+    import from jaclang.compiler.backends.native.lowering {
+        NativeLoweringKind,
+        native_lowering_issues
+    }
+    found: set[str] = {
+        issue.symbol
+        for issue in native_lowering_issues(llvm_ir_text)
+        if issue.kind == NativeLoweringKind.CALLABLE
+    };
     for (_ds_q, _ds_bare) in _ds_def.findall(llvm_ir_text) {
         found.add((_ds_q or _ds_bare)[:-len(".__jac_demoted")]);
     }
@@ -318,7 +320,6 @@ impl DepClibMeta.propagate_to(gen: CodeGenTarget) -> None {
 impl NativeCompilePass.postinit -> None {
     llvm.initialize_native_target();
     llvm.initialize_native_asmprinter();
-    super.postinit();
 }
 
 impl NativeCompilePass._run_impl(ir_in: uni.Module) -> uni.Module {
@@ -352,10 +353,10 @@ impl NativeCompilePass._run_impl(ir_in: uni.Module) -> uni.Module {
             for lib_path in clib_paths {
                 try {
                     if not self._jit_load_clib(lib_path) {
-                        self.emit(W5021, path=lib_path);
+                        self.ctx.emit(W5021, path=lib_path);
                     }
                 } except Exception as lib_err {
-                    self.emit(W5022, path=lib_path, error=str(lib_err));
+                    self.ctx.emit(W5022, path=lib_path, error=str(lib_err));
                 }
             }
         }
@@ -384,20 +385,26 @@ impl NativeCompilePass._run_impl(ir_in: uni.Module) -> uni.Module {
         native_imports = manifest.native_imports;
         if native_imports {
             import from jaclang.runtime.interop_bridge { register_py_callbacks }
-            py_func_table: dict = {};
-            callbacks_list: list = [];
-            register_py_callbacks(manifest, py_func_table, callbacks_list);
+            py_func_table: dict[str, Callable[..., object]] = {};
+            callbacks_list: list[object] = [];
+            register_py_callbacks(
+                manifest.native_imports, py_func_table, callbacks_list, llvm.add_symbol
+            );
             module.gen.interop_py_funcs = py_func_table;
             module.gen._interop_callbacks = callbacks_list;
         }
 
-        cross_module_imports = manifest.native_cross_module_imports;
-        if cross_module_imports {
+        dependency_sources = manifest.native_dependency_sources;
+        if dependency_sources {
             self._compile_and_link_native_imports(
-                module, mod, cross_module_imports, target_machine
+                module, mod, dependency_sources, target_machine
             );
 
             module.gen.llvm_ir = mod;
+        }
+
+        if _compile_opts.native_required_for(module.loc.mod_path) {
+            require_native_ir(str(mod));
         }
 
         _is_kernel_unit = bool(getattr(_compile_opts, "kernel_unit", False));
@@ -490,7 +497,7 @@ impl NativeCompilePass._run_impl(ir_in: uni.Module) -> uni.Module {
             return ir_in;
         }
 
-        if self.errors_had {
+        if self.ctx.errors_had {
             return ir_in;
         }
 
@@ -521,7 +528,7 @@ impl NativeCompilePass._run_impl(ir_in: uni.Module) -> uni.Module {
         if _native_debug and _debug_obj_path and _all_fn_names {
             try {
                 _text_addr = 0;
-                _fn_addrs: list = [];
+                _fn_addrs: list[tuple[str, int]] = [];
                 for _fn_name in _all_fn_names {
                     _addr = engine.get_function_address(_fn_name);
                     if _addr != 0 {
@@ -544,7 +551,7 @@ impl NativeCompilePass._run_impl(ir_in: uni.Module) -> uni.Module {
             } except Exception as _sym_err {}
         }
     } except Exception as e {
-        self.emit(E5020, error=str(e));
+        self.ctx.emit(E5020, error=str(e));
     }
     return ir_in;
 }
@@ -612,7 +619,7 @@ impl NativeCompilePass._jit_load_clib(lib_path: str) -> bool {
 impl NativeCompilePass._compile_and_link_native_imports(
     module: uni.Module,
     main_mod: ModuleRef,
-    imports: list,
+    sources: list[str],
     target_machine: TargetMachine
 ) -> None {
     import os;
@@ -631,14 +638,14 @@ impl NativeCompilePass._compile_and_link_native_imports(
     _link_opts = self.prog?.options or _LinkOpts();
     _link_fp = _link_opts.codegen_fingerprint();
 
-    linked_modules: dict = {};
+    linked_modules: dict[str, NativeModuleInfo | None] = {};
     if module.loc {
         linked_modules[os.path.realpath(module.loc.mod_path)] = None;
     }
 
-    symbol_origins: dict = {};
+    symbol_origins: dict[str, str] = {};
 
-    symbol_owned: dict = {};
+    symbol_owned: dict[str, bool] = {};
     _MAIN_ORIGIN = "(main module)";
 
     _main_imported_names: set = set();
@@ -649,16 +656,22 @@ impl NativeCompilePass._compile_and_link_native_imports(
         }
     }
 
-    _INTERNAL_LINKAGE = 8;
-    _PRIVATE_LINKAGE = 9;
-    _WEAK_LINKAGE = 5;
-    _WEAK_ODR_LINKAGE = 6;
+    import from jaclang.compiler.backends.native.llvm.binding.value { Linkage }
+    non_unique_linkages = {
+        Linkage.internal,
+        Linkage.private,
+        Linkage.weak_any,
+        Linkage.weak_odr,
+        Linkage.linkonce_any,
+        Linkage.linkonce_odr,
+        Linkage.linkonce_odr_autohide
+    };
     for _mfn in _mod_functions(main_mod) {
         _mfn_name = str(_mfn.name);
         if _mfn.is_declaration or _mfn_name.startswith("llvm.") {
             continue;
         }
-        if _mfn.linkage == _INTERNAL_LINKAGE or _mfn.linkage == _PRIVATE_LINKAGE {
+        if _mfn.linkage in non_unique_linkages {
             continue;
         }
         symbol_origins[_mfn_name] = _MAIN_ORIGIN;
@@ -669,39 +682,35 @@ impl NativeCompilePass._compile_and_link_native_imports(
         if _mgv.is_declaration {
             continue;
         }
-        if _mgv.linkage == _INTERNAL_LINKAGE or _mgv.linkage == _PRIVATE_LINKAGE {
+        if _mgv.linkage in non_unique_linkages {
             continue;
         }
         symbol_origins[_mgv_name] = _MAIN_ORIGIN;
         symbol_owned[_mgv_name] = _mgv_name not in _main_imported_names;
     }
 
-    class _DepBinding {
-        def init(self: _DepBinding, sm: str) {
-            self.source_module = sm;
-        }
-    }
-    work_queue: list = [];
     base_dir = os.path.dirname(module.loc.mod_path) if module.loc else ".";
-    for binding in imports {
-        work_queue.append((binding, base_dir));
-    }
+    work_queue: list[tuple[str, str]] = [(source, base_dir) for source in sources];
 
     import from jaclang.compiler.frontend.codeinfo { native_stdlib_root }
     _bundled_stdlib_root = native_stdlib_root();
     queue_idx = 0;
     _lk_composed = 0;
     while queue_idx < len(work_queue) {
-        (binding, cur_base_dir) = work_queue[queue_idx];
+        (source_mod_path, cur_base_dir) = work_queue[queue_idx];
         queue_idx += 1;
-        source_mod_path = binding.source_module;
-        if source_mod_path is None {
+        if source_mod_path in ("osp_kernel", "fmt_kernel", "region_kernel") {
+            manifest = module.gen.interop_manifest;
+            if source_mod_path not in manifest.native_transitive_sources {
+                manifest.native_transitive_sources.append(source_mod_path);
+                manifest.native_transitive_keys.append("");
+            }
             continue;
         }
-        _bg_aot = bool(self.prog.options and self.prog.options.aot_mode);
+        _bg_aot = _link_opts.aot_mode;
         _bg_msg = native_verdict_blast_guard(self.prog, _lk_composed, _bg_aot);
         if _bg_msg {
-            self.emit(E5029, path=str(source_mod_path), detail=_bg_msg);
+            self.ctx.emit(E5029, path=str(source_mod_path), detail=_bg_msg);
             break;
         }
 
@@ -720,7 +729,13 @@ impl NativeCompilePass._compile_and_link_native_imports(
         }
 
         if not os.path.exists(full_path) {
-            self.emit(W5023, path=full_path);
+            if _link_opts.native_required_for(module.loc.mod_path)
+                or _link_opts.native_required_for(full_path) {
+                raise FileNotFoundError(
+                    f"Required native module not found: {full_path}"
+                );
+            }
+            self.ctx.emit(W5023, path=full_path);
             continue;
         }
 
@@ -730,8 +745,20 @@ impl NativeCompilePass._compile_and_link_native_imports(
         }
         linked_modules[real_path] = None;
 
+        import from jaclang.compiler.backends.common.kernel_units { kernel_unit_owner }
+        _kernel_owner = kernel_unit_owner(
+            real_path, source_mod_path.replace(os.sep, ".")
+        );
+        if _kernel_owner {
+            manifest = module.gen.interop_manifest;
+            if _kernel_owner not in manifest.native_transitive_sources {
+                manifest.native_transitive_sources.append(_kernel_owner);
+                manifest.native_transitive_keys.append("");
+            }
+            continue;
+        }
+
         import from jaclang.compiler.driver.jir { get_native_cache_dir }
-        _src_stem = os.path.splitext(os.path.basename(real_path))[0];
         _ir_cache_dir = str(get_native_cache_dir(real_path));
 
         _cache_ir_path = "";
@@ -785,7 +812,7 @@ impl NativeCompilePass._compile_and_link_native_imports(
             and link_fingerprint_mismatches(
                 [(real_path, meta.options_fingerprint)], _link_fp
             ) {
-            self.emit(
+            self.ctx.emit(
                 E5027,
                 path=full_path,
                 cached_fp=(meta.options_fingerprint or "(unstamped)"),
@@ -821,7 +848,7 @@ impl NativeCompilePass._compile_and_link_native_imports(
             na_coverage_replay(real_path, meta.coverage);
             dep_base = os.path.dirname(full_path);
             for dep_mod_path in meta.transitive_deps {
-                work_queue.append((_DepBinding(dep_mod_path), dep_base));
+                work_queue.append((dep_mod_path, dep_base));
             }
         } else {
             imported_ir: (uni.Module | None) = None;
@@ -830,7 +857,7 @@ impl NativeCompilePass._compile_and_link_native_imports(
             if real_path in _na_units {
                 _memo_entry = _na_units.pop(real_path);
                 if isinstance(_memo_entry, str) {
-                    self.emit(E5024, path=full_path, error=_memo_entry);
+                    self.ctx.emit(E5024, path=full_path, error=_memo_entry);
                     continue;
                 }
                 imported_ir = _memo_entry;
@@ -841,15 +868,18 @@ impl NativeCompilePass._compile_and_link_native_imports(
                         file_path=full_path, options=import_options
                     );
                 } except Exception as e {
-                    self.emit(E5024, path=full_path, error=str(e));
+                    self.ctx.emit(E5024, path=full_path, error=str(e));
                     continue;
                 }
             }
             if imported_ir is None or imported_ir.gen.llvm_ir is None {
-                self.emit(E5024, path=full_path, error="No LLVM IR generated");
+                self.ctx.emit(E5024, path=full_path, error="No LLVM IR generated");
                 continue;
             }
-            _uv_record = self.prog.scratch.na_unverified_live.get(real_path) or {};
+            _uv_record: dict[str, set[str]] = self.prog.scratch.na_unverified_live.get(
+                real_path
+            )
+                or {};
             _uv_pending = native_prune_live_record(
                 _uv_record, native_ir_live_externs(str(imported_ir.gen.llvm_ir))
             )
@@ -894,7 +924,10 @@ impl NativeCompilePass._compile_and_link_native_imports(
                     _uv_failed = "No LLVM IR generated on re-emission";
                     break;
                 }
-                _uv_record = self.prog.scratch.na_unverified_live.get(real_path) or {};
+                _uv_record: dict[str, set[str]] = self.prog.scratch.na_unverified_live.get(
+                    real_path
+                )
+                    or {};
                 _uv_pending = native_prune_live_record(
                     _uv_record, native_ir_live_externs(str(imported_ir.gen.llvm_ir))
                 )
@@ -902,7 +935,7 @@ impl NativeCompilePass._compile_and_link_native_imports(
                     else {};
             }
             if _uv_failed {
-                self.emit(E5024, path=full_path, error=_uv_failed);
+                self.ctx.emit(E5024, path=full_path, error=_uv_failed);
                 continue;
             }
             if _uv_pending and _uv_attempts >= 3 {
@@ -910,7 +943,7 @@ impl NativeCompilePass._compile_and_link_native_imports(
                     self.prog, _uv_pending, _link_opts
                 );
                 if _uv_conflicts {
-                    self.emit(
+                    self.ctx.emit(
                         E5028,
                         path=full_path,
                         names=", ".join(
@@ -959,12 +992,11 @@ impl NativeCompilePass._compile_and_link_native_imports(
             dep_manifest = imported_ir.gen.interop_manifest;
             if dep_manifest is not None {
                 dep_base = os.path.dirname(full_path);
+                for source in dep_manifest.native_dependency_sources {
+                    meta.transitive_deps.append(source);
+                    work_queue.append((source, dep_base));
+                }
                 for dep_binding in dep_manifest.native_cross_module_imports {
-                    if dep_binding.source_module is not None {
-                        meta.transitive_deps.append(dep_binding.source_module);
-                        work_queue.append((dep_binding, dep_base));
-                    }
-
                     if dep_binding.name {
                         meta.imported_symbols.append(dep_binding.name);
                     }
@@ -980,15 +1012,16 @@ impl NativeCompilePass._compile_and_link_native_imports(
                 os.makedirs(_ir_cache_dir, exist_ok=True);
 
                 import glob as _glob;
+                _cache_prefix = os.path.basename(_cache_ir_path).rsplit(".", 2)[0];
                 for stale in _glob.`glob(
-                    os.path.join(_ir_cache_dir, f"{_src_stem}.*.ir_cache")
+                    os.path.join(_ir_cache_dir, f"{_cache_prefix}.*.ir_cache")
                 ) {
                     if stale != _cache_ir_path {
                         os.remove(stale);
                     }
                 }
                 for stale in _glob.`glob(
-                    os.path.join(_ir_cache_dir, f"{_src_stem}.*.ir_meta")
+                    os.path.join(_ir_cache_dir, f"{_cache_prefix}.*.ir_meta")
                 ) {
                     if stale != _cache_meta_path {
                         os.remove(stale);
@@ -1017,7 +1050,7 @@ impl NativeCompilePass._compile_and_link_native_imports(
             } except Exception {}
         }
 
-        if not self.prog.options.aot_mode {
+        if not _link_opts.aot_mode {
             for dep_lib_path in meta.clib_paths {
                 try {
                     self._jit_load_clib(dep_lib_path);
@@ -1062,17 +1095,14 @@ impl NativeCompilePass._compile_and_link_native_imports(
             exported_funcs: list[str] = [];
 
             has_real_collision = False;
-            _benign_dup_funcs: list = [];
-            _benign_dup_gvs: list = [];
+            _benign_dup_funcs: list[ValueRef] = [];
+            _benign_dup_gvs: list[ValueRef] = [];
             for func in _mod_functions(imported_mod) {
                 _func_name = str(func.name);
                 if _func_name.startswith("llvm.") or func.is_declaration {
                     continue;
                 }
-                if func.linkage == _INTERNAL_LINKAGE
-                    or func.linkage == _PRIVATE_LINKAGE
-                    or func.linkage == _WEAK_LINKAGE
-                    or func.linkage == _WEAK_ODR_LINKAGE {
+                if func.linkage in non_unique_linkages {
                     continue;
                 }
                 exported_funcs.append(_func_name);
@@ -1083,7 +1113,7 @@ impl NativeCompilePass._compile_and_link_native_imports(
                             else _func_name not in dep_imported_set
                     );
                     if _is_owned and symbol_owned.get(_func_name, True) {
-                        self.emit(
+                        self.ctx.emit(
                             E5026,
                             symbol=_func_name,
                             existing_module=symbol_origins[_func_name],
@@ -1098,11 +1128,7 @@ impl NativeCompilePass._compile_and_link_native_imports(
             exported_globals: list[str] = [];
             for gv in _mod_globals(imported_mod) {
                 _gv_name = str(gv.name);
-                if gv.is_declaration
-                    or gv.linkage == _INTERNAL_LINKAGE
-                    or gv.linkage == _PRIVATE_LINKAGE
-                    or gv.linkage == _WEAK_LINKAGE
-                    or gv.linkage == _WEAK_ODR_LINKAGE {
+                if gv.is_declaration or gv.linkage in non_unique_linkages {
                     continue;
                 }
                 exported_globals.append(_gv_name);
@@ -1113,7 +1139,7 @@ impl NativeCompilePass._compile_and_link_native_imports(
                             else _gv_name not in dep_imported_set
                     );
                     if _is_owned and symbol_owned.get(_gv_name, True) {
-                        self.emit(
+                        self.ctx.emit(
                             E5026,
                             symbol=_gv_name,
                             existing_module=symbol_origins[_gv_name],
@@ -1178,7 +1204,7 @@ impl NativeCompilePass._compile_and_link_native_imports(
             linked_modules[real_path] = mod_info;
             module.gen.interop_manifest.native_module_imports[source_mod_path] = mod_info;
         } except Exception as e {
-            self.emit(E5025, path=full_path, error=str(e));
+            self.ctx.emit(E5025, path=full_path, error=str(e));
         }
     }
 }
@@ -1186,11 +1212,11 @@ impl NativeCompilePass._compile_and_link_native_imports(
 glob _OSP_KERNEL_IR_CACHE: dict[str, str] = {},
      _REGION_KERNEL_IR_CACHE: dict[str, str] = {};
 
-def _kernel_unit_opts(gc_mode: str, enforce: bool) -> any {
-    import from jaclang.compiler.driver.compile_options {
-        CompileOptions as _KernelOpts
-    }
-    return _KernelOpts(
+def _kernel_unit_opts(
+    gc_mode: str, enforce: bool, no_ir_cache: bool = False
+) -> CompileOptions {
+    return CompileOptions(
+        no_ir_cache=no_ir_cache,
         aot_mode=True,
         kernel_unit=True,
         default_codespace='native',
@@ -1225,20 +1251,19 @@ def _kernel_unit_opts(gc_mode: str, enforce: bool) -> any {
 }
 
 def _compile_kernel_unit_ir(
-    unit: str, cache: dict[str, str], gc_mode: str, enforce: bool
+    unit: str, cache: dict[str, str], kernel_opts: CompileOptions
 ) -> (str | None) {
-    import from jaclang.compiler.backends.kernel_units {
+    import from jaclang.compiler.backends.common.kernel_units {
         load_unit_artifact,
         store_unit_artifact
     }
     import from jaclang.compiler.driver.program { JacProgram }
-    kernel_opts = _kernel_unit_opts(gc_mode, enforce);
-    cache_key = f"{unit}|{kernel_opts.codegen_fingerprint()}";
-    if cache_key in cache {
+    fp = native_compiler_fingerprint(kernel_opts);
+    cache_key = f"{unit}|{fp}";
+    if not kernel_opts.no_ir_cache and cache_key in cache {
         return cache[cache_key];
     }
-    fp = native_compiler_fingerprint(kernel_opts);
-    ir_str = load_unit_artifact(unit, "ll", fp);
+    ir_str = None if kernel_opts.no_ir_cache else load_unit_artifact(unit, "ll", fp);
     if ir_str is not None {
         cache[cache_key] = ir_str;
         return ir_str;
@@ -1260,22 +1285,28 @@ def _compile_kernel_unit_ir(
 }
 
 def _compile_osp_kernel_ir(
-    gc_mode: str = "cycles", enforce: bool = False
+    gc_mode: str = "cycles", enforce: bool = False, no_ir_cache: bool = False
 ) -> (str | None) {
-    import from jaclang.compiler.backends.kernel_units { osp_core_unit_path }
+    import from jaclang.compiler.backends.common.kernel_units { osp_core_unit_path }
     variant = f"na_{gc_mode}_enf" if enforce else f"na_{gc_mode}";
     return _compile_kernel_unit_ir(
-        osp_core_unit_path(variant), _OSP_KERNEL_IR_CACHE, gc_mode, enforce
+        osp_core_unit_path(variant),
+        _OSP_KERNEL_IR_CACHE,
+        _kernel_unit_opts(gc_mode, enforce, no_ir_cache)
     );
 }
 
 def _compile_region_kernel_ir(
-    gc_mode: str = "cycles", enforce: bool = False
+    gc_mode: str = "cycles", enforce: bool = False, no_ir_cache: bool = False
 ) -> (str | None) {
-    import from jaclang.compiler.backends.kernel_units { region_kernel_unit_path }
+    import from jaclang.compiler.backends.common.kernel_units {
+        region_kernel_unit_path
+    }
     variant = f"na_{gc_mode}_enf" if enforce else f"na_{gc_mode}";
     return _compile_kernel_unit_ir(
-        region_kernel_unit_path(variant), _REGION_KERNEL_IR_CACHE, gc_mode, enforce
+        region_kernel_unit_path(variant),
+        _REGION_KERNEL_IR_CACHE,
+        _kernel_unit_opts(gc_mode, enforce, no_ir_cache)
     );
 }
 
@@ -1303,7 +1334,7 @@ impl NativeCompilePass._module_defines(main_mod: ModuleRef, name: str) -> bool {
 impl NativeCompilePass._references_undefined_region_kernel(
     main_mod: ModuleRef
 ) -> bool {
-    import from jaclang.compiler.backends.kernel_units { REGION_KERNEL_ABI }
+    import from jaclang.compiler.backends.common.kernel_units { REGION_KERNEL_ABI }
     try {
         for _fn in _mod_functions(main_mod) {
             if _fn.is_declaration and _fn.name in REGION_KERNEL_ABI {
@@ -1319,10 +1350,12 @@ impl NativeCompilePass._references_undefined_region_kernel(
 impl NativeCompilePass._link_region_kernel(main_mod: ModuleRef) -> None {
     _gc = str(getattr(self.prog?.options, "na_gc_mode", "cycles") or "cycles");
     _enf = bool(getattr(self.prog?.options, "nogc_enforce_all", False))
-        or bool(getattr(self.ir_in.gen, "nogc_enforced", False));
-    ir_str = _compile_region_kernel_ir(_gc, _enf and _gc == "none");
+        or bool(getattr(self.module.gen, "nogc_enforced", False));
+    ir_str = _compile_region_kernel_ir(
+        _gc, _enf and _gc == "none", self.prog.options.no_ir_cache
+    );
     if ir_str is None {
-        self.emit(
+        self.ctx.emit(
             E5025,
             path=f"region kernel unit (gc={_gc})",
             error="the kernel unit failed to compile to LLVM IR; every region "
@@ -1341,7 +1374,7 @@ impl NativeCompilePass._link_region_kernel(main_mod: ModuleRef) -> None {
         }
         main_mod.link_in(kmod);
     } except Exception as _e {
-        self.emit(E5025, path=f"region kernel unit (gc={_gc})", error=str(_e));
+        self.ctx.emit(E5025, path=f"region kernel unit (gc={_gc})", error=str(_e));
         return;
     }
     if self._module_defines(main_mod, "__jac_region_died_hook") {
@@ -1358,7 +1391,7 @@ impl NativeCompilePass._link_region_kernel(main_mod: ModuleRef) -> None {
         hmod.verify();
         main_mod.link_in(hmod);
     } except Exception as _e {
-        self.emit(E5025, path="region kernel died hook", error=str(_e));
+        self.ctx.emit(E5025, path="region kernel died hook", error=str(_e));
     }
 }
 
@@ -1378,10 +1411,12 @@ impl NativeCompilePass._references_undefined_osp_kernel(main_mod: ModuleRef) -> 
 impl NativeCompilePass._link_osp_kernel(main_mod: ModuleRef) -> None {
     _gc = str(getattr(self.prog?.options, "na_gc_mode", "cycles") or "cycles");
     _enf = bool(getattr(self.prog?.options, "nogc_enforce_all", False))
-        or bool(getattr(self.ir_in.gen, "nogc_enforced", False));
-    ir_str = _compile_osp_kernel_ir(_gc, _enf and _gc == "none");
+        or bool(getattr(self.module.gen, "nogc_enforced", False));
+    ir_str = _compile_osp_kernel_ir(
+        _gc, _enf and _gc == "none", self.prog.options.no_ir_cache
+    );
     if ir_str is None {
-        self.emit(
+        self.ctx.emit(
             E5025,
             path=f"osp_core kernel unit (gc={_gc})",
             error="the kernel unit failed to compile to LLVM IR; every OSP "
@@ -1396,52 +1431,24 @@ impl NativeCompilePass._link_osp_kernel(main_mod: ModuleRef) -> None {
         kmod.verify();
         main_mod.link_in(kmod);
     } except Exception as _e {
-        self.emit(E5025, path=f"osp_core kernel unit (gc={_gc})", error=str(_e));
+        self.ctx.emit(E5025, path=f"osp_core kernel unit (gc={_gc})", error=str(_e));
     }
 }
 
-glob _FMT_KERNEL_IR_CACHE: dict = {};
+glob _FMT_KERNEL_IR_CACHE: dict[str, str] = {};
 
-def _compile_fmt_kernel_ir -> (str | None) {
-    import from jaclang.compiler.backends.kernel_units {
-        fmt_kernel_unit_path,
-        load_unit_artifact,
-        store_unit_artifact
-    }
-    import from jaclang.compiler.driver.program { JacProgram }
-    import from jaclang.compiler.driver.compile_options {
-        CompileOptions as _KernelOpts
-    }
-
-    kernel_opts = _KernelOpts(
-        aot_mode=True, default_codespace='native', na_gc_mode='cycles'
+def _compile_fmt_kernel_ir(no_ir_cache: bool = False) -> (str | None) {
+    import from jaclang.compiler.backends.common.kernel_units { fmt_kernel_unit_path }
+    return _compile_kernel_unit_ir(
+        fmt_kernel_unit_path('na_cycles'),
+        _FMT_KERNEL_IR_CACHE,
+        CompileOptions(
+            aot_mode=True,
+            default_codespace='native',
+            memory_profile='managed',
+            no_ir_cache=no_ir_cache
+        )
     );
-    cache_key = kernel_opts.codegen_fingerprint();
-    if cache_key in _FMT_KERNEL_IR_CACHE {
-        return _FMT_KERNEL_IR_CACHE[cache_key];
-    }
-
-    unit = fmt_kernel_unit_path('na_cycles');
-    fp = native_compiler_fingerprint(kernel_opts);
-    ir_str = load_unit_artifact(unit, "ll", fp);
-    if ir_str is not None {
-        _FMT_KERNEL_IR_CACHE[cache_key] = ir_str;
-        return ir_str;
-    }
-    try {
-        prog = JacProgram();
-        m = prog.compile(unit, options=kernel_opts);
-        if (m is not None) and m?.gen and (m.gen.llvm_ir is not None) {
-            ir_str = str(m.gen.llvm_ir);
-        }
-    } except Exception {
-        ir_str = None;
-    }
-    if ir_str is not None {
-        _FMT_KERNEL_IR_CACHE[cache_key] = ir_str;
-        store_unit_artifact(unit, "ll", fp, ir_str);
-    }
-    return ir_str;
 }
 
 impl NativeCompilePass._references_undefined_fmt_kernel(main_mod: ModuleRef) -> bool {
@@ -1464,7 +1471,7 @@ impl NativeCompilePass._references_undefined_fmt_kernel(main_mod: ModuleRef) -> 
 }
 
 impl NativeCompilePass._link_fmt_kernel(main_mod: ModuleRef) -> None {
-    ir_str = _compile_fmt_kernel_ir();
+    ir_str = _compile_fmt_kernel_ir(self.prog.options.no_ir_cache);
     if ir_str is None {
         return;
     }
@@ -1481,14 +1488,6 @@ impl NativeCompilePass._link_fmt_kernel(main_mod: ModuleRef) -> None {
     } except Exception as _e {}
 }
 
-impl NativeCompilePass.transform(ir_in: uni.Module) -> uni.Module {
-    self.ir_out = ir_in;
-    ir_in spawn self;
-    out = self.ir_out;
-    assert isinstance(out, uni.Module);
-    return out;
-}
-
 impl NativeCompilePass.run_walk with uni.Module entry {
-    self.ir_out = self._run_impl(here);
+    self.module = self._run_impl(here);
 }

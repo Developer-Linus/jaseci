@@ -20,7 +20,7 @@ impl WebhookUtils.generate_api_key -> str {
 impl WebhookUtils.create_api_key_token(
     api_key_id: str, user_id: str, name: str, expiry_days: int | None = None
 ) -> str {
-    jwt_config = get_scale_config().get_jwt_config();
+    import from jaclang.server.identity.config { signing_algorithm, signing_secret }
     default_expiry = int(
         get_scale_config().get_webhook_config()['api_key_expiry_days']
     );
@@ -39,14 +39,14 @@ impl WebhookUtils.create_api_key_token(
         payload['exp'] = current_time + timedelta(days=int(default_expiry));
     }
 
-    return jwt_encode(payload, jwt_config['secret'], algorithm=jwt_config['algorithm']);
+    return jwt_encode(payload, signing_secret(), algorithm=signing_algorithm());
 }
 
 impl WebhookUtils.validate_api_key(api_key: str) -> dict[str, str] | None {
+    import from jaclang.server.identity.config { signing_algorithm, signing_secret }
     try {
-        jwt_config = get_scale_config().get_jwt_config();
         payload = jwt_decode(
-            api_key, jwt_config['secret'], algorithms=[jwt_config['algorithm']]
+            api_key, signing_secret(), algorithms=[signing_algorithm()]
         );
 
         if payload.get('type') != 'api_key' {
@@ -156,7 +156,7 @@ impl ApiKeyManager.create_api_key(
     );
 }
 
-def _key_summary(api_key_id: str, doc: dict) -> dict {
+def _key_summary(api_key_id: str, doc: dict[str, any]) -> dict[str, any] {
     return {
         'api_key_id': api_key_id,
         'name': doc.get('name', ''),
@@ -223,8 +223,8 @@ impl ApiKeyManager.revoke_api_key(user_id: str, api_key_id: str) -> TransportRes
     );
 }
 
-impl ApiKeyManager._get_key_doc(api_key_id: str) -> dict | None {
-    doc: dict | None = None;
+impl ApiKeyManager._get_key_doc(api_key_id: str) -> dict[str, any] | None {
+    doc: dict[str, any] | None = None;
     if self._db is not None {
         rows = self._db.rows(
             'SELECT doc FROM jac_docs WHERE collection = :c AND id = :i',
@@ -244,7 +244,7 @@ impl ApiKeyManager._get_key_doc(api_key_id: str) -> dict | None {
     return doc;
 }
 
-impl ApiKeyManager.resolve_key(api_key: str) -> dict | None {
+impl ApiKeyManager.resolve_key(api_key: str) -> dict[str, any] | None {
     key_info = WebhookUtils.validate_api_key(api_key);
     if not key_info {
         return None;
@@ -256,19 +256,25 @@ impl ApiKeyManager.resolve_key(api_key: str) -> dict | None {
     return key_doc;
 }
 
-impl ApiKeyManager.check_rate_limit(api_key_id: str, limit_per_minute: int) -> bool {
+impl rate_window_ok(
+    state: dict[str, list[int]], key: str, limit_per_minute: int
+) -> bool {
     if limit_per_minute <= 0 {
         return True;
     }
     window_id = int(datetime.now(UTC).timestamp() // 60);
-    `entry = self._rate_window.get(api_key_id);
-    if not `entry or `entry[0] != window_id {
-        self._rate_window[api_key_id] = [window_id, 1];
+    slot = state.get(key);
+    if not slot or slot[0] != window_id {
+        state[key] = [window_id, 1];
         return True;
     }
-    if `entry[1] >= limit_per_minute {
+    if slot[1] >= limit_per_minute {
         return False;
     }
-    `entry[1] += 1;
+    slot[1] += 1;
     return True;
+}
+
+impl ApiKeyManager.check_rate_limit(api_key_id: str, limit_per_minute: int) -> bool {
+    return rate_window_ok(self._rate_window, api_key_id, limit_per_minute);
 }

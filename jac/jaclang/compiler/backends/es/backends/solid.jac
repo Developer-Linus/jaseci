@@ -1,5 +1,5 @@
 import jaclang.compiler.backends.es.estree as es;
-import from jaclang.compiler.backends.es.backends.react { ReactBackend }
+import from jaclang.compiler.backends.es.framework_backend { FrameworkBackend }
 import from jaclang.compiler.backends.es.reactive_intent {
     StateField,
     RefField,
@@ -10,7 +10,7 @@ import from jaclang.compiler.backends.es.reactive_intent {
 
 import type from jaclang.compiler.backends.es.view_ir { ViewElement, ViewChild }
 
-obj SolidBackend(ReactBackend) {
+obj SolidBackend(FrameworkBackend) {
     def name -> str;
     def lower_state_field(s: StateField) -> list[es.Statement];
     def lower_ref_field(r: RefField) -> list[es.Statement];
@@ -29,7 +29,7 @@ obj SolidBackend(ReactBackend) {
         attr: any, sync_loc: any
     ) -> (es.JsxAttribute | es.JsxSpreadAttribute);
 
-    def _jsx_child_nodes(children: list[ViewChild], sync_loc: any) -> list;
+    def _jsx_child_nodes(children: list[ViewChild], sync_loc: any) -> list[any];
     def _jsx_for(child: any, sync_loc: any) -> es.JsxElement;
     def _jsx_show(child: any, sync_loc: any) -> es.JsxElement;
     def _view_children_as_expr(
@@ -38,13 +38,17 @@ obj SolidBackend(ReactBackend) {
 
     def view_runtime_symbols(view: ViewElement) -> list[str];
     def _jsx_element(
-        name_node: any, attrs: list, children: list, jac_node: any, sync_loc: any
+        name_node: any,
+        attrs: list[es.JsxAttribute | es.JsxSpreadAttribute],
+        children: list[any],
+        jac_node: any,
+        sync_loc: any
     ) -> es.JsxElement;
 
     def _jsx_dynamic(
         component_expr: es.Expression,
-        attrs: list,
-        children: list,
+        attrs: list[es.JsxAttribute | es.JsxSpreadAttribute],
+        children: list[any],
         jac_node: any,
         sync_loc: any
     ) -> es.JsxElement;

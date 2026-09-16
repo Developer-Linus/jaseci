@@ -11,7 +11,7 @@ import sys;
 import tempfile;
 import traceback;
 import from pathlib { Path }
-import from tests.support { JAC_ROOT }
+import from tests.support { jac_command, compiler_python_command, JAC_ROOT }
 import jaclang;
 import from jaclang.cli.commands {
     analysis,
@@ -50,7 +50,7 @@ def _assert_error_pretty_found(needle: str, haystack: str) {
 }
 
 """Run jac check and return file count."""
-def _run_jac_check(test_dir: str, ignore_pattern: (list | None) = None) -> int {
+def _run_jac_check(test_dir: str, ignore_pattern: (list[any] | None) = None) -> int {
     captured_stdout = io.StringIO();
     captured_stderr = io.StringIO();
     old_stdout = sys.stdout;
@@ -89,7 +89,7 @@ def _create_clean_project(tmpdir: str) -> str {
 }
 
 """Set up output capture and return (stdout_capture, stderr_capture, old_stdout, old_stderr)."""
-def _capture_output -> tuple {
+def _capture_output -> tuple[any, ...] {
     captured_stdout = io.StringIO();
     captured_stderr = io.StringIO();
     old_stdout = sys.stdout;
@@ -237,10 +237,10 @@ test "jac run with no filename and no resolvable entry errors cleanly" {
     # `jac run` with no file is now project-aware: it climbs to the nearest
     # jac.toml and dispatches on the project kind. JAC_ROOT's project declares
     # no entry-point, so this must fail with a clear message (not a crash).
-    env = dict(os.environ);
+    env: dict[str, str] = dict(os.environ);
     env["PYTHONPATH"] = JAC_ROOT;
     result = subprocess.run(
-        [sys.executable, "-m", "jaclang", "run"],
+        jac_command("run"),
         cwd=JAC_ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -428,7 +428,7 @@ test "jac test err" {
     captured_output = io.StringIO();
     sys.stdout = captured_output;
     sys.stderr = captured_output;
-    analysis.`test([fixture_path("baddy.jac")]);
+    analysis.`test(paths=[fixture_path("baddy.jac")]);
     sys.stdout = sys.__stdout__;
     sys.stderr = sys.__stderr__;
     stdout_value = captured_output.getvalue();
@@ -500,7 +500,7 @@ test "run test" {
     old_stdout = sys.stdout;
     sys.stdout = captured;
     try {
-        analysis.`test([fixture_path("run_test.jac")], maxfail=2);
+        analysis.`test(paths=[fixture_path("run_test.jac")], maxfail=2);
         out = captured.getvalue();
     } finally {
         sys.stdout = old_stdout;
@@ -522,7 +522,7 @@ test "run test native codespace file" {
     old_stdout = sys.stdout;
     sys.stdout = captured;
     try {
-        analysis.`test([fixture_path("native_run_test.jac")], maxfail=2);
+        analysis.`test(paths=[fixture_path("native_run_test.jac")], maxfail=2);
         out = captured.getvalue();
     } finally {
         sys.stdout = old_stdout;
@@ -547,7 +547,7 @@ test "run test native broken import surfaces error" {
     old_stdout = sys.stdout;
     sys.stdout = captured;
     try {
-        rc = analysis.`test([fixture_path("native_broken_import_test.jac")]);
+        rc = analysis.`test(paths=[fixture_path("native_broken_import_test.jac")]);
         out = captured.getvalue();
     } finally {
         sys.stdout = old_stdout;
@@ -624,7 +624,7 @@ test "discovery prunes hidden and pycache dirs" {
         # A declared `-d` root collects every .jac beneath it regardless of
         # naming (#7151), so good_test.jac is a suite even without a test_
         # prefix.
-        env = dict(os.environ);
+        env: dict[str, str] = dict(os.environ);
         env["JAC_TEST_JOBS"] = "0";
         process = subprocess.Popen(
             ["jac", "test", "-d", tmp_dir, "-v"],
@@ -651,7 +651,7 @@ test "discovery prunes hidden and pycache dirs" {
 test "maxfail spans several files" {
     # --maxfail counts across the whole run, not per file. Serial so the
     # cap trips deterministically rather than racing parallel workers.
-    env = dict(os.environ);
+    env: dict[str, str] = dict(os.environ);
     env["JAC_TEST_JOBS"] = "0";
     process = subprocess.Popen(
         [
@@ -683,7 +683,9 @@ test "run specific test only" {
     sys.stdout = captured;
     try {
         analysis.`test(
-            [fixture_path("jactest_main.jac")], test_name="from 2 to 10", verbose=True
+            paths=[fixture_path("jactest_main.jac")],
+            test_name="from 2 to 10",
+            verbose=True
         );
         out = captured.getvalue();
     } finally {
@@ -988,8 +990,8 @@ test "cli error exit codes" {
         } finally {
             sys.stdout = old_stdout;
         }
-        assert result == 1 , (
-            "format command should exit with code 1 when file is changed"
+        assert result == 0 , (
+            "format command should exit 0 after a successful reformat"
         );
     } finally {
         os.remove(temp_path);
@@ -1079,8 +1081,9 @@ test "format tracks changed files" {
             sys.stdout = old_stdout;
             sys.stderr = old_stderr;
         }
-        # Exit code 1 indicates files were changed (useful for pre-commit hooks)
-        assert result == 1;
+        # Exit code 0 indicates success, including when files were reformatted;
+        # changed-file detection goes through the stats channel (see precommit)
+        assert result == 0;
         # Output may go to stdout or stderr depending on console implementation
         combined_output = stdout + stderr;
         assert "2/2" in combined_output;
@@ -1263,20 +1266,26 @@ test "jac create and run no root files" {
 
         files_before_run = get_root_files(project_path);
 
-        # Run jac run main.jac (change to project directory first)
+        # The cli scaffold dispatches argparse subcommands, so a bare run is
+        # a usage error; `jac run main.jac -- greet <name>` is the happy path.
+        # The template ends in sys.`exit(main()), which surfaces as SystemExit.
         os.chdir(project_path);
         captured = io.StringIO();
         old_stdout = sys.stdout;
         sys.stdout = captured;
+        saved_argv = list(sys.argv);
         try {
-            result = execution.run("main.jac");
+            result = execution.run("main.jac", args=["greet", project_name]);
+        } except SystemExit as e {
+            result = int(e.code or 0);
         } finally {
             sys.stdout = old_stdout;
+            sys.argv = saved_argv;
         }
         stdout = captured.getvalue();
 
-        assert result == 0 , "jac run failed";
-        assert f"Hello from {project_name}!" in stdout;
+        assert result == 0 , f"jac run failed: {stdout}";
+        assert f"Hello, {project_name}! This is {project_name}." in stdout , stdout;
 
         # Record files after run
         files_after_run = get_root_files(project_path);
@@ -1326,7 +1335,7 @@ test "install editable outside any project errors" {
         pkg_dir = (Path(_tmpdir) / "my-lib").resolve();
         pkg_dir.mkdir();
         (pkg_dir / "jac.toml").write_text(
-            '[project]\nname = "my-lib"\nversion = "0.1.0"\ndescription = "Test lib"\nentry-point = "main.jac"\n'
+            '[project]\nname = "my-lib"\nversion = "0.1.0"\ndescription = "Test lib"\nentry-point = "main"\n'
         );
         # cwd (_tmpdir) has no jac.toml of its own; clear any cached config from a
         # prior test so discovery actually runs against this project-less cwd.
@@ -1349,7 +1358,7 @@ test "install editable resolves config from cwd when given dot path" {
     try {
         resolved_tmpdir = Path(_tmpdir).resolve();
         (resolved_tmpdir / "jac.toml").write_text(
-            '[project]\nname = "dot-lib"\nversion = "0.1.0"\ndescription = "Test lib"\nentry-point = "main.jac"\n'
+            '[project]\nname = "dot-lib"\nversion = "0.1.0"\ndescription = "Test lib"\nentry-point = "main"\n'
         );
         os.chdir(_tmpdir);
 
@@ -1387,17 +1396,17 @@ test "jac install -e accepts space-separated and repeated flag forms" {
         pkg_b.mkdir();
         pkg_c.mkdir();
         (pkg_a / "jac.toml").write_text(
-            '[project]\nname = "pkg-a"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main.jac"\n'
+            '[project]\nname = "pkg-a"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main"\n'
         );
         (pkg_b / "jac.toml").write_text(
-            '[project]\nname = "pkg-b"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main.jac"\n'
+            '[project]\nname = "pkg-b"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main"\n'
         );
         (pkg_c / "jac.toml").write_text(
-            '[project]\nname = "pkg-c"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main.jac"\n'
+            '[project]\nname = "pkg-c"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main"\n'
         );
         # The host project (cwd) receives the editable links in its .jac/venv.
         (Path(_tmpdir) / "jac.toml").write_text(
-            '[project]\nname = "host"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main.jac"\n'
+            '[project]\nname = "host"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main"\n'
         );
 
         # -e pkg_a pkg_b exercises space-separated; -e pkg_c exercises repeated flag
@@ -1444,21 +1453,21 @@ test "jac install -e links all packages for space-separated and repeated flag fo
         pkg_b.mkdir();
         pkg_c.mkdir();
         (pkg_a / "jac.toml").write_text(
-            '[project]\nname = "pkg-a"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main.jac"\n'
+            '[project]\nname = "pkg-a"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main"\n'
         );
         (pkg_b / "jac.toml").write_text(
-            '[project]\nname = "pkg-b"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main.jac"\n'
+            '[project]\nname = "pkg-b"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main"\n'
         );
         (pkg_c / "jac.toml").write_text(
-            '[project]\nname = "pkg-c"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main.jac"\n'
+            '[project]\nname = "pkg-c"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main"\n'
         );
         # The host project (cwd) receives the editable links in its .jac/venv.
         (Path(_tmpdir) / "jac.toml").write_text(
-            '[project]\nname = "host"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main.jac"\n'
+            '[project]\nname = "host"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main"\n'
         );
         os.chdir(_tmpdir);
 
-        linked: list = [];
+        linked: list[any] = [];
         def fake_install_editable(self: object, src_dir: object, site_pkgs: object) {
             linked.append(src_dir);
         }
@@ -1495,13 +1504,13 @@ test "jac install <pkg> routes package names to the project venv installer" {
     original_cwd = os.getcwd();
     try {
         (Path(_tmpdir) / "jac.toml").write_text(
-            '[project]\nname = "host"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main.jac"\n'
+            '[project]\nname = "host"\nversion = "0.1.0"\ndescription = ""\nentry-point = "main"\n'
         );
         os.chdir(_tmpdir);
         # `install` now records to jac.toml, so discovery must resolve to this
         # tmp project (not a config cached from an earlier test) before save.
         _reset_config();
-        captured: list = [];
+        captured: list[any] = [];
         def fake_install_specs(
             self: object, config: object, specs: object, ctx: object
         ) -> bool {
@@ -2192,7 +2201,7 @@ test "jac check nowarn flag suppresses warnings" {
 
 """Run analysis.check with captured stdout/stderr; reset global config after."""
 def _check_captured(
-    paths: list, disable_error_code: (list | None) = None
+    paths: list[any], disable_error_code: (list[any] | None) = None
 ) -> tuple[int, str] {
     (captured_stdout, captured_stderr, old_stdout, old_stderr) = _capture_output();
     _reset_config();
@@ -2763,5 +2772,39 @@ test "jac install --extras all expands groups in output" {
         assert "Extras: all" in combined , (
             f"Expected 'Extras: all' in output; got:\n{combined}"
         );
+    }
+}
+
+test "CLI subprocess keeps the selected compiler when cwd contains another jaclang" {
+    with tempfile.TemporaryDirectory() as tmp {
+        shadow = Path(tmp) / "jaclang";
+        shadow.mkdir();
+        (shadow / "__init__.py").write_text(
+            "raise RuntimeError('selected the cwd compiler')\n"
+        );
+        result = subprocess.run(
+            jac_command("--version"),
+            cwd=tmp,
+            capture_output=True,
+            text=True,
+            timeout=30
+        );
+        assert result.returncode == 0 , result.stderr;
+        assert "jac " in result.stdout , result.stdout;
+    }
+}
+
+test "compiler subprocess preserves imports from its working directory" {
+    with tempfile.TemporaryDirectory() as tmp {
+        (Path(tmp) / "cwd_probe.py").write_text("value = 42\n");
+        result = subprocess.run(
+            compiler_python_command("import cwd_probe; print(cwd_probe.value)"),
+            cwd=tmp,
+            capture_output=True,
+            text=True,
+            timeout=30
+        );
+        assert result.returncode == 0 , result.stderr;
+        assert result.stdout.strip() == "42" , result.stdout;
     }
 }

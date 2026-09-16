@@ -2,7 +2,49 @@ import from jaclang.cli.command { Arg, ArgKind, CommandSpec }
 import from jaclang.comptime { name as ct_name }
 
 
-comptime SPEC_CHECK: CommandSpec = CommandSpec(
+comptime SPEC_EXPLAIN: CommandSpec = CommandSpec(
+         name="explain",
+         help="Explain what the compiler inferred: memory (ownership, drops), placement (demotions), ir (optimized LLVM IR)",
+         args=[
+             Arg.create(
+                 "topic",
+                 kind=ArgKind.POSITIONAL,
+                 choices=["memory", "placement", "ir"],
+                 help="memory: inferred ownership states, receiver modes, raises effects and move sites; placement: every element's codespace with the diagnostics that decided it; ir: write the optimized .ll and a symbol map"
+             ),
+             Arg.create(
+                 "filename", kind=ArgKind.POSITIONAL, help="The .jac file to explain"
+             ),
+             Arg.create(
+                 "memory",
+                 `default="",
+                 choices=["managed", "rc", "nogc"],
+                 short="",
+                 help="memory: compile under this profile instead of the project's [memory] profile"
+             ),
+             Arg.create(
+                 "output",
+                 `default="",
+                 help="ir: where to write the .ll (defaults to <file>.ll beside the source)",
+                 short="o"
+             ),
+
+         ],
+         examples=[
+             (
+                 "jac explain memory app.jac",
+                 "Inferred ownership, receiver modes, raises effects, moves"
+             ),
+             (
+                 "jac explain placement app.jac",
+                 "Every demotion and the diagnostics that caused it"
+             ),
+             ("jac explain ir app.jac", "Write app.ll and print the symbol map")
+         ],
+         group="analysis",
+         handler_name=ct_name(explain)
+     ),
+     SPEC_CHECK: CommandSpec = CommandSpec(
          name="check",
          help="Type check Jac files",
          tier="core",
@@ -10,7 +52,8 @@ comptime SPEC_CHECK: CommandSpec = CommandSpec(
              Arg.create(
                  "paths",
                  kind=ArgKind.MULTI_POSITIONAL,
-                 help="Paths to .jac files or directories"
+                 `default=[],
+                 help="Paths to .jac files or directories (none = the workspace gate)"
              ),
              Arg.create(
                  "print_errs",
@@ -79,9 +122,20 @@ comptime SPEC_CHECK: CommandSpec = CommandSpec(
                  short="j",
                  help="Worker processes: a count, 'auto' (one per core, memory-budgeted) or 0 for serial; defaults to [dev] check_jobs / jobs in jac.toml or JAC_CHECK_JOBS / JAC_JOBS"
              ),
+             Arg.create(
+                 "app",
+                 `default="",
+                 short="",
+                 help="Restrict a workspace check to one [apps.<name>] entry of jac.toml"
+             ),
 
          ],
          examples=[
+             (
+                 "jac check",
+                 "Check every app of the workspace, then the files no app reaches"
+             ),
+             ("jac check --app web", "Check one app of the workspace"),
              ("jac check myprogram.jac", "Check a single file"),
              (
                  "jac check . --native-coverage",
@@ -108,21 +162,26 @@ comptime SPEC_CHECK: CommandSpec = CommandSpec(
          handler_name=ct_name(check)
      );
 
+def explain(topic: str, filename: str, output: str = "", memory: str = "") -> int;
+
 def check(
-    paths: list,
+    paths: list[str],
     print_errs: bool = True,
-    ignore: (list | None) = None,
-    disable_error_code: (list | None) = None,
+    ignore: (list[str] | None) = None,
+    disable_error_code: (list[str] | None) = None,
     parse_only: bool = False,
     nowarn: bool = False,
     lint_only: bool = False,
     fix: bool = False,
     native_coverage: bool = False,
     placements: bool = False,
-    jobs: str = ""
+    jobs: str = "",
+    app: str = ""
 ) -> int;
 
-def lint(paths: list, fix: bool = False, ignore: (list | None) = None) -> int;
+def lint(
+    paths: list[str], fix: bool = False, ignore: (list[str] | None) = None
+) -> int;
 
 comptime SPEC_FORMAT: CommandSpec = CommandSpec(
          name="fmt",
@@ -183,14 +242,14 @@ comptime SPEC_FORMAT: CommandSpec = CommandSpec(
      );
 
 def format(
-    paths: list,
+    paths: list[str],
     to_screen: bool = False,
     lintfix: bool = False,
     check: bool = False,
     cache: bool = False,
     cache_anchor: str = "",
-    path_map: dict | None = None,
-    cache_stats: dict | None = None,
+    path_map: dict[str, str] | None = None,
+    cache_stats: dict[str, int] | None = None,
     jobs: str = ""
 ) -> int;
 
@@ -247,12 +306,12 @@ comptime SPEC_PRECOMMIT: CommandSpec = CommandSpec(
      );
 
 def precommit(
-    paths: (list | None) = None,
+    paths: (list[str] | None) = None,
     staged: bool = False,
     verify: bool = False,
     install: bool = False,
     force: bool = False,
-    cache_stats: dict | None = None
+    cache_stats: dict[str, int] | None = None
 ) -> int;
 
 comptime SPEC_TEST: CommandSpec = CommandSpec(
@@ -261,9 +320,15 @@ comptime SPEC_TEST: CommandSpec = CommandSpec(
          tier="core",
          args=[
              Arg.create(
+                 "target",
+                 kind=ArgKind.POSITIONAL,
+                 `default="",
+                 help="App name from [apps], or a path to a test file or directory"
+             ),
+             Arg.create(
                  "paths",
                  kind=ArgKind.MULTI_POSITIONAL,
-                 help="Paths to test files or directories",
+                 help="More test files or directories",
                  `default=[]
              ),
              Arg.create(
@@ -343,6 +408,7 @@ comptime SPEC_TEST: CommandSpec = CommandSpec(
          ],
          examples=[
              ("jac test", "Run all tests in current directory"),
+             ("jac test web", "Run the tests of one app of the workspace"),
              ("jac test mytest.jac", "Run tests in specific file"),
              ("jac test a.jac b.jac", "Run tests in several files"),
              ("jac test --test_name my_test", "Run only test_my_test"),
@@ -357,7 +423,8 @@ comptime SPEC_TEST: CommandSpec = CommandSpec(
      );
 
 def `test(
-    paths: list = [],
+    target: str = "",
+    paths: list[str] = [],
     test_name: str = "",
     filter: str = "",
     xit: bool = False,
@@ -367,7 +434,7 @@ def `test(
     pct_range: str = "",
     resume: bool = False,
     verbose: bool = False,
-    ignore: (list | None) = None,
+    ignore: (list[str] | None) = None,
     jobs: str = ""
 ) -> int;
 

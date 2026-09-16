@@ -22,21 +22,55 @@ the bytecode. The solver consumes summaries and owns every decision:
 | `root` access, node/edge/walker archetypes | server |
 | Python imports not covered by the portability table | server |
 | extern C declarations (clib imports) | native |
-| `def:pub` in a server-anchored module, **in a project kind that has a server** | server (as an endpoint contract) |
-| A `[placement.pins]` entry | its pinned space (immovable) |
-| Membership in `[scale.microservices.routes]` | server (the module is a service) |
+| `def:pub` in a server-anchored module, **in an app whose kind has a server** | server (as an endpoint contract) |
+| A `[placement.pins]` entry (base table or the selected app's `[apps.<name>.placement.pins]` overlay) | its pinned space (immovable) |
+| The entry file of a declared `service` app | server (the module is compiled in that app context) |
 
-`def:pub` is the one row that depends on `[project] kind`, because `pub` means
+`def:pub` is the one row that depends on the **app kind**, because `pub` means
 *export* client-side and *endpoint* server-side: it has no settled meaning until
-placement does. In a kind that has a server (`web-app`, `service`, `desktop`,
-and the default when no kind is declared) it is endpoint evidence, exactly as
-before -- an evidence-free `pub` there is deliberately an endpoint. In a kind
-whose `KindSpec.codespace` is `client` (`js-package`) there is no server for it
-to mean, so it is not evidence at all: everything lands client, `pub` means
-export, and code carrying genuine server evidence is `E5087` rather than a
-server placement that could only fail at runtime. Kind resolution inherits
-through nested manifests, so an `extension/jac.toml` without a `kind` takes the
-kind of the project that contains it.
+placement does. In a kind that has a server (`web-app`, `service`,
+`service-mesh`, and the default when no kind is declared) it is endpoint
+evidence, exactly as before -- an evidence-free `pub` there is deliberately an
+endpoint. In a kind with no server (`js-package`, whose codespace is `client`;
+`web-static`, `mobile`, `desktop`, `cli`) there is no server for it to mean,
+so it is not evidence at all: everything lands client, `pub` means export, and
+code carrying genuine server evidence is `E5087` rather than a server
+placement that could only fail at runtime. The kind comes from the selected app context (`[apps.<name>] kind`, or
+`[project] kind` for the implicit app). Ordinary imports inherit that context.
+
+## App facts
+
+Placement is computed in the selected app's compilation context.
+`AppContextPass` stamps `app`, `app_root` (the project root), and `app_kind`
+before semantic passes. Ordinary imports inherit the selected app;
+another declared entry establishes a boundary. A shared helper can therefore
+have different placements in a web, mobile, or CLI context without acquiring a
+global app context.
+
+Context-specific cache slots include the app entry, target, UI, memory, and
+codespace settings. Project and app configuration fingerprints invalidate
+artifacts when relevant declarations or pins change.
+
+`E2039`/`W2039` check access through declared app entries: another app's private
+declarations are unavailable outside its public bridge surface. Whether a
+cross-module import is a plain in-process import, a client bridge, a
+**service bridge** (server code importing server-placed elements compiled in a
+different app), or a native binding is decided by one classifier over the same
+facts; see [Cross-Codespace Interop](../internals/interop.md#one-cross-app-import-rule).
+
+**Variant agreement.** A `.native.jac` variant is selected for a `mobile`
+app's native platforms (android / ios; the base `.jac` serves its web
+platform), never by its filename alone, and stands in for its sibling `.jac`
+module. The two must expose the same public surface -- the
+same names, kinds of declaration, parameter names and annotations, `has`
+fields -- and each disagreement is `E5105`, reported on the variant.
+
+**Portability by kind.** Whether a Python module may follow its referents
+into another codespace is answered by `runtime/portability.jac`'s
+`supports(module, space, kind)`: unrestricted on the server for every kind;
+empty for the client space of every client-capable kind (honestly: nothing
+lowers yet); the native table for native. So every Python import still pins
+server, in every app.
 
 From those seeds, placement propagates along symbol references to a fixpoint:
 an element referenced by client code follows it into the bundle when its whole
@@ -54,6 +88,11 @@ async, its result is a `Promise<T>` where the server function's is `T`, which
 `W6009` reports for value-returning endpoints. A client-side name that no
 binding can cover is `E5086` at build time rather than a `ReferenceError` at
 module load.
+
+Within one app, server-placed `def:priv` and `def:protect` functions also get
+client RPC forwarders, preserving their authenticated access rules without
+a module placement pin. This does not grant access from another app: the
+cross-app function surface remains `def:pub`.
 
 The analysis proposes; lowering disposes. A module that prefers native but
 fails to lower is demoted to the server with a note naming the cause, and a
@@ -88,10 +127,10 @@ imports -- non-`:pub` items stay callable with auth and boundary types are
 collected -- the trust-boundary shape.
 
 Declaring that a module runs as its own **service** is a different fact with
-a different home: `[scale.microservices.routes]` (see
-[Microservice Interop](plugins/jac-scale-http.md#microservice-interop-sv-to-sv)).
-Modules in the routes table are server-anchored by definition and their
-imports lower to RPC service stubs.
+a different home: an `[apps.<name>]` table with `kind = "service"` and the
+module as its `entry-point` (see [Workspaces & Apps](apps.md)). Its
+elements are server-anchored by definition and compiled in that app context; imports of
+them from any other app lower to typed-async bridge stubs.
 
 ## Seeing and reviewing placements
 
@@ -119,9 +158,14 @@ its verdict. The single query surface is
 - `sealed_spaces_for(path)` answers from a sealed image's
   `_precompiled/MANIFEST.json`, which persists the per-module verdict at seal
   time (manifest format 5), so post-build tools never re-derive placement.
-- `pinned_module_space(path)` exposes the raw `[placement.pins]` *input* for
-  the few places that need explicit user intent rather than the solved
-  verdict (project-kind resolution, trust-boundary import handling).
+- `pinned_module_space(path)` exposes the raw `[placement.pins]` *input*
+  (base table merged with the selected app's overlay) for the few places that
+  need explicit user intent rather than the solved verdict (app-kind
+  inference, trust-boundary import handling).
+- `compiler/placement/workspace.jac` is the compiler-side workspace reader:
+  `app_for_path`, `serving_apps`, `app_fact_digest`. It
+  parses `[apps]` permissively (validation is the project layer's job) and
+  synthesizes the implicit app when there is no `[apps]` table.
 
 Tools must not read `[placement.pins]` directly as if it were the placement
 verdict -- pins are one input to the solver, and most client modules carry no
@@ -156,7 +200,11 @@ declarations -- which were never placement markers to begin with.
   Quote the module for npm packages: `import from "react" { useRef }`.
 - `E5086` -- client code names one of the module's own declarations that the
   bundle never binds. The build fails instead of shipping a `ReferenceError`.
-- `E5087` -- a project kind with no server contains code that needs one.
+- `E5087` -- an app whose kind has no server contains code that needs one.
+- `E2039` -- access across app entry boundaries (see
+  [Workspaces & Apps](apps.md#entry-modules-and-shared-source)).
+- `E5104` / `E5105` / `E5106` -- the app DAG, variant
+  agreement, and the `pub` bridge surface.
 - `W6005` -- a function-typed parameter at an RPC call site.
 - `W6006` -- a mutable glob would be dual-emitted (state fork).
 - `W6007` -- client code uses a server-placed function as a value and no
