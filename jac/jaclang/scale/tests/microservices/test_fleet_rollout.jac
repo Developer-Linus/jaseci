@@ -105,7 +105,9 @@ def _dep_zero -> object {
 }
 
 
-def _bundle_with_autoscaler(deploy_name: str, app: str, autoscaler_cfg: dict) -> dict {
+def _bundle_with_autoscaler(
+    deploy_name: str, app: str, autoscaler_cfg: dict[str, any]
+) -> dict[str, any] {
     bundle = _bundle(deploy_name, app);
     bundle["scaling"] = {
         app: {"mode": ScalingMode.METRIC, "autoscaler": autoscaler_cfg}
@@ -114,7 +116,7 @@ def _bundle_with_autoscaler(deploy_name: str, app: str, autoscaler_cfg: dict) ->
 }
 
 
-def _apis(ready: int, pods: list) -> tuple {
+def _apis(ready: int, pods: list[any]) -> tuple[any, ...] {
     apps = unittest.mock.MagicMock();
     apps.read_namespaced_deployment.return_value = _dep(ready);
     core = unittest.mock.MagicMock();
@@ -487,6 +489,41 @@ test "a KEDA min=0 deployment not yet reconciled is not treated as settled zero"
         f"a Deployment whose controller has not yet observed the current "
         f"generation must not be treated as intentionally parked at zero, "
         f"even though its status counters default to 0: {err}"
+    );
+}
+
+
+test "a KEDA min=0 deployment scaling back up is not treated as settled zero" {
+    target = KubernetesTarget(
+        config=KubernetesConfig(
+            app_name="jac-shop", namespace="ns", autoscaler_engine="keda"
+        )
+    );
+    (apps, core) = _apis(0, []);
+    apps.read_namespaced_deployment.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(generation=2),
+        spec=SimpleNamespace(replicas=3),
+        status=SimpleNamespace(
+            observed_generation=2,
+            replicas=0,
+            updated_replicas=0,
+            available_replicas=0,
+            ready_replicas=0
+        )
+    );
+    bundle = _bundle_with_autoscaler(
+        "order-service-deployment",
+        "order-service",
+        {"min": 0, "max": 3, "triggers": [{"type": "cron", "metadata": {}}]}
+    );
+
+    err = _run(target, bundle, apps, core, 15);
+
+    assert err is not None and "timed out" in str(err) , (
+        f"the controller can observe a scale-up's new generation before its "
+        f"status counters catch up; a Deployment whose spec already asks "
+        f"for replicas must never be treated as intentionally parked at "
+        f"zero just because status is still lagging: {err}"
     );
 }
 

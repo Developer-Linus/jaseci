@@ -681,6 +681,7 @@ obj KubernetesTarget(KubernetesTargetBase) {
                             name in zero_floor_names
                             and int(d.status.observed_generation or 0)
                                 >= int(d.metadata.generation or 0)
+                            and (d.spec.replicas or 0) == 0
                             and (d.status.replicas or 0) == 0
                             and (d.status.ready_replicas or 0) == 0
                         ) {
