@@ -35,34 +35,29 @@ impl print_file_progress(file_path: str, success: bool, idx: int, total: int) ->
     console.print(f"{file_path} {status} [{percentage}%]");
 }
 
-impl print_failures(
-    failed_results: list[dict[str, any]], nowarn: bool = False
+impl print_section(
+    title: str, results: list[dict[str, any]], nowarn: bool = False
 ) -> None {
     import from jaclang.cli.console { console }
+    visible = [
+        r
+        for r in results
+        if r.get('errors') or (not nowarn and r.get('warnings'))
+    ];
+    if not visible {
+        return;
+    }
     console.print("");
-    console.print(separator("FAILURES"));
-    for r in failed_results {
+    console.print(separator(title));
+    for r in visible {
         console.print(separator(r['path'], char='_'));
-        for e in r['errors'] {
+        for e in r.get('errors', []) {
             print_diag(e, is_error=True);
         }
-        if not nowarn and r['warnings'] {
-            for w in r['warnings'] {
+        if not nowarn {
+            for w in r.get('warnings', []) {
                 print_diag(w, is_error=False);
             }
-        }
-        console.print("");
-    }
-}
-
-impl print_warnings(warning_results: list[dict[str, any]]) -> None {
-    import from jaclang.cli.console { console }
-    console.print("");
-    console.print(separator("WARNINGS"));
-    for r in warning_results {
-        console.print(separator(r['path'], char='_'));
-        for w in r['warnings'] {
-            print_diag(w, is_error=False);
         }
         console.print("");
     }

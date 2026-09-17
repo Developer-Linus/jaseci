@@ -3,8 +3,7 @@ import from fnmatch { fnmatch }
 import from jaclang.cli.console { console }
 import from jaclang.cli.check_report {
     print_file_progress,
-    print_failures,
-    print_warnings,
+    print_section,
     print_failed_summary,
     print_final_summary,
     print_native_coverage,
@@ -488,7 +487,7 @@ impl check(
         if not res.get('success') {
             failed_files += 1;
             failed_results.append({'path': path, 'errors': errs, 'warnings': warns});
-        } elif len(warns) > 0 and not nowarn {
+        } elif len(warns) > 0 {
             warning_results.append({'path': path, 'warnings': warns});
         }
     }
@@ -499,13 +498,13 @@ impl check(
         print_placement_report(placement_report);
     }
     if print_errs and len(failed_results) > 0 {
-        print_failures(failed_results, nowarn);
-    }
-    if print_errs and len(warning_results) > 0 {
-        print_warnings(warning_results);
+        print_section("FAILURES", failed_results, nowarn);
     }
     if failed_files > 0 {
         print_failed_summary(failed_results);
+    }
+    if print_errs and len(warning_results) > 0 {
+        print_section("WARNINGS", warning_results, nowarn);
     }
 
     elapsed = time() - start_time;
@@ -1176,16 +1175,7 @@ impl format(
     }
 
     if failed_results {
-        import from jaclang.cli.check_report { separator }
-        console.print("");
-        console.print(separator("FAILURES"));
-        for r in failed_results {
-            console.print(separator(str(r['path']), char='_'));
-            for e in r['errors'] {
-                console.error(e);
-            }
-            console.print("");
-        }
+        print_section("FAILURES", failed_results);
         print_failed_summary(failed_results);
     }
 

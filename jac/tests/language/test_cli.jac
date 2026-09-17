@@ -2174,6 +2174,48 @@ test "jac check shows warnings for files with warnings only" {
     assert "warnings_only.jac" in combined , "should show file path in output";
 }
 
+test "jac check on a mixed run never lists a passing file under failed files" {
+    captured_stdout = io.StringIO();
+    captured_stderr = io.StringIO();
+    old_stdout = sys.stdout;
+    old_stderr = sys.stderr;
+    sys.stdout = captured_stdout;
+    sys.stderr = captured_stderr;
+
+    try {
+        result = analysis.check(
+            [fixture_path("test_syntax_err.jac"), fixture_path("warnings_only.jac")]
+        );
+        stdout = captured_stdout.getvalue();
+        stderr = captured_stderr.getvalue();
+    } finally {
+        sys.stdout = old_stdout;
+        sys.stderr = old_stderr;
+    }
+
+    combined = stdout + stderr;
+
+    # A real error anywhere in the run still fails it overall.
+    assert result == 1 , "check should exit with code 1 when any file has errors";
+
+    # Both sections should appear: the erroring file under FAILURES, the
+    # passing-with-warnings file under its own WARNINGS section.
+    assert "FAILURES" in combined , "should display FAILURES section for the erroring file";
+    assert "WARNINGS" in combined , "should display WARNINGS section for the passing file";
+    assert "failed files" in combined , "should display failed files summary";
+
+    # print_failed_summary's line format is "<path> - N error(s), M warning(s)";
+    # only entries in failed_results ever produce it. A passing file sharing
+    # this run with a real failure must never produce that line -- the other
+    # half of the bug this fix corrects, previously unasserted.
+    assert "warnings_only.jac - " not in combined , (
+        "a passing file's warnings must never be reported under failed files"
+    );
+    assert "test_syntax_err.jac - " in combined , (
+        "the erroring file must still appear in the failed files summary"
+    );
+}
+
 test "jac check nowarn flag suppresses warnings" {
     captured_stdout = io.StringIO();
     captured_stderr = io.StringIO();
