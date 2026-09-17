@@ -530,6 +530,7 @@ The KEDA engine above scales on CPU, memory, or any KEDA trigger, but none of th
 | `cold_start_fallback_service` / `cold_start_fallback_port` | `null` | Service to forward to while cold-starting, as an alternative to a static placeholder. |
 | `timeout_readiness` / `timeout_request` / `timeout_response_header` | `null` | Duration strings (e.g. `"30s"`) the interceptor waits at each stage. |
 | `scale_target_kind` / `scale_target_api_version` / `scale_target_plural` | `"Deployment"` / `"apps/v1"` / `null` | Only needed when activating a non-Deployment/StatefulSet target. |
+| `interceptor_service_address` | `"keda-add-ons-http-interceptor-proxy.keda:8080"` | `host:port` of the HTTP Add-on interceptor proxy Service that activated apps are routed through. Cluster-wide, so it is read from this block only, never from a per-app `[apps.<name>.scale.http_activation]` override. Change it when the Add-on is installed outside the default `keda` namespace. |
 
 **To configure in `jac.toml` (monolith deploy):**
 
