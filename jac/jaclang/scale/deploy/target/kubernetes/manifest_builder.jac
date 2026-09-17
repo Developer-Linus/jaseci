@@ -954,6 +954,8 @@ obj ManifestBuilder {
         }
         if self.fleet is not None {
             merged.update(self.fleet.app_config(svc_name));
+        } elif svc_name != GATEWAY_NAME {
+            merged.update(get_scale_config().get_app_scale_config(svc_name));
         }
         extra = self.app_overrides.get(svc_name);
         if isinstance(extra, dict) {
@@ -1611,7 +1613,9 @@ obj ManifestBuilder {
             return deployment_name;
         }
         k8s_name = deployment_name[:-len(suffix)];
-        candidates: list[str] = list(self.fleet.names()) if self.fleet is not None else [];
+        candidates: list[str] = list(self.fleet.names())
+            if self.fleet is not None
+            else list(get_scale_config().get_jac_config().apps.keys());
         candidates.append(GATEWAY_NAME);
         for key in candidates {
             if k8s_safe_name(str(key)) == k8s_name {

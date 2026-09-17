@@ -18,6 +18,7 @@ import from jaclang.scale.deploy.target.kubernetes.kubernetes_config {
 import from jaclang.scale.deploy.target.kubernetes { kubernetes_target as kt_module }
 import from jaclang.scale.deploy.target.kubernetes.manifest_builder { ManifestBuilder }
 import from jaclang.scale.config.config_loader { get_scale_config, reset_scale_config }
+import from jaclang.scale.runtime.fleet { fleet_of }
 
 def _as_any(v: any) -> any {
     return v;
@@ -531,7 +532,7 @@ test "kubernetes_target falls back to in-cluster config when kubeconfig is unava
     fake_cfg.load_incluster_config.assert_called_once();
 }
 
-def _status_apis(replicas: int, ready: int) -> tuple {
+def _status_apis(replicas: int, ready: int) -> tuple[any, ...] {
     apps = unittest.mock.MagicMock();
     apps.read_namespaced_deployment.return_value = SimpleNamespace(
         spec=SimpleNamespace(replicas=replicas),
@@ -543,19 +544,17 @@ def _status_apis(replicas: int, ready: int) -> tuple {
 
 def _seed_ms_config(ms_toml: str) -> str {
     # get_status's own call site builds ManifestBuilder(k8s_config=..., logger=...)
-    # with no microservices_config kwarg, so _ms_cfg() always falls back to
-    # get_scale_config().get_microservices_config(). Point that at a real
-    # seeded jac.toml -- the same pattern test_plan.jac uses -- so get_status
-    # drives a real ManifestBuilder end to end instead of one told what to
-    # answer. That seam (autoscaler_config_for_deployment mocked outright) is
-    # what let a broken _service_key_for_deployment or a type-blind
-    # is_scale_to_zero_eligible through with every test green.
+    # with no fleet kwarg, so _service_config()/_service_key_for_deployment()
+    # fall back to reading get_scale_config()'s live singleton. Point that at a
+    # real seeded jac.toml so get_status drives real per-app config resolution
+    # end to end instead of one told what to answer. That seam
+    # (autoscaler_config_for_deployment mocked outright) is what let a broken
+    # _service_key_for_deployment or a type-blind is_scale_to_zero_eligible
+    # through with every test green.
     import tempfile;
     import from pathlib { Path }
     project_dir = tempfile.mkdtemp(prefix="jac-status-test-");
-    toml_body = (
-        "[project]\nname = \"status-test\"\nentry-point = \"main.jac\"\n" + ms_toml
-    );
+    toml_body = "[project]\nname = \"status-test\"\n" + ms_toml;
     (Path(project_dir) / "jac.toml").write_text(toml_body);
     reset_scale_config();
     get_scale_config(project_dir=Path(project_dir));
@@ -589,15 +588,14 @@ def _get_status(target: any, ms_toml: str, replicas: int, ready: int) -> any {
 }
 
 def _hpa_toml(trigger_type: str | None) -> str {
-    triggers = (
-        f"\n[[scale.microservices.services.order-service.triggers]]\ntype = \"{trigger_type}\"\n"
-    )
+    triggers = (f"\n[[apps.order-service.scale.triggers]]\ntype = \"{trigger_type}\"\n")
         if trigger_type
         else "";
     return (
-        "[scale.microservices.routes]\n"
-        "order-service = \"/orders\"\n"
-        "\n[scale.microservices.services.order-service.hpa]\n"
+        "[apps.order-service]\n"
+        "kind = \"service\"\n"
+        "entry-point = \"order_service\"\n"
+        "\n[apps.order-service.scale.hpa]\n"
         "min = 0\n"
         "max = 3\n"
         + triggers
@@ -647,9 +645,10 @@ test "get_status reports FAILED, not UNKNOWN and not a raised exception, when th
     # autoscaler_config_for_deployment must not be allowed to take a
     # read-only status check down over it.
     malformed_toml = (
-        "[scale.microservices.routes]\n"
-        "order-service = \"/orders\"\n"
-        "\n[scale.microservices.services.order-service.hpa]\n"
+        "[apps.order-service]\n"
+        "kind = \"service\"\n"
+        "entry-point = \"order_service\"\n"
+        "\n[apps.order-service.scale.hpa]\n"
         "min = \"banana\"\n"
         "max = 3\n"
     );
@@ -663,33 +662,35 @@ test "get_status reports FAILED, not UNKNOWN and not a raised exception, when th
     );
 }
 
-test "get_status resolves scale-to-zero eligibility for a single-app deploy with no declared routes at all" {
-    # No [scale.microservices.routes]: the project never cuts itself into
-    # microservices, so the only service is the implicit "solo" one
-    # generate_service_pod_specs names after the app itself. The app_name
-    # deliberately has an underscore: the real k8s Deployment is always
-    # named via k8s_safe_name (order-service-deployment, hyphen), so this
-    # only passes if the implicit route is resolved from the real app_name
-    # ("order_service") rather than coincidentally matching the mangled
-    # k8s name, the same real-name-mangling case
-    # autoscaler_config_for_deployment is already tested against below.
+test "get_status resolves scale-to-zero eligibility for an app name with an underscore" {
+    # The app_name deliberately has an underscore: the real k8s Deployment is
+    # always named via k8s_safe_name (order-service-deployment, hyphen), so
+    # this only passes if _service_key_for_deployment resolves the real
+    # declared app name ("order_service") rather than coincidentally matching
+    # the mangled k8s name -- the same real-name-mangling case
+    # autoscaler_config_for_deployment is already tested against below, but
+    # driven through the live get_scale_config() fallback instead of a
+    # hand-built fleet.
     keda_target = DeploymentTargetFactory.create(
         "kubernetes",
         {"app_name": "order_service", "namespace": "ns", "autoscaler_engine": "keda"}
     );
     solo_toml = (
-        "[scale.microservices.services.order_service.hpa]\n"
+        "[apps.order_service]\n"
+        "kind = \"service\"\n"
+        "entry-point = \"order_service\"\n"
+        "\n[apps.order_service.scale.hpa]\n"
         "min = 0\n"
         "max = 3\n"
-        "\n[[scale.microservices.services.order_service.triggers]]\n"
+        "\n[[apps.order_service.scale.triggers]]\n"
         "type = \"cron\"\n"
     );
 
     info = _get_status(keda_target, solo_toml, replicas=0, ready=0);
 
     assert info.status == ResourceStatus.STOPPED , (
-        f"a real trigger under keda must resolve through the implicit solo "
-        f"route the same way a declared route does, and park at zero, got "
+        f"a real trigger under keda must resolve through the real app name "
+        f"the same way a hyphenated one does, and park at zero, got "
         f"{info.status}"
     );
 }
@@ -697,15 +698,15 @@ test "get_status resolves scale-to-zero eligibility for a single-app deploy with
 test "autoscaler_config_for_deployment resolves a service's real k8s Deployment name back to its config key" {
     mb = ManifestBuilder(
         k8s_config=KubernetesConfig(app_name="jac-shop", namespace="ns"),
-        microservices_config={
-            "routes": {"order_service": "/orders", "cart_service": "/cart"},
-            "services": {
+        fleet=fleet_of(
+            {"order_service": "/orders", "cart_service": "/cart"},
+            overrides={
                 "order_service": {
                     "hpa": {"min": 0, "max": 2},
                     "triggers": [{"type": "cron", "metadata": {}}]
                 }
             }
-        }
+        )
     );
 
     cfg = mb.autoscaler_config_for_deployment("order-service-deployment");
@@ -720,7 +721,7 @@ test "autoscaler_config_for_deployment resolves a service's real k8s Deployment 
 test "autoscaler_config_for_deployment resolves the gateway's deployment name" {
     mb = ManifestBuilder(
         k8s_config=KubernetesConfig(app_name="jac-shop", namespace="ns"),
-        microservices_config={"routes": {"order_service": "/orders"}}
+        fleet=fleet_of({"order_service": "/orders"})
     );
 
     # No per-service config for the gateway means hpa defaults (min=1), but the
