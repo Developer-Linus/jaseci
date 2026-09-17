@@ -11,7 +11,7 @@ def _http_activation_nested_schema(cluster_scoped: bool = False) -> dict[str, an
 
     `cluster_scoped` adds the keys that only the top-level block honors.
     """;
-    fields: dict[str, any] = {
+    fields = {
         "enabled": {
             "type": "bool",
             "default": False,
