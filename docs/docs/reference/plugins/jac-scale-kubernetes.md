@@ -514,6 +514,7 @@ The KEDA engine above scales on CPU, memory, or any KEDA trigger, but none of th
 | `cold_start_fallback_service` / `cold_start_fallback_port` | `null` | Service to forward to while cold-starting, as an alternative to a static placeholder. |
 | `timeout_readiness` / `timeout_request` / `timeout_response_header` | `null` | Duration strings (e.g. `"30s"`) the interceptor waits at each stage. |
 | `scale_target_kind` / `scale_target_api_version` / `scale_target_plural` | `"Deployment"` / `"apps/v1"` / `null` | Only needed when activating a non-Deployment/StatefulSet target. |
+| `interceptor_service_address` | `"keda-add-ons-http-interceptor-proxy.keda:8080"` | `host:port` of the HTTP Add-on interceptor proxy Service that activated apps are routed through. Cluster-wide, so it is read from this block only, never from a per-service `[scale.microservices.services.<name>.http_activation]` override. Change it when the Add-on is installed outside the default `keda` namespace. |
 
 **To configure in `jac.toml` (monolith deploy):**
 
@@ -558,8 +559,10 @@ graph TD
 
 jac-scale always reconciles the `InterceptorRoute` before the `ScaledObject`, because the external scaler resolves the target Service and scaling metric from the route when KEDA evaluates the trigger. Reconciling in the other order would leave the `ScaledObject` unable to find its metric source.
 
-!!! warning "Route inbound traffic through the interceptor yourself"
-    jac-scale creates the `InterceptorRoute` and `ScaledObject`, but does **not** rewire the gateway or Ingress to the interceptor proxy -- they still resolve the app's own Service directly. With `min_replicas = 0`, a request that reaches the Service instead of the interceptor is refused and never wakes the pod. Only enable `http_activation` on a service whose inbound traffic you have already pointed at the KEDA HTTP interceptor proxy. The gateway is exempt and never inherits a shared `enabled = true` default.
+!!! note "Interceptor routing is automatic"
+    Once `http_activation.enabled = true` for a service, jac-scale routes traffic to it through the interceptor automatically -- both gateway-forwarded requests (the Ingress path) and sv-to-sv RPC calls (walker/function invocations from another service) resolve the interceptor's proxy address instead of the app's own Service, with a `Host` header set to the service's own Service DNS name so the interceptor's `InterceptorRoute` can tell which target a request is for. No manual Ingress or gateway rewiring is required. The Ingress itself still points at the gateway's own Service, unchanged: the gateway is exempt from `http_activation` and always stays warm, so it never needs to be woken.
+
+    A cold wake holds the request until the pod is Ready, so set `rpc_timeout` and `http_forward_timeout` (per service under `[scale.microservices.services.<name>]`, or `http_forward_timeout` for every service under `[scale.microservices]`) above the service's cold boot time, and `timeout_readiness` if you set interceptor timeouts; with the 10s / 30s defaults the first call to a service sitting at zero replicas fails. WebSocket connections proxied through the gateway are not yet routed through the interceptor.
 
 !!! note "Programmatic API for dynamic activation"
     A control-plane process that creates and tears down workloads on demand (for example, an IDE-preview orchestrator spinning up a per-session preview) has no fixed target to put in `jac.toml`. For that case, `HTTPActivationSpec` (`jaclang.scale.deploy.autoscale.http_activation`) and `KEDAAutoscaler.apply_http_activation` / `destroy_http_activation` (`jaclang.scale.deploy.autoscale.keda_autoscaler`) remain available as a direct API, unchanged by the `jac.toml` surface above. Use whichever entry point matches your workload's lifecycle: `jac.toml` for a known, standing service; the programmatic API for one created and destroyed at runtime.

@@ -642,22 +642,14 @@ class JacScalePlugin {
             return dict(sv_client._registry);
         }
 
-        try {
-            import from jaclang.scale.config.config_loader { get_scale_config }
-            import from jaclang.scale.deploy.target.kubernetes.runtime_resolver {
-                build_k8s_registry
-            }
-            ms_cfg = get_scale_config().get_microservices_config();
-            routes: dict[str, str] = ms_cfg.get("routes", {});
-            port: int = int(ms_cfg.get("gateway_port", 8000));
-            return build_k8s_registry(routes, port);
-        } except Exception as e {
-            import logging;
-            logging.getLogger(__name__).warning(
-                f"K8s get_sv_registry fell back to local registry: {e}"
-            );
+        import from jaclang.scale.deploy.target.kubernetes.runtime_resolver {
+            get_sv_service_routes
+        }
+        routes = get_sv_service_routes();
+        if not routes {
             return dict(sv_client._registry);
         }
+        return {name: route.url for (name, route) in routes.items()};
     }
 
     static def sv_transport_available -> bool {
