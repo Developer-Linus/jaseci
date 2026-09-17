@@ -740,7 +740,7 @@ test "get_sv_service_routes warns once on a failing lookup, then again after it 
     }
 
     def healthy_config(project_dir: object = None) -> object {
-        return SimpleNamespace(get_gateway_config=lambda { {"gateway_port": 8000} });
+        return SimpleNamespace(get_gateway_config=lambda { {"gateway_port": 8000}});
     }
 
     had_k8s_env = "KUBERNETES_SERVICE_HOST" in os.environ;

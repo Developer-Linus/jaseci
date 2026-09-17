@@ -737,13 +737,15 @@ test "resolve_peer_route warns once per service, then again after it recovers an
 
     def healthy_config(project_dir: object = None) -> object {
         return SimpleNamespace(
-            get_kubernetes_config=lambda { {} },
-            get_app_scale_config=lambda (app_name: str) { {} }
+            get_kubernetes_config=lambda { {}},
+            get_app_scale_config=lambda (app_name: str) { {}}
         );
     }
 
     resolver_mod._config_load_warned.discard("k9_warn_once_svc");
-    setattr(resolver_mod.logger, "warning", lambda (msg: str) { warn_calls.append(msg); });
+    setattr(
+        resolver_mod.logger, "warning", lambda (msg: str) { warn_calls.append(msg); }
+    );
 
     try {
         for (label, loader, expected) in [

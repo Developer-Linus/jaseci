@@ -146,7 +146,9 @@ test "mixed activation states in one call resolve independently, no cross-talk" 
     import os;
     import from pathlib { Path }
 
-    fixture = Path(__file__).parent.parent / "fixtures" / "keda_http_activation_rpc_wake_e2e";
+    fixture = Path(__file__).parent.parent
+        / "fixtures"
+        / "keda_http_activation_rpc_wake_e2e";
     saved_ns = os.environ.get("POD_NAMESPACE");
     os.environ["POD_NAMESPACE"] = "shop";
     reset_scale_config();
