@@ -139,55 +139,25 @@ test "a configured interceptor address matches what AutoscalerFactory hands the 
 
 # --- build_k8s_registry_routes: no cross-talk between services --------------
 # Exercised through the real production entry point (runtime_resolver.jac),
-# backed by a real on-disk jac.toml, not a hand-built kubernetes_cfg /
-# app_scale_configs pair -- build_k8s_service_routes took those as explicit
-# params but nothing outside this file ever called it; production always
-# resolves per-app config itself through get_scale_config().
+# backed by the real mixed-activation fixture the RPC-wake e2e deploys
+# (worker activated, app not), so a drift in that fixture fails here too.
 
 test "mixed activation states in one call resolve independently, no cross-talk" {
     import os;
-    import shutil;
-    import tempfile;
     import from pathlib { Path }
 
-    d = tempfile.mkdtemp(prefix="jac-route-crosstalk-");
-    (Path(d) / "jac.toml").write_text(
-        '[project]\n'
-        'name = "shop"\n'
-        'default-app = "web"\n'
-        '\n'
-        '[apps.web]\n'
-        'kind = "web-app"\n'
-        'entry-point = "main"\n'
-        '\n'
-        '[apps.orders_app]\n'
-        'kind = "service"\n'
-        'entry-point = "orders_app"\n'
-        '\n'
-        '[apps.orders_app.scale.http_activation]\n'
-        'enabled = true\n'
-        '\n'
-        '[apps.cart_app]\n'
-        'kind = "service"\n'
-        'entry-point = "cart_app"\n',
-        encoding="utf-8"
-    );
-    (Path(d) / "main.jac").write_text("with entry {}\n", encoding="utf-8");
-    (Path(d) / "orders_app.jac").write_text("with entry {}\n", encoding="utf-8");
-    (Path(d) / "cart_app.jac").write_text("with entry {}\n", encoding="utf-8");
-
+    fixture = Path(__file__).parent.parent / "fixtures" / "keda_http_activation_rpc_wake_e2e";
     saved_ns = os.environ.get("POD_NAMESPACE");
     os.environ["POD_NAMESPACE"] = "shop";
     reset_scale_config();
     try {
-        get_scale_config(project_dir=Path(d));
-        resolved = build_k8s_registry_routes(["orders_app", "cart_app"], 8000);
+        get_scale_config(project_dir=fixture);
+        resolved = build_k8s_registry_routes(["worker", "app"], 8000);
 
-        assert resolved["orders_app"].host_header
-            == "orders-app-service.shop.svc.cluster.local";
-        assert resolved["cart_app"].url
-            == "http://cart-app-service.shop.svc.cluster.local:8000";
-        assert resolved["cart_app"].host_header is None;
+        assert resolved["worker"].host_header
+            == "worker-service.shop.svc.cluster.local";
+        assert resolved["app"].url == "http://app-service.shop.svc.cluster.local:8000";
+        assert resolved["app"].host_header is None;
     } finally {
         if saved_ns is None {
             os.environ.pop("POD_NAMESPACE", None);
@@ -195,7 +165,6 @@ test "mixed activation states in one call resolve independently, no cross-talk" 
             os.environ["POD_NAMESPACE"] = saved_ns;
         }
         reset_scale_config();
-        shutil.rmtree(d, ignore_errors=True);
     }
 }
 
