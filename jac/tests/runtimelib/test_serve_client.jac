@@ -201,7 +201,7 @@ interop facts land in that hub rather than `Jac.program.mod.hub` -- the exact
 condition under which the serve endpoint collector missed them. Returns
 `(client, cleanup_dir)`; the caller must rmtree `cleanup_dir`.
 """
-def make_bundled_crossboundary_client -> tuple {
+def make_bundled_crossboundary_client -> tuple[any, ...] {
     import jaclang;
     jaclang_root = Path(jaclang.__file__).resolve().parent;
     fixtures_src = Path(fixture_abs_path("")).resolve();
@@ -251,7 +251,9 @@ def make_spa_client(tmp_path: str) -> JacTestClient {
 }
 
 """Attach a StringIO handler to logger and return (buf, handler, old_level)."""
-def capture_log_start(logger: logging.Logger, level: int = logging.DEBUG) -> tuple {
+def capture_log_start(
+    logger: logging.Logger, level: int = logging.DEBUG
+) -> tuple[any, ...] {
     buf = io.StringIO();
     handler = logging.StreamHandler(buf);
     handler.setLevel(level);
@@ -1857,7 +1859,7 @@ test "spawn_walker_sync and spawn_walker_async dispatch to explicit paths" {
         user_mgr = UserManager(base_path=tmpdir);
         exec_mgr = ExecutionManager(base_path=tmpdir, user_manager=user_mgr);
         user_mgr.create_user("testuser", "testpass");
-        async def run -> tuple {
+        async def run -> tuple[any, ...] {
             # Explicit sync path: must still run concurrently via to_thread.
             start = time();
             tasks = [
@@ -2044,7 +2046,7 @@ test "CallState.reports is thread-safe (sync walker worker threads put safely)" 
     items_per_thread = 100;
     expected_count = total_threads * items_per_thread;
 
-    received: list = [];
+    received: list[any] = [];
 
     def worker(tid: int) {
         for i in range(items_per_thread) {
@@ -2127,7 +2129,7 @@ test "concurrent multi-user requests do not race on ctx.user_root" {
         }
         # Sanity: each user got a unique root.
         assert len(set(root_ids.values())) == 3;
-        async def run_probe(walker_cls: any) -> list {
+        async def run_probe(walker_cls: any) -> list[any] {
             tasks = [
                 exec_mgr.spawn_walker(walker_cls, {"sleep_s": 0.1}, uname)
                 for uname in users
@@ -2376,10 +2378,63 @@ test "a module reload during a build wins over the build's result" {
     );
 }
 
-"""/graph, /graph/data and /docs must be served by the stdlib server too -
-previously they existed only on the scale (FastAPI) server, so apps embedding
-them 404'd whenever serving fell back to the zero-dependency stack."""
+glob _GRAPH_LOGIN_HARNESS: str = """
+import { JSDOM } from "jsdom";
+
+const [base, username, password] = process.argv.slice(2);
+const html = await (await fetch(base + "/graph")).text();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = async (ok) => { for (let i = 0; i < 400 && !ok(); i++) await sleep(25); };
+
+// `send` replaces the body on the wire, so the server's own rejection reaches the modal.
+const ROWS = [
+  { name: "valid credentials", password, token: true, badge: "User Graph", error: null },
+  { name: "wrong password", password: password + "x", token: false, badge: "Public Graph", error: "Invalid credentials" },
+  { name: "rejected body", password, send: { username, password }, token: false, badge: "Public Graph", error: "identity is required" },
+];
+
+let failed = 0;
+for (const row of ROWS) {
+  const calls = [];
+  const dom = new JSDOM(html, {
+    url: base + "/graph",
+    runScripts: "dangerously",
+    beforeParse(window) {
+      window.fetch = (url, init = {}) => {
+        calls.push({ url, auth: (init.headers || {}).Authorization });
+        const body = row.send && url.endsWith("/user/login") ? JSON.stringify(row.send) : init.body;
+        return fetch(url, { ...init, body });
+      };
+    },
+  });
+  const { document, localStorage } = dom.window;
+  const button = document.getElementById("login-btn");
+  document.getElementById("login-username").value = username;
+  document.getElementById("login-password").value = row.password;
+  button.click();
+  await until(() => !button.disabled);
+  const errorEl = document.getElementById("login-error");
+  const seen = {
+    token: Boolean(localStorage.getItem("jac_token")),
+    badge: document.getElementById("mode-badge").textContent,
+    error: errorEl.style.display === "block" ? errorEl.textContent : null,
+    authedGraph: calls.some((c) => c.url.endsWith("/graph/data") && Boolean(c.auth)),
+  };
+  const want = { token: row.token, badge: row.badge, error: row.error, authedGraph: row.token };
+  const ok = JSON.stringify(seen) === JSON.stringify(want);
+  console.log((ok ? "PASS  " : "FAIL  ") + row.name + ": " + JSON.stringify(seen) + (ok ? "" : " want " + JSON.stringify(want)));
+  failed += ok ? 0 : 1;
+}
+process.exit(failed ? 1 : 0);
+""";
+
+"""The stdlib server serves /graph, /graph/data and /docs, and the /graph login
+modal signs in against it (#8951)."""
 test "stdlib server serves graph visualizer and docs" {
+    import from jaclang.client.bun_installer { get_bun }
+    import from jaclang.server.settings { ServeSettings }
+    import from .react_jsdom_harness { REACT_JSDOM_DEPS, bun_install, run_harness }
+
     with TemporaryDirectory() as tmpdir {
         client = JacTestClient.from_file(
             fixture_abs_path("serve_shared_root.jac"), base_path=tmpdir
@@ -2402,6 +2457,33 @@ test "stdlib server serves graph visualizer and docs" {
         paths = spec.json()["paths"];
         assert "/walker/leave_note" in paths , "openapi should list the module's walkers";
         assert "/user/login" in paths , "openapi should list auth endpoints";
+        _require_client_integration();
+        bun = get_bun();
+        assert bun is not None , "bun is on PATH but get_bun() could not locate it";
+        registered = client.register_user("graph_viewer", "pw12345678");
+        assert registered.ok , f"register failed: {registered.text}";
+        client.server.settings = ServeSettings.load(
+            tmpdir, {"host": "127.0.0.1", "port": 0}
+        );
+        stop = client.server.serve_background(no_client=True);
+        try {
+            work = Path(tmpdir) / "graph_login";
+            work.mkdir();
+            bun_install(bun, work, "graph-login", {"jsdom": REACT_JSDOM_DEPS["jsdom"]});
+            (work / "harness.mjs").write_text(_GRAPH_LOGIN_HARNESS, encoding="utf-8");
+            run_harness(
+                bun,
+                work,
+                [
+                    f"http://127.0.0.1:{client.server.port}",
+                    "graph_viewer",
+                    "pw12345678"
+                ],
+                "graph login"
+            );
+        } finally {
+            stop();
+        }
         client.close();
     }
 }
@@ -2583,22 +2665,22 @@ import from jaclang.server.serving.client {
 }
 
 obj _BridgeStubResponse {
-    has payload: dict,
-        headers: dict = {},
+    has payload: dict[str, any],
+        headers: dict[str, any] = {},
         text: str = "";
 
-    def json -> dict {
+    def json -> dict[str, any] {
         return self.payload;
     }
 }
 
 obj _BridgeStubClient {
-    has calls: list = [],
-        payload: dict = {},
-        headers_seen: list = [];
+    has calls: list[any] = [],
+        payload: dict[str, any] = {},
+        headers_seen: list[any] = [];
 
     def post(
-        path: str, json: dict, headers: (dict | None) = None
+        path: str, json: dict[str, any], headers: (dict[str, any] | None) = None
     ) -> _BridgeStubResponse {
         self.calls.append((path, json));
         self.headers_seen.append(dict(headers or {}));
@@ -2607,7 +2689,7 @@ obj _BridgeStubClient {
 }
 
 obj _LocalProviderModule {
-    has seen: list = [];
+    has seen: list[str] = [];
 
     def greet(name: str) -> str {
         self.seen.append(name);
@@ -2887,7 +2969,7 @@ test "sv_client: bearer token is sent on bridged calls and falls back to JAC_BRI
 
 obj _StubWalker {
     has name: str = "",
-        reports: list = [];
+        reports: list[any] = [];
 
     static def _from_wire(d: any) -> any {
         inst = _StubWalker();
@@ -2926,6 +3008,27 @@ test "sv_client: awaited walker spawn rehydrates the stub with reports" {
         assert stub.headers_seen[-1].get("X-Jac-Idempotency-Key") == "entry-42" , (
             "a deferred delivery forwards its idempotency key on the wire"
         );
+    } finally {
+        _reset_bridge_state();
+    }
+}
+
+test "sv_client: a walker spawn without a stub class is refused before the provider runs" {
+    _reset_bridge_state();
+    stub = _BridgeStubClient(
+        payload={"ok": True, "data": {"result": {"name": "ada"}, "reports": []}}
+    );
+    sv_client.register_test_client("social", stub);
+    try {
+        try {
+            asyncio.run(
+                sv_client.spawn_walker("social", "greet_walker", {"name": "ada"}, None)
+            );
+            assert False , "a spawn with no boundary contract must raise";
+        } except BridgeError as e {
+            assert "no declared boundary contract" in str(e);
+        }
+        assert stub.calls == [] , "the provider must not have been asked to run the walker";
     } finally {
         _reset_bridge_state();
     }
