@@ -203,6 +203,7 @@ import from jaclang.compiler.types.ts_decl_parser {
 import from jaclang.compiler.frontend.diagnostics {
     DiagnosticInfo,
     E1001,
+    E1002,
     E1010,
     E1023,
     E1030,

@@ -1968,6 +1968,18 @@ walker NaIRGenPass {
     ) -> tuple[(ir.Value, ir.Value)];
 
     def _codegen_body(stmts: Sequence[uni.UniNode]) -> None;
+    def _loop_exit_blocks(
+        func: ir.Function,
+        nd: (uni.WhileStmt | uni.InForStmt | uni.IterForStmt),
+        prefix: str
+    ) -> tuple[(ir.Block | None), ir.Block];
+
+    def _emit_loop_else(
+        nd: (uni.WhileStmt | uni.InForStmt | uni.IterForStmt),
+        else_bb: (ir.Block | None),
+        end_bb: ir.Block
+    ) -> None;
+
     def _codegen_stmt(nd: uni.UniNode) -> None;
     def _codegen_return(nd: uni.ReturnStmt) -> None;
     def _codegen_delete(nd: uni.DeleteStmt) -> None;
@@ -2247,11 +2259,39 @@ walker NaIRGenPass {
     ) -> (ir.Value | None);
 
     def _emit_comparison(
-        op: str, left: ir.Value, right: ir.Value, is_float: bool, unsigned: bool = False
+        op: str,
+        left: ir.Value,
+        right: ir.Value,
+        is_float: bool,
+        unsigned: bool = False,
+        key_ret: (TypeBase | None) = None
     ) -> (ir.Value | None);
+
+    def _int_lt_gt_pair(
+        left: ir.Value, right: ir.Value, unsigned: bool, name: str
+    ) -> tuple[(ir.Value, ir.Value)];
+
+    def _emit_order_pair(
+        left: ir.Value,
+        right: ir.Value,
+        is_float: bool,
+        unsigned: bool,
+        name: str,
+        key_ret: (TypeBase | None) = None
+    ) -> (tuple[(ir.Value, ir.Value)] | None);
 
     def _is_jacval_ty(t: ir.Type) -> bool;
     def _is_jacval_boxable(t: ir.Type) -> bool;
+    def _sort_key_supported(ty: ir.Type) -> bool;
+    def _sort_key_supported_d(ty: ir.Type, depth: int) -> bool;
+    def _sort_key_return_type(nd: (uni.UniNode | None)) -> (TypeBase | None);
+    def _sort_key_orderable(ty: (TypeBase | None)) -> (bool | None);
+    def _sort_key_unsigned(nd: (uni.UniNode | None)) -> bool;
+    def _agg_key_args(
+        key_ret: (TypeBase | None), agg_name: str
+    ) -> (list[TypeBase] | None);
+
+    def _key_elem_unsigned(et: (TypeBase | None)) -> bool;
     def _emit_jacval_ordering(
         op: str, jv: ir.Value, peer: ir.Value, jv_on_left: bool
     ) -> (ir.Value | None);

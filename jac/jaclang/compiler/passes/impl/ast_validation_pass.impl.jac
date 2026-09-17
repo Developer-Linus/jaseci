@@ -6,11 +6,8 @@ impl ASTValidationPass.enter_match_stmt with MatchStmt entry {
 
 impl ASTValidationPass.enter_module_code with ModuleCode entry {
     if isinstance(here.parent, Module) or here.parent is None {
-        for k in here.kid {
-            if isinstance(k, Token) and k.name == Tok.KW_EXIT {
-                self.ctx.emit(E0031, node_override=here);
-                break;
-            }
+        if [here->:Kid:->[?:Token, name==Tok.KW_EXIT]] {
+            self.ctx.emit(E0031, node_override=here);
         }
     }
 }
@@ -303,6 +300,12 @@ impl ASTValidationPass.enter_ctrl_stmt with CtrlStmt entry {
 
         if kw == "break" and isinstance(parent, (SwitchStmt, MatchStmt)) {
             return;
+        }
+        if kw == "continue" and isinstance(parent, ElseStmt) {
+            if isinstance(parent.parent, (InForStmt, IterForStmt, WhileStmt)) {
+                self.ctx.emit(E0059, node_override=here);
+                return;
+            }
         }
 
         if isinstance(parent, (Ability, ImplDef, Module)) {
