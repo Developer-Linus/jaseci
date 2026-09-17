@@ -34,7 +34,7 @@ def _assets_dir(project_root: Path) -> Path {
 
 
 def asset_root_table(
-    project_root: Path, client_dist: Path, mounts: list[dict]
+    project_root: Path, client_dist: Path, mounts: list[dict[str, any]]
 ) -> list[AssetRoot] {
     table: list[AssetRoot] = [];
 
@@ -164,16 +164,6 @@ def resolve_asset(
 
 
 def mount_claims(table: list[AssetRoot], url_path: str) -> bool {
-    """True when url_path falls under a static_mount's exclusive prefix --
-    the same claim resolve_asset uses internally to stop falling through
-    past a mount miss into the built-in web-root roots. A miss under an
-    exclusive claim is a genuine 404, not a "nobody owns this" case a host
-    may keep searching for elsewhere (its own asset table, the SPA shell).
-    The 'static' prefix is excluded: a mount there is an additive overlay
-    on the built-in /static tier (#7020), not an exclusive owner. Checks
-    every mount rather than stopping at the first prefix match, so a
-    broader 'static' overlay listed before a nested exclusive mount (e.g.
-    'static/brand') can't mask that nested mount's own claim.""";
     for r in table {
         if r.source != "mount" {
             continue;
