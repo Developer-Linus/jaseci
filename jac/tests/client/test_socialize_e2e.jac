@@ -317,7 +317,7 @@ waiting for boot, but the parity matrix asserts on 404s directly -- so this
 returns the code instead. Call request_endpoint() first to confirm the server
 is warm, then drive the matrix through this.
 """
-def _get_status(url: str) -> tuple {
+def _get_status(url: str) -> tuple[int, bytes] {
     try {
         with urlopen(url, timeout=30) as resp {
             return (resp.status, bytes(resp.read()));
