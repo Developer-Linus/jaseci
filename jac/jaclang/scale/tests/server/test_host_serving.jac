@@ -81,10 +81,10 @@ def _get(url: str) -> tuple[int, str] {
 }
 
 
-"""Like _get(), but also returns the response headers (a case-insensitive
-email.message.Message) -- for the one row (the cache-control policy) that
-needs more than the status/body pair."""
-def _get_with_headers(url: str) -> tuple {
+def _get_with_headers(url: str) -> tuple[int, str, any] {
+    """Like _get(), but also returns the response headers (a case-insensitive
+    email.message.Message) -- for the one row (the cache-control policy) that
+    needs more than the status/body pair.""";
     try {
         with urllib.request.urlopen(url, timeout=10) as r {
             return (int(r.status), r.read().decode("utf-8"), r.headers);
@@ -95,7 +95,7 @@ def _get_with_headers(url: str) -> tuple {
 }
 
 
-def _post(url: str, body: dict) -> tuple[int, str] {
+def _post(url: str, body: dict[str, any]) -> tuple[int, str] {
     data = json.dumps(body).encode("utf-8");
     req = urllib.request.Request(
         url, data=data, method="POST", headers={"Content-Type": "application/json"}

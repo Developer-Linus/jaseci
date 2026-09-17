@@ -1,4 +1,31 @@
-glob _SCHEMA_SQL = [
+glob OUTBOX_SCHEMA_SQL: list[str] = [
+         """
+    CREATE TABLE IF NOT EXISTS jac_outbox (
+        id              TEXT PRIMARY KEY,
+        app             TEXT NOT NULL,
+        walker          TEXT NOT NULL,
+        kwargs          TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        attempts        INTEGER NOT NULL DEFAULT 0,
+        created_at      DOUBLE PRECISION NOT NULL,
+        status          TEXT NOT NULL,
+        last_error      TEXT NOT NULL DEFAULT '',
+        next_attempt_at DOUBLE PRECISION NOT NULL DEFAULT 0
+    )
+    """,
+         """
+    CREATE INDEX IF NOT EXISTS idx_jac_outbox_due
+        ON jac_outbox (status, next_attempt_at)
+    """,
+         """
+    CREATE TABLE IF NOT EXISTS jac_outbox_seen (
+        idempotency_key TEXT PRIMARY KEY,
+        result          TEXT NOT NULL DEFAULT '',
+        expires_at      DOUBLE PRECISION NOT NULL
+    )
+    """
+     ],
+     _SCHEMA_SQL: list[str] = [
          """
     CREATE TABLE IF NOT EXISTS anchors (
         id             uuid PRIMARY KEY,
@@ -56,8 +83,21 @@ glob _SCHEMA_SQL = [
         created_at  timestamptz NOT NULL DEFAULT now(),
         PRIMARY KEY (missing_id, kind)
     )
+    """,
+         """
+    CREATE TABLE IF NOT EXISTS jac_docs (
+        collection text NOT NULL,
+        id         text NOT NULL,
+        doc        jsonb NOT NULL,
+        PRIMARY KEY (collection, id)
+    )
+    """,
+         """
+    CREATE INDEX IF NOT EXISTS jac_docs_user_id_idx
+        ON jac_docs (collection, (doc->>'user_id'))
     """
-     ];
+     ]
+         + OUTBOX_SCHEMA_SQL;
 
 
 impl ConnInfo.dsn -> str {
@@ -203,7 +243,9 @@ impl PgStore._ensure_ready -> None {
 
 
 impl SessionConflictError.init(
-    self: SessionConflictError, database: str = '', blockers: (list[dict] | None) = None
+    self: SessionConflictError,
+    database: str = '',
+    blockers: (list[dict[str, any]] | None) = None
 ) -> None {
     self.database = database;
     self.blockers = list(blockers or []);
@@ -382,7 +424,7 @@ def _conn_dead(e: Exception) -> bool {
 }
 
 
-impl PgStore._run(sql: str, params: dict) -> list {
+impl PgStore._run(sql: str, params: dict[str, any]) -> list[any] {
     self._ensure_ready();
     with self._lock {
         conn: any = None;
@@ -503,16 +545,15 @@ impl PgStore.ensure_schema(promotions: dict[str, list[str]]) -> None {
 impl PgStore.ensure_schema_once(promotions: dict[str, list[str]]) -> None {
     self._ensure_ready();
     ns = _store_ns(self.conninfo);
-    key = _schema_extension_key();
-    if _schema_ready.get(ns) == key {
+    if ns in _schema_ready {
         return;
     }
     with _schema_gate {
-        if _schema_ready.get(ns) == key {
+        if ns in _schema_ready {
             return;
         }
         self.ensure_schema(promotions);
-        _schema_ready[ns] = key;
+        _schema_ready.add(ns);
     }
 }
 
@@ -630,11 +671,6 @@ impl PgStore._apply_schema_ddl -> None {
         }
         self._apply_promotions();
         self._property_graph_ddl();
-        for name in sorted(_schema_extensions) {
-            for stmt in _schema_extensions[name] {
-                self._run(stmt, {});
-            }
-        }
     } finally {
         self._run('SET lock_timeout = DEFAULT', {});
     }
@@ -659,12 +695,6 @@ impl PgStore._schema_fingerprint -> str {
     for col in sorted(self._promotion_columns()) {
         h.update(str(col).encode());
     }
-    for name in sorted(_schema_extensions) {
-        h.update(name.encode());
-        for stmt in _schema_extensions[name] {
-            h.update(stmt.encode());
-        }
-    }
     return f"{SCHEMA_VERSION}:{h.hexdigest()[:24]}";
 }
 
@@ -681,7 +711,7 @@ impl PgStore._schema_stamp -> (str | None) {
 }
 
 
-impl PgStore._peer_sessions -> list[dict] {
+impl PgStore._peer_sessions -> list[dict[str, any]] {
     rows = self._run(
         """
         SELECT pid, application_name, state, backend_start::text
@@ -690,7 +720,7 @@ impl PgStore._peer_sessions -> list[dict] {
         """,
         {}
     );
-    out: list[dict] = [];
+    out: list[dict[str, any]] = [];
     for (pid, app, state, started) in rows {
         app_s = str(app or '');
         owner: (int | None) = None;
@@ -738,7 +768,7 @@ impl PgStore._reap_dead_sessions -> int {
 }
 
 
-impl PgStore._live_blockers -> list[dict] {
+impl PgStore._live_blockers -> list[dict[str, any]] {
     peers = [
         p
         for p in self._peer_sessions()
@@ -747,7 +777,7 @@ impl PgStore._live_blockers -> list[dict] {
     held = [
         p
         for p in peers
-        if 'idle in transaction' in p['state']
+        if 'idle in transaction' in str(p['state'])
     ];
     return held or peers;
 }
@@ -830,33 +860,16 @@ impl PgStore.load_full(ids: list[UUID]) -> dict[UUID, AnchorRow] {
     rows = self._run(
         """
         SELECT a.id, a.kind, a.arch_type, a.arch_module, a.fingerprint,
-               a.root_id, a.src, a.dst, a.undirected, a.props, a.version,
-               CASE WHEN a.kind = 'NodeAnchor' THEN
-                   (SELECT string_agg(e.id::text, ',' ORDER BY e.seq, e.id)
-                      FROM anchors e WHERE e.src = a.id OR e.dst = a.id)
-               END
+               a.root_id, a.src, a.dst, a.undirected, a.props, a.version
         FROM anchors a WHERE a.id = ANY(CAST(:ids AS uuid[]))
         """,
         {'ids': [str(i) for i in ids]}
     );
     for r in rows {
         raw_props = r[9];
-        props: dict = (
+        props: dict[str, any] = (
             raw_props if isinstance(raw_props, dict) else json.loads(str(raw_props))
         );
-        adjacency: (list[UUID] | None) = None;
-        if str(r[1]) == 'NodeAnchor' {
-            adjacency = [];
-            if r[11] {
-                seen_e: set[str] = set();
-                for tok in str(r[11]).split(',') {
-                    if tok and tok not in seen_e {
-                        seen_e.add(tok);
-                        adjacency.append(UUID(tok));
-                    }
-                }
-            }
-        }
         row = AnchorRow(
             id=UUID(str(r[0])),
             kind=str(r[1]),
@@ -868,12 +881,38 @@ impl PgStore.load_full(ids: list[UUID]) -> dict[UUID, AnchorRow] {
             src=UUID(str(r[6])) if r[6] else None,
             dst=UUID(str(r[7])) if r[7] else None,
             undirected=bool(r[8]),
-            version=int(str(r[10])),
-            adjacency=adjacency
+            version=int(str(r[10]))
         );
         out[row.id] = row;
     }
     return out;
+}
+
+
+impl PgStore.adjacency(
+    node_id: UUID, after: (tuple[int, UUID] | None), limit: int
+) -> list[tuple[int, UUID]] {
+    rows = self._run(
+        """
+        SELECT u.seq, u.id FROM (
+            SELECT e.seq, e.id FROM anchors e
+             WHERE e.kind = 'EdgeAnchor' AND e.src = CAST(:i AS uuid)
+            UNION ALL
+            SELECT e.seq, e.id FROM anchors e
+             WHERE e.kind = 'EdgeAnchor' AND e.dst = CAST(:i AS uuid)
+               AND e.src <> CAST(:i AS uuid)
+        ) u
+        WHERE (u.seq, u.id) > (CAST(:s AS bigint), CAST(:a AS uuid))
+        ORDER BY u.seq, u.id LIMIT CAST(:n AS bigint)
+        """,
+        {
+            'i': str(node_id),
+            's': int(after[0]) if after is not None else -1,
+            'a': str(after[1]) if after is not None else str(UUID(int=0)),
+            'n': int(limit)
+        }
+    );
+    return [(int(str(r[0])), UUID(str(r[1]))) for r in rows];
 }
 
 
@@ -888,7 +927,7 @@ impl PgStore.upsert(rows_in: list[AnchorRow]) -> None {
     for start in range(0, len(rows), chunk) {
         batch = rows[start:start + chunk];
         values: list[str] = [];
-        params: dict = {};
+        params: dict[str, any] = {};
         for (i, row) in enumerate(batch) {
             values.append(
                 f"(CAST(:id{i} AS uuid), :kind{i}, :arch_type{i}, "
@@ -972,7 +1011,7 @@ impl PgStore.upsert(rows_in: list[AnchorRow]) -> None {
     }
     if pairs {
         tvals: list[str] = [];
-        tparams: dict = {};
+        tparams: dict[str, any] = {};
         for (i, pair) in enumerate(pairs) {
             tvals.append(f"(:t{i}, :a{i})");
             tparams[f"t{i}"] = pair[0];
@@ -1038,7 +1077,7 @@ impl PgStore.subtype_names(type_name: str) -> list[str] {
 }
 
 
-impl PgStore.rows(sql: str, params: dict) -> list[tuple] {
+impl PgStore.rows(sql: str, params: dict[str, any]) -> list[tuple[any, ...]] {
     return [tuple(r) for r in self._run(sql, params)];
 }
 
@@ -1246,7 +1285,7 @@ impl PgStore._listen_loop -> None {
         return;
     }
     while not stop.is_set() {
-        pending: list = [];
+        pending: list[tuple[int, str, str]] = [];
         sock: any = None;
         try {
             with self._lock {

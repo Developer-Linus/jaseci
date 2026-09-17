@@ -2,7 +2,73 @@
 
 This document provides a summary of new features, improvements, and bug fixes in each version of **Jaclang**. For details on changes that might require updates to your existing code, please refer to the [Breaking Changes](../breaking-changes.md) page.
 
-## jaclang 0.37.14 (Latest Release)
+## jaclang 0.37.18 (Latest Release)
+
+### Breaking Changes
+
+- **Breaking: `dict`, `list` and `tuple` now require type arguments**: writing them bare used to be a warning and quietly behaved as if you had written `any` for the element types. It is now an error. This also applies to a bare generic nested inside another, so `list[dict]` and `dict[str, list]` are reported as well. Name the element types (`dict[str, int]`, `list[Item]`), or say explicitly that the values are heterogeneous with `dict[str, any]`. Note that `dict[any]` is not a substitute, since `dict` takes both a key and a value type. Other generics keep the existing warning rather than the error, including `set`, `frozenset` and generic classes used without type arguments. Both `jac check` and `jac run` stop on a bare `dict`, `list` or `tuple`. To migrate gradually, add `suppress = ["E1036"]` under `[check]` in your `jac.toml` and remove it once the annotations are named.
+- **Breaking: `data.result.reports` is gone from walker responses**: the executed walker in `data.result` no longer carries a `reports` copy of `data.reports`. A client that read the report list through `result.reports` (the tree's own `cl_fullstack/test_echo.jac` did) must read `data.reports`; generated clients already do.
+- **Breaking: `jac scale deploy` fails when `jac.toml` reads environment variables the pods will not have**: The deploy, including `--dry-run`, now stops before anything reaches the cluster when the shipped `jac.toml`, its active profile or `jac.local.toml` references a variable only the deploy host sets, and lists every such setting at once. A project that deployed until now with a bare `${VAR}` exported only on the host will fail; supply the variable through `[scale.secrets]` or the app's env, or write it as `${VAR:-default}`.
+- **Breaking: Simplify Jac object field declarations**: Jac-owned records use `obj` and ordinary `has` defaults. The redundant `field` helper and its Jac library export are removed. `make_object` remains Python runtime implementation machinery, with `ObjectField` as internal construction and reflection metadata. The unused `compare` and `metadata` descriptor options are removed.
+- Jac-owned records and MockLLM reflection consistently use the Jac object model. Direct Python dataclass imports are confined to `runtime/object_interop.jac`; Python compatibility fixtures retain coverage across that boundary.
+
+### Bug Fixes
+
+- **Fix: static JSX attribute values are checked where they are created**: the web compiler now reports a malformed static attribute value at the point it is built, instead of quietly wrapping it in an expression. No change to the generated JavaScript.
+- **Fix: a walker response serialises its report list once**: `data.result` repeated `data.reports` through the walker's `reports` attribute, so every list response shipped twice, and a walker that reported itself recursed until `maximum recursion depth exceeded`. In `api_mode` the serializer leaves that attribute out of a walker's attribute walk; the walker's `has` fields, `_jac_type`, `_jac_id` and `_jac_archetype` are unchanged. The embedded gateway's walker proxy, which read reports out of the copy, forwards the provider's `{result, reports}` payload instead of wrapping the walker under `result`. `sv_client.hydrate_walker_envelope` and `sv_client.function_result` are the one pair of envelope decoders the core runtime and jac-scale share (the scale RPC layer's private copies are gone), a remote spawn with no boundary contract is refused before either transport (HTTP or jac-scale) calls the provider, and `BridgeError` is now a `RuntimeError`, so `except RuntimeError` handlers around bridged calls keep working.
+- **Fix: an unannotated lambda parameter now infers when the body is a single `return`**: `sorted(rows, key=lambda (d) { return d["n"]; })` was rejected with `E1054: No matching overload found`, while the same lambda written `{ d["n"]; }` type-checked. The rule that decides whether a lambda's body waits for its parameter types only recognised a bare expression body, so a body written with an explicit `return` was checked while the parameter was still `Unknown`, and it was never re-checked once the parameter was inferred. Both halves of that rule now treat a lone explicit `return` like an implicit one, which also clears the `E1053` and `E1055` this produced for bodies such as `{ return len(s); }` and `{ return x * 2 - 1; }`. Bodies with more than one statement are unchanged: they are still checked in place, so the calls in them keep their diagnostics.
+
+## jaclang 0.37.17
+
+### Breaking Changes
+
+- **Breaking: byLLM's `MockLLM` now parses replies like a real model**: queue typed answers as values (`36`, not `"36"`), offer the tools a `MockToolCall` names, and pass replies directly with `MockLLM(outputs=[...])`.
+
+### Bug Fixes
+
+- **Fix: comparing an optional to a number no longer erases its type**: after `if x == 0` (or `x != 0`) on a value typed `int | None`, the checker treated `x` as `None` for the rest of the function. That let an `int` be bound to a `None`-typed name and returned from a `-> None` function with nothing reported, so wrong values passed the checker, and later `is None` guards reasoned from the collapsed type. A comparison against a value now narrows only on the branch that confirms the value; the useful direction of each form is unchanged.
+- **Fix: byLLM counts a streamed call that reports no usage**: the usage event no longer shows `requests: 0` for a call that happened.
+- **Fix: byLLM no longer prints litellm's provider-list hint** on every call to a model name litellm cannot map.
+- **Fix: `jac check` no longer stops with "No scope found"** when the endpoint effect pass meets a call whose name has no scope; that endpoint is recorded with unknown effects instead.
+- **Fix: CPython release launcher on macOS**: Find static libraries and CA certificates in CPython build trees, and pin the launcher to its selected runtime's libraries so it can start without external `libzstd.dylib` or `libcrypto.dylib` files.
+
+## jaclang 0.37.16
+
+### Bug Fixes
+
+- **Fix: `jac fix` no longer crashes while verifying placement markers**: Running `jac fix` on files that carry placement markers stopped with an import error when it checked where each marked element landed. It now finishes and reports the verified placements as before.
+- **Fix: Make JacPython opt-in**: Builds and default release binaries use stock CPython. Set `JACPYTHON=1` when building to select the native JacPython compiler. Stable and dev releases publish both variants with checksums; pass `--jacpython` to the installer to select the experimental variant.
+- **Fix: React Native state and authentication helpers**: Add the missing `useJacState` and `jacSetToken` exports so mobile apps can use Jac state and authentication helpers.
+
+## jaclang 0.37.15
+
+### Breaking Changes
+
+- **Breaking: `jac fmt` now exits 0 after successfully reformatting files**: Previously `jac fmt` exited 1 whenever any file was changed, conflating "made changes" with "error" and breaking `jac fmt . && jac test` pipelines. It now follows the standard formatter convention (black, gofmt, prettier): exit 0 on success - including when files were reformatted - and nonzero only for syntax/format failures, invalid paths, or unfixable lint errors. Scripts and CI that relied on the old changed→exit-1 behavior should gate with `jac fmt --check`, which exits 1 when files *would* be reformatted without writing them.
+- **Breaking: Source export now produces a complete polyglot project**: `jac build <app> --as source` writes editable Python, JavaScript and native C to `dist/source`, with standalone build/run entry points. Exports reuse prepared application contracts, service initialization, client compilation and the actual required runtime modules. The separate FastAPI adapter and export-specific runtime shims are removed. Native C export requires the LLVM 22 C backend toolchain; the exported project builds without Jac. Internal project resolution and semantic metadata APIs now live under `jaclang.project` and `jaclang.runtime`.
+
+### New Features
+
+- **Native Python standard-library modules**: Extend JacPython's native compilation to standard-library extension modules while preserving Python object protocols, and exclude their original CPython C sources from release builds.
+- **Native compiler correctness and scaling**: Preserve Jac object ownership across C calls, fixed-width scalar list types, and string split direction and limits. Native value sorting now uses stable merge passes. JacPython also preserves module-level qualified names for explicitly global class and function definitions.
+
+### Bug Fixes
+
+- **Fix: Walker endpoints no longer return Python tracebacks to callers**: a `walker:pub` that raised sent the full traceback (absolute paths, OS account name, Python version) in `error.details` to any caller, while a `def:pub` sent only the message and neither wrote anything to the server log. Both now return `{code, message}` and log the exception with its stack on the `jaclang.serve` logger at the point it is caught.
+- **Fix: Read import levels past a module's single-byte name pool when sealing**: Sealing dropped `EXTENDED_ARG` before reading the import level two instructions before each `IMPORT_NAME`, so a module carrying more than 255 names no longer aborts preparation with "Nonconstant import level".
+- **Native C callback record ownership**: Jac-created C callback records now use the shared object allocator and cleanup rules, preserving their C field layout while supporting managed fields, containers, and optional values. This fixes invalid header reads during JacPython startup. C borrows the record's data pointer; code that retains that pointer must keep the Jac owner alive, just as with other Jac-created records.
+- **Native package provider consistency**: Native dependency discovery now uses the same package resolver as semantic analysis, preventing duplicate checkout and packaged compiler modules from being linked into one binary.
+- **Fix: Graph visualizer login**: The Login button on `/graph` sends the `{identity, credential}` body `/user/login` expects, so it signs users in again, and a failed sign-in shows the server's reason instead of a generic "Invalid credentials".
+- **Fix: Bounded OSP traversal frames**: Entry-only OSP traversals reuse completed frames, keeping frame storage bounded while preserving pending exit abilities.
+- **Fix: Native optional temporary lifetimes**: Native boolean expressions and dictionary lookups preserve optional-value ownership and release unused defaults without invalidating returned containers or strings.
+- **Fix: Precompile worker memory budgets**: Precompile worker scheduling honors the configured memory budget and reclaims released graphs before deciding to retire a worker; macOS retirement uses current resident memory.
+- **Fix: Native container and read lifetimes**: Native container calls and field/index reads now release owned temporary arguments and receivers while retaining values that escape the read.
+- **Fix: Type member and ancestor lookup**: Stop ordinary member lookup at local declarations while preserving conditional overload merging, and merge cached ancestor copies by canonical class identity when calculating inheritance order.
+- **Fix: typed graph hops no longer read the whole anchors table**: `[node -->][?:T]` compiled to `arch_type = :t OR arch_type IN (SELECT ... FROM graph_types)` plus an `OR` direction test and a `CASE` join key, which the Postgres planner could not estimate or index, so a hop's latency grew with everything stored (197 ms for a 5-node result at 600k anchors). The subtype set is now resolved from `graph_types` before the statement runs and bound as one array, each hop's edge side is two direct index probes, and the first hop binds its origin ids so the planner can use per-node statistics. The same hop takes about 1 ms at any size.
+- **Fix: loading a node no longer aggregates its full edge-id list in SQL**: `load_full` computed every node's adjacency with a `string_agg` subquery and parsed it back on every load, so a node load cost its degree whatever the caller needed. The edge list is now fetched in pages the first time something walks it, and reflects the edge rows as they are when it is read.
+- **Fix: Python generator syntax diagnostics**: The native Python compiler distinguishes `yield from` outside a function from `yield`, identifies invalid assignment expressions instead of emitting a literal `%s`, and reports the offending expression's source span.
+
+## jaclang 0.37.14
 
 ### New Features
 
