@@ -2105,6 +2105,22 @@ walker NaIRGenPass {
         little: bool
     ) -> (ir.Value | None);
 
+    def _emit_struct_decode(
+        fields: list[tuple[str, int, bool]], little: bool, data: ir.Value
+    ) -> tuple[list[ir.Value], list[ir.Type]];
+
+    def _emit_struct_tuple(
+        values: list[ir.Value], elem_types: list[ir.Type]
+    ) -> ir.Value;
+
+    def _emit_struct_unpack_from(
+        nd: uni.FuncCall,
+        params: Sequence[uni.Expr | uni.KWPair],
+        fields: list[tuple[str, int, bool]],
+        total: int,
+        little: bool
+    ) -> (ir.Value | None);
+
     def _emit_time_call(name: str, nd: uni.FuncCall) -> (ir.Value | None);
     def _emit_clock_gettime(clock_id: int) -> tuple[ir.Value, ir.Value];
     def _emit_trace_fn(arch_name: str) -> None;
