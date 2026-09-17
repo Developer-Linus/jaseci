@@ -685,56 +685,40 @@ test "user env cannot point a pod at an arbitrary service file" {
 }
 
 
-test "build_env never bakes a direct peer URL for an HTTP-activated (scale-to-zero) peer" {
+test "build_env bakes a direct peer URL only for peers that are not HTTP-activated" {
     # A baked JAC_APP_<PEER>_URL would let sv_client.peer_url_from_env's
     # env-var override (runtime_resolver.jac::resolve_peer_route) win over
     # the interceptor route on every call, sending traffic straight at a
     # Service with no live endpoints instead of through the KEDA HTTP
     # interceptor that can wake it.
-    cfg = KubernetesConfig(app_name="jac-shop", namespace="ns");
-    builder = ManifestBuilder(
-        k8s_config=cfg,
-        fleet=fleet_of(
-            {"worker": "/worker"},
-            root_app="app",
-            root_file="app.jac",
-            overrides={
-                "worker": {
-                    "http_activation": {
-                        "enabled": True,
-                        "target_port": 8000,
-                        "concurrency_target": 1,
-                        "rules": [{"hosts": ["worker.ns.local"]}]
-                    }
-                }
+    activated = {
+        "worker": {
+            "http_activation": {
+                "enabled": True,
+                "target_port": 8000,
+                "concurrency_target": 1,
+                "rules": [{"hosts": ["worker.ns.local"]}]
             }
-        )
-    );
-    env = {e["name"]: e["value"] for e in builder._build_env("app", {})};
-    assert "JAC_APP_WORKER_URL" not in env , env;
-}
-
-
-test "build_env still bakes a direct peer URL for a peer without http_activation" {
-    cfg = KubernetesConfig(app_name="jac-shop", namespace="ns");
-    builder = ManifestBuilder(
-        k8s_config=cfg,
-        fleet=fleet_of({"worker": "/worker"}, root_app="app", root_file="app.jac")
-    );
-    env = {e["name"]: e["value"] for e in builder._build_env("app", {})};
-    assert "JAC_APP_WORKER_URL" in env , env;
-}
-
-
-obj _FakeKubernetesScaleConfig {
-    def get_kubernetes_config -> dict[str, any] {
-        return {};
-    }
-
-    def get_app_scale_config(app_name: str) -> dict[str, any] {
-        return {};
+        }
+    };
+    for (label, overrides, baked) in [
+        ("HTTP-activated peer", activated, False),
+        ("plain peer", {}, True)
+    ] {
+        builder = ManifestBuilder(
+            k8s_config=KubernetesConfig(app_name="jac-shop", namespace="ns"),
+            fleet=fleet_of(
+                {"worker": "/worker"},
+                root_app="app",
+                root_file="app.jac",
+                overrides=overrides
+            )
+        );
+        env = {e["name"]: e["value"] for e in builder._build_env("app", {})};
+        assert ("JAC_APP_WORKER_URL" in env) == baked , f"{label}: {env}";
     }
 }
+
 
 test "resolve_peer_route warns once per service, then again after it recovers and fails again" {
     # resolve_peer_route runs per fleet member on every sv-to-sv call and
@@ -747,35 +731,32 @@ test "resolve_peer_route warns once per service, then again after it recovers an
     original_get_scale_config = config_loader_mod.get_scale_config;
     warn_calls: list = [];
 
-    def fake_warning(msg: str) {
-        warn_calls.append(msg);
-    }
-
     def failing_config(project_dir: object = None) -> object {
         raise RuntimeError("config unreachable");
     }
 
     def healthy_config(project_dir: object = None) -> object {
-        return _FakeKubernetesScaleConfig();
+        return SimpleNamespace(
+            get_kubernetes_config=lambda { {} },
+            get_app_scale_config=lambda (app_name: str) { {} }
+        );
     }
 
     resolver_mod._config_load_warned.discard("k9_warn_once_svc");
-    setattr(resolver_mod.logger, "warning", fake_warning);
+    setattr(resolver_mod.logger, "warning", lambda (msg: str) { warn_calls.append(msg); });
 
     try {
-        setattr(config_loader_mod, "get_scale_config", failing_config);
-        resolve_peer_route("k9_warn_once_svc", "ns", 8000);
-        resolve_peer_route("k9_warn_once_svc", "ns", 8000);
-        resolve_peer_route("k9_warn_once_svc", "ns", 8000);
-        assert len(warn_calls) == 1;
-
-        setattr(config_loader_mod, "get_scale_config", healthy_config);
-        resolve_peer_route("k9_warn_once_svc", "ns", 8000);
-        assert len(warn_calls) == 1;
-
-        setattr(config_loader_mod, "get_scale_config", failing_config);
-        resolve_peer_route("k9_warn_once_svc", "ns", 8000);
-        assert len(warn_calls) == 2;
+        for (label, loader, expected) in [
+            ("three failing calls warn once", failing_config, 1),
+            ("a recovered call stays quiet", healthy_config, 1),
+            ("failing again after recovery warns again", failing_config, 2)
+        ] {
+            setattr(config_loader_mod, "get_scale_config", loader);
+            for _ in range(3) {
+                resolve_peer_route("k9_warn_once_svc", "ns", 8000);
+            }
+            assert len(warn_calls) == expected , label;
+        }
     } finally {
         setattr(config_loader_mod, "get_scale_config", original_get_scale_config);
         setattr(resolver_mod.logger, "warning", original_warning);

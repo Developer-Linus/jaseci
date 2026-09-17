@@ -721,54 +721,45 @@ test "sv_service_call sets the Host header when the resolved route carries one" 
 }
 
 
-obj _FakeGatewayOnlyConfig {
-    def get_gateway_config -> dict[str, any] {
-        return {"gateway_port": 8000};
-    }
-}
-
 test "get_sv_service_routes warns once on a failing lookup, then again after it recovers and fails again" {
+    # get_sv_service_routes runs on every sv-to-sv call, so an unreachable
+    # or malformed scale config used to warn on every single one of them.
     import logging;
+    import os;
+    import from types { SimpleNamespace }
     import jaclang.scale.runtime.provider as provider_mod;
     import jaclang.scale.config.config_loader as config_loader_mod;
-    import os;
 
     plugin_logger = logging.getLogger("jaclang.scale.runtime.provider");
     original_warning = plugin_logger.warning;
     original_get_scale_config = config_loader_mod.get_scale_config;
     warn_calls: list = [];
 
-    def fake_warning(msg: str) {
-        warn_calls.append(msg);
-    }
-
     def failing_config(project_dir: object = None) -> object {
         raise RuntimeError("config unreachable");
     }
 
     def healthy_config(project_dir: object = None) -> object {
-        return _FakeGatewayOnlyConfig();
+        return SimpleNamespace(get_gateway_config=lambda { {"gateway_port": 8000} });
     }
 
     had_k8s_env = "KUBERNETES_SERVICE_HOST" in os.environ;
     os.environ["KUBERNETES_SERVICE_HOST"] = "10.0.0.1";
     provider_mod._sv_service_routes_warned = False;
-    setattr(plugin_logger, "warning", fake_warning);
+    setattr(plugin_logger, "warning", lambda (msg: str) { warn_calls.append(msg); });
 
     try {
-        setattr(config_loader_mod, "get_scale_config", failing_config);
-        JacScaleRuntime.get_sv_service_routes();
-        JacScaleRuntime.get_sv_service_routes();
-        JacScaleRuntime.get_sv_service_routes();
-        assert len(warn_calls) == 1;
-
-        setattr(config_loader_mod, "get_scale_config", healthy_config);
-        JacScaleRuntime.get_sv_service_routes();
-        assert len(warn_calls) == 1;
-
-        setattr(config_loader_mod, "get_scale_config", failing_config);
-        JacScaleRuntime.get_sv_service_routes();
-        assert len(warn_calls) == 2;
+        for (label, loader, expected) in [
+            ("three failing calls warn once", failing_config, 1),
+            ("a recovered call stays quiet", healthy_config, 1),
+            ("failing again after recovery warns again", failing_config, 2)
+        ] {
+            setattr(config_loader_mod, "get_scale_config", loader);
+            for _ in range(3) {
+                JacScaleRuntime.get_sv_service_routes();
+            }
+            assert len(warn_calls) == expected , label;
+        }
     } finally {
         setattr(config_loader_mod, "get_scale_config", original_get_scale_config);
         setattr(plugin_logger, "warning", original_warning);
