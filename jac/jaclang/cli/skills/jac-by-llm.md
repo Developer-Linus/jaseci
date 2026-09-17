@@ -1,6 +1,6 @@
 ---
 name: jac-by-llm
-description: Delegating a function's body to an LLM call - structured outputs (objects, enums, lists), tool use/ReAct agents, model & provider configuration (API keys, Ollama/local), multi-turn chat, streaming, image/video inputs, MockLLM testing, prompt wiring via sem. Load when any function should be powered by an LLM. Pair with jac-walker-patterns when LLMs drive graph agents, jac-testing for MockLLM tests.
+description: Implement model-delegated functions, structured outputs, tools, and provider configuration. Use for by llm(), sem annotations, or MockLLM tests.
 ---
 
 `by llm(...)` replaces a function body with an LLM call. The signature declares typed args and a return type; at call time the LLM generates a value matching the return type, optionally using any functions listed in `tools=[...]` as ReAct helpers. Describe every LLM-visible thing - the function itself, each parameter, each field of a return obj - with `sem` statements, not docstrings. `sem` is the prompt the LLM sees.
@@ -79,7 +79,7 @@ Env vars take precedence over `api_key` in `jac.toml`; `BYLLM_DEFAULT_MODEL=...`
 ## Multi-turn chat & streaming
 
 ```jac
-glob history: list[dict] = [];
+glob history: list[dict[str, any]] = [];
 def chat(message: str) -> str by llm(
     conversation=history,                        # caller-owned list; byLLM appends each turn IN PLACE as plain dicts
     system_prompt="You are a terse assistant."   # EXTENDS the base/system default - never replaces it
@@ -92,20 +92,28 @@ def stream_story(topic: str) -> str by llm(stream=True);
 
 ## Testing with MockLLM
 
-Runs without API keys - mock outputs are consumed sequentially, one per `by` call. For typed returns put pre-built instances in `outputs` (e.g. `Priority.HIGH`, `[Task(...)]`). See `jac-testing` for `jac test` mechanics.
+No API keys needed. `MockLLM` replaces only the network call, so byLLM still builds the real request and parses the reply.
+
+- Outputs are consumed in order, one per model call; a tool loop takes one per step.
+- For a typed return, queue the value (`Priority.HIGH`, `[Task(...)]`). A bare string is the answer when the return type allows a string (a union with `str`, a string enum), otherwise it is parsed like model text.
+- `MockToolCall(tool=fn_or_name, args={...})` must name a tool the function offers.
+- Assert on what was sent with `llm.sent("messages")` or `llm.sent("tools")`.
 
 ```jac
 import from jaclang.byllm.lib { MockLLM }
 
-glob llm = MockLLM(model_name="mockllm", config={"outputs": ["Bonjour", "Salut"]});
+glob llm = MockLLM(outputs=["Bonjour", "Salut"]);
 
 def translate(text: str) -> str by llm();
 
 test "mock outputs consumed in order" {
     assert translate("Hello") == "Bonjour";
     assert translate("Hi") == "Salut";
+    assert "Hello" in str(llm.sent("messages")[0]);
 }
 ```
+
+See `jac-testing` for `jac test` mechanics.
 
 ## Errors & retries
 

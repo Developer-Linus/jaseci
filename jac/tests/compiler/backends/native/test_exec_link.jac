@@ -1,4 +1,9 @@
+import from jaclang.compiler.backends.native.entry_points { inject_main }
 import os;
+import from jaclang.compiler.driver.compile_options {
+    push_native_target,
+    pop_native_target
+}
 import struct;
 import subprocess;
 import sys;
@@ -8,11 +13,7 @@ import from jaclang.compiler.driver.program { JacProgram }
 import from jaclang.compiler.driver.compile_options { CompileOptions }
 import from jaclang.compiler.backends.native.elf_linker { ElfLinker }
 import from jaclang.compiler.backends.native.macho_linker { MachOLinker }
-import from jaclang.cli.commands.nacompile {
-    _inject_entry_elf_static,
-    _collect_musl_static,
-    _musl_lib_dir
-}
+import from jaclang.cli.commands.native_build { _collect_musl_static, _musl_lib_dir }
 import jaclang.compiler.backends.native.llvm.binding as llvm;
 
 glob FIXTURES = str(Path(__file__).resolve().parent / "fixtures"),
@@ -20,8 +21,7 @@ glob FIXTURES = str(Path(__file__).resolve().parent / "fixtures"),
 
 
 def _compile_ir(fixture: str, triple: str) -> str {
-    prev = os.environ.get("JAC_NATIVE_TARGET", None);
-    os.environ["JAC_NATIVE_TARGET"] = triple;
+    prev = push_native_target(triple);
     try {
         prog = JacProgram();
         ir = prog.compile(
@@ -33,11 +33,7 @@ def _compile_ir(fixture: str, triple: str) -> str {
         ]}";
         ir_txt = str(ir.gen.llvm_ir);
     } finally {
-        if prev is None {
-            os.environ.pop("JAC_NATIVE_TARGET", None);
-        } else {
-            os.environ["JAC_NATIVE_TARGET"] = prev;
-        }
+        pop_native_target(prev);
     }
     return ir_txt;
 }
@@ -68,7 +64,7 @@ def _emit_for_tm(tm: any, triple: str) -> bytes {
 def _inject_elf(ir_txt: str) -> str {
     # Linux executables are now fully static against musl, whose crt1.o supplies
     # `_start`; we inject only `main` (the real path nacompile uses).
-    return _inject_entry_elf_static(ir_txt);
+    return inject_main(ir_txt);
 }
 
 
@@ -79,7 +75,7 @@ def _musl_ok(triple: str) -> bool {
 
 def _link_static(relobj: bytes, triple: str, out: str) -> bool {
     # Static-link against vendored musl (libc.a + libzigc.a + compiler-rt + crt),
-    # exactly as `jac nacompile` does. Returns False if the musl runtime is not
+    # exactly as `jac build --native` does. Returns False if the musl runtime is not
     # vendored in this environment (callers skip the link/run in that case).
     musl = _collect_musl_static(relobj, triple);
     if musl is None {

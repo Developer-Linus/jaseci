@@ -2,7 +2,7 @@
 name = "{{name}}"
 version = "0.1.0"
 description = "A Jac desktop application: {{name}}"
-entry-point = "main.jac"
+entry-point = "main"
 kind = "desktop"
 
 [dependencies]
@@ -16,19 +16,17 @@ jac-client-node = "1.0.7"
 [dev-dependencies]
 watchdog = ">=3.0.0"
 
-[serve]
-base_route_app = "app"
-
 [client]
 
 [desktop]
 name = "{{name}}"
 identifier = "com.example.{{name}}"
 version = "1.0.0"
+# icon = "assets/icon.png"   # .icns or .png; the macOS bundle carries it
 
 [jacpack]
 name = "desktop"
-description = "Jac desktop app (OS webview + nacompile)"
+description = "Jac desktop app (OS webview + native build)"
 jaclang = "0.9.8"
 
 [jacpack.options]

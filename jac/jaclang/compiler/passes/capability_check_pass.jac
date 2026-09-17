@@ -1,8 +1,10 @@
+import from jaclang.compiler.passes.context { CompileContext }
 import from jaclang.compiler.frontend.unitree {
     Ability,
     ArchSpec,
     Archetype,
     AtomTrailer,
+    Assignment,
     CtrlStmt,
     EdgeOpRef,
     EdgeRefTrailer,
@@ -30,12 +32,14 @@ import from jaclang.compiler.frontend.unitree {
     SubTag,
     Token,
     UnaryExpr,
+    TupleVal,
+    ListVal,
     UniNode,
     YieldExpr
 }
-import from jaclang.compiler.passes.transform { Transform }
-import from jaclang.compiler.backends.py.module_codegen_pass {
-    ModuleCodegenPass,
+
+import from jaclang.compiler.frontend.module_facts {
+    ModuleFacts,
     client_capability_violations
 }
 import from jaclang.compiler.frontend.constant { SymbolType }
@@ -82,14 +86,10 @@ def partition_native_capability_violations(
     )
 ];
 
-walker PortabilityWarnPass(Transform) {
-    has ir_in: Module,
-        cancel_token: any = None;
+walker PortabilityWarnPass {
+    has ctx: CompileContext,
+        module: Module;
 
-    static has PROVIDES: tuple = ('portability', );
-
-    def postinit -> None;
-    def transform(ir_in: Module) -> Module;
     def _run_impl(ir_in: Module) -> Module;
     can run_walk with Module entry;
     def _check_js_globals(mod: Module) -> None;
@@ -99,24 +99,18 @@ walker PortabilityWarnPass(Transform) {
     def _check_js_properties(mod: Module) -> None;
 }
 
-walker NativeCapabilityCheckPass(Transform) {
-    static has PROVIDES: tuple = ('capability', );
-    has ir_in: Module,
-        cancel_token: any = None;
+walker NativeCapabilityCheckPass {
+    has ctx: CompileContext,
+        module: Module;
 
-    def postinit -> None;
-    def transform(ir_in: Module) -> Module;
     def _run_impl(ir_in: Module) -> Module;
     can run_walk with Module entry;
 }
 
-walker ClientCapabilityCheckPass(Transform) {
-    static has PROVIDES: tuple = ('client_capability', );
-    has ir_in: Module,
-        cancel_token: any = None;
+walker ClientCapabilityCheckPass {
+    has ctx: CompileContext,
+        module: Module;
 
-    def postinit -> None;
-    def transform(ir_in: Module) -> Module;
     def _run_impl(ir_in: Module) -> Module;
     can run_walk with Module entry;
 }

@@ -67,6 +67,21 @@ impl JacDesktopConfig.get_engine(self: JacDesktopConfig) -> str {
     return engine;
 }
 
+impl JacDesktopConfig.get_backend(self: JacDesktopConfig) -> str {
+    config = self.load();
+    backend = str(config.get('backend', 'embedded') or 'embedded').strip();
+    if backend == 'embedded' {
+        return backend;
+    }
+    if backend.startswith('http://') or backend.startswith('https://') {
+        return backend.rstrip('/');
+    }
+    raise ValueError(
+        "Desktop configuration error: backend must be 'embedded' or an http(s) URL, "
+        f"got '{backend}'"
+    );
+}
+
 impl JacDesktopConfig.get_plugin_configs(self: JacDesktopConfig) -> dict[str, any] {
     config = self.load();
     plugins = config.get('plugins', {});
@@ -76,6 +91,16 @@ impl JacDesktopConfig.get_plugin_configs(self: JacDesktopConfig) -> dict[str, an
     return plugins;
 }
 
+impl JacDesktopConfig.get_icon(self: JacDesktopConfig) -> Path | None {
+    config = self.load();
+    icon = str(config.get('icon', '') or '').strip();
+    if not icon {
+        return None;
+    }
+    base = self.project_dir if self.project_dir is not None else Path.cwd();
+    return (base / icon).resolve();
+}
+
 impl JacDesktopConfig.validate(self: JacDesktopConfig) -> None {
     config = self.load();
     name = str(config.get('name', ''));
@@ -83,6 +108,19 @@ impl JacDesktopConfig.validate(self: JacDesktopConfig) -> None {
         raise ValueError(
             "Desktop configuration error: 'name' is required in [desktop]"
         );
+    }
+    icon = self.get_icon();
+    if icon is not None {
+        if icon.suffix not in ('.icns', '.png') {
+            raise ValueError(
+                f"Desktop configuration error: icon must be a .icns or .png file, got '{icon.name}'"
+            );
+        }
+        if not icon.is_file() {
+            raise ValueError(
+                f"Desktop configuration error: icon '{icon}' does not exist"
+            );
+        }
     }
     window = config.get('window', {});
     width = window.get('width', 1200);

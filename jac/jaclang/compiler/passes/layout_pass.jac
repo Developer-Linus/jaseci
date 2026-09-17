@@ -1,13 +1,16 @@
+import from jaclang.compiler.passes.context { CompileContext }
 import from jaclang.compiler.frontend.unitree {
     Ability,
     ArchHas,
     Archetype,
     Assignment,
     AstSymbolNode,
+    AstTypedVarNode,
     AtomTrailer,
     BinaryExpr,
     BuiltinType,
     Enum,
+    Expr,
     FuncCall,
     FuncSignature,
     HasVar,
@@ -15,12 +18,15 @@ import from jaclang.compiler.frontend.unitree {
     Module,
     ModuleItem,
     Name,
+    Null,
     TupleVal,
+    TypeParam,
     UnaryExpr,
     UniNode
 }
-import from jaclang.compiler.passes.transform { Transform }
-import from jaclang.compiler.backends.py.const_fold { fold_const }
+
+import type from jaclang.compiler.types.types { TypeBase }
+import from jaclang.compiler.frontend.const_fold { fold_const }
 import from jaclang.compiler.frontend.constant { OwnershipKind, Tokens as Tok }
 import from jaclang.compiler.frontend.diagnostics { E5030, W5031, W5032 }
 import from jaclang.compiler.type_registry { JAC_TYPE_REGISTRY }
@@ -45,7 +51,9 @@ obj FieldInfo {
         default_expr: (UniNode | None) = None,
         owner: str = "",
         is_func_ptr: bool = False,
-        decl_node: (UniNode | None) = None;
+        decl_node: (HasVar | TypeParam | None) = None;
+
+    has semantic_type: TypeBase | None { getter; }
 }
 
 obj MethodSlot {
@@ -120,14 +128,16 @@ def archetype_accessors(arch: Archetype) -> list[tuple[(str, HasVar, Ability)]] 
     return out;
 }
 
-def get_layout_registry(module: Module, prog: any = None) -> LayoutRegistry {
+def get_layout_registry(module: Module, prog: any) -> LayoutRegistry {
     reg = module.gen.layout_registry;
     if reg is not None {
         return reg;
     }
 
-    import from jaclang.compiler.driver.pass_driver { run_pass }
-    run_pass(LayoutPass, module, prog);
+    import from jaclang.compiler.driver.pipeline { require_product, CompilationProduct }
+    if not require_product(prog, module, CompilationProduct.LAYOUT) {
+        raise RuntimeError(f"Layout preparation failed: {module.loc.mod_path}");
+    }
     return module.gen.layout_registry or LayoutRegistry();
 }
 
@@ -146,8 +156,16 @@ def layout_slot_count(lay: ArchetypeLayout) -> int {
     return top;
 }
 
-def declaring_module_path(base_expr: UniNode) -> str {
+def declaring_module_path(base_expr: Expr) -> str {
     import os;
+    import from jaclang.compiler.types.types { ClassType }
+    base_type = base_expr.type;
+    if isinstance(base_type, ClassType) and base_type._shared is not None {
+        scope = base_type.shared.symbol_table;
+        if isinstance(scope, Archetype) and scope.loc.mod_path {
+            return os.path.realpath(scope.loc.mod_path);
+        }
+    }
     if not isinstance(base_expr, AstSymbolNode) {
         return "";
     }
@@ -256,7 +274,7 @@ def adopt_imported_bases(module: Module) -> list[str] {
         }
     }
     layouts = reg.layouts;
-    order = sorted(layouts.keys(), key=lambda (n: str) { len(layouts[n].mro or [n]); });
+    order = reg.dependency_order(list(layouts));
     adopted: list[str] = [];
     for name in order {
         lay = reg.layouts.get(name);
@@ -284,6 +302,21 @@ def adopt_imported_bases(module: Module) -> list[str] {
                 if mslot.name not in lay.method_index {
                     absent = True;
                 }
+            }
+        }
+
+        inherited_methods: set[str] = set();
+        inherited_index = 0;
+        for anc_lay in ancestors {
+            for mslot in anc_lay.methods {
+                if mslot.name in inherited_methods {
+                    continue;
+                }
+                inherited_methods.add(mslot.name);
+                if lay.method_index.get(mslot.name, -1) != inherited_index {
+                    absent = True;
+                }
+                inherited_index += 1;
             }
         }
         if not absent {
@@ -587,17 +620,17 @@ obj LayoutRegistry {
     def resolve_method_owner(arch_name: str, method_name: str) -> (str | None);
     def get_mro(name: str) -> list[str];
     def get_topo_order -> list[str];
+    def dependency_order(names: list[str]) -> list[str];
     def is_primary_ancestor(child: str, ancestor: str) -> bool;
 }
 
-walker LayoutPass(Transform) {
-    has ir_in: Module,
-        cancel_token: any = None,
+walker LayoutPass {
+    has ctx: CompileContext,
+        module: Module,
         registry: LayoutRegistry postinit,
         isinstance_targets: set[str] postinit;
 
     def postinit -> None;
-    def transform(ir_in: Module) -> Module;
     def _run_impl(ir_in: Module) -> Module;
     can run_walk with Module entry;
     def _collect_archetypes(module: Module) -> dict[str, Archetype];
@@ -613,6 +646,7 @@ walker LayoutPass(Transform) {
     def _split_top_level(s: str, sep: str) -> list[str];
     def _build_vtable_layout(arch_name: str, arch_map: dict[str, Archetype]) -> None;
     def _validate_obj_fields(arch: Archetype, arch_map: dict[str, Archetype]) -> None;
+    def _is_layout_compatible_semantic_type(typ: TypeBase | None) -> bool;
     def _is_layout_compatible_type(
         type_node: (UniNode | None), arch_map: dict[str, Archetype]
     ) -> bool;

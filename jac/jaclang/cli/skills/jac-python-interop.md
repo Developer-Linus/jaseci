@@ -1,6 +1,6 @@
 ---
 name: jac-python-interop
-description: Using Python from Jac and Jac from Python - PyPI imports (numpy, pandas, sklearn), typing the untyped boundary, inline ::py:: blocks, the class archetype for subclassing metaclass-driven Python types (static has), importing .jac modules into Python scripts, jaclang.lib library mode (Node/Walker/spawn/root), jac2py. Load when mixing .jac and .py code or pulling in any PyPI package.
+description: Integrate Jac with Python libraries, embedded Python, import hooks, and library mode. Use when values or declarations cross the Python boundary.
 ---
 
 Jac compiles to Python bytecode, so the entire PyPI ecosystem is directly importable - no wrappers, no FFI. The bridge works in both directions: `.jac` files import `.py` modules with normal `import` syntax, and `.py` files import `.jac` modules through an import hook.
@@ -59,9 +59,9 @@ import from pygments.token { Keyword, Name, Whitespace }
 
 class JacLexer(RegexLexer) {
     static has name: str = "Jac";
-    static has aliases: list = ["jac"];
-    static has filenames: list = ["*.jac"];
-    static has tokens: dict = {
+    static has aliases: list[str] = ["jac"];
+    static has filenames: list[str] = ["*.jac"];
+    static has tokens: dict[str, any] = {
         "root": [
             (r"\b(walker|node|edge)\b", Keyword),
             (r"\w+", Name),

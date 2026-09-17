@@ -222,9 +222,13 @@ impl ServiceProcessManager.start_service(name: str) -> bool {
     try {
         import os;
         import from pathlib { Path }
-        child_env = dict(os.environ);
+        child_env: dict[str, str] = dict(os.environ);
 
         child_env["JAC_SV_SIBLING"] = "1";
+        child_env["JAC_SV_NAME"] = name;
+        for (env_key, env_value) in `entry.env.items() {
+            child_env[str(env_key)] = str(env_value);
+        }
 
         for (peer_name, peer_entry) in self.registry.entries.items() {
             if peer_name != name and peer_entry.port > 0 {

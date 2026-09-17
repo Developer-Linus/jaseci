@@ -1,13 +1,14 @@
+import from jaclang.compiler.passes.execution { run_walker }
 import atexit;
 import os;
 import sys;
-import from collections.abc { Callable, Iterator }
+import from collections.abc { Callable, Iterator, Sequence }
 import from contextlib { contextmanager }
-import from jaclang.compiler.passes.transform { DiagnosticPolicy }
+import from jaclang.compiler.passes.context { Alert, DiagnosticPolicy }
 import from jaclang.compiler.driver.program { JacProgram }
 
 def diagnostic_policy_for(
-    config: any, extra_suppress_tokens: (list | None) = None
+    config: any, extra_suppress_tokens: (list[str] | None) = None
 ) -> DiagnosticPolicy {
     import from jaclang.compiler.frontend.diagnostic_utils { resolve_diagnostic_tokens }
     tokens: list[str] = [];
@@ -46,6 +47,21 @@ def diagnostic_policy_for(
     );
 }
 
+def config_for_app(config: any, app_name: str) -> any {
+    if config is None or not app_name {
+        return config;
+    }
+    apps = config?.apps;
+    if not isinstance(apps, dict) or app_name not in apps {
+        return config;
+    }
+    try {
+        return config.effective_for_app(app_name);
+    } except Exception {
+        return config;
+    }
+}
+
 def build_diagnostic_policy(prog: JacProgram) -> DiagnosticPolicy {
     config: any = None;
     try {
@@ -55,6 +71,7 @@ def build_diagnostic_policy(prog: JacProgram) -> DiagnosticPolicy {
         config = None;
     }
     opts = prog.options;
+    config = config_for_app(config, opts.target_app if opts is not None else '');
     extra: list[str] = (
         list(opts.suppress_codes) if (opts is not None and opts.suppress_codes) else []
     );
@@ -76,8 +93,8 @@ def _alert_in_internal_stub(loc_path: str) -> bool {
 }
 
 def deliver_alerts(
-    errors: list,
-    warnings: list,
+    errors: Sequence[Alert],
+    warnings: Sequence[Alert],
     prog: JacProgram,
     policy: (DiagnosticPolicy | None) = None
 ) {
@@ -114,15 +131,42 @@ def run_pass(
     **kwargs: any
 ) -> any {
     pol = policy if policy is not None else build_diagnostic_policy(prog);
-    errors: list = [];
-    warnings: list = [];
+    errors: list[Alert] = [];
+    warnings: list[Alert] = [];
     inst: any = None;
     if getattr(pass_cls, 'HOST_PASS', False) {
         kwargs['prog'] = prog;
     }
+    completed = prog.analysis.take_early(ir_in, pass_cls.__name__);
+    if completed is not None {
+        if completed.errors_had or completed.warnings_had {
+            sources = {ir_in.source.file_path: ir_in.source};
+            for nd in ir_in._in_mod_nodes {
+                sources[nd.loc.mod_path] = nd.loc.orig_src;
+            }
+            completed.errors_had = [
+                alert
+                for alert in completed.errors_had
+                if alert.code is None
+                    or not pol.is_suppressed(
+                        alert.code, alert.loc, source=sources.get(alert.loc.mod_path)
+                    )
+            ];
+            completed.warnings_had = [
+                alert
+                for alert in completed.warnings_had
+                if alert.code is None
+                    or not pol.is_suppressed(
+                        alert.code, alert.loc, source=sources.get(alert.loc.mod_path)
+                    )
+            ];
+        }
+        kwargs['completed'] = completed;
+    }
     try {
-        inst = pass_cls(
-            ir_in=ir_in,
+        inst = run_walker(
+            pass_cls,
+            module=ir_in,
             cancel_token=cancel_token,
             cancel_requested=bool(cancel_token is not None and cancel_token.is_set()),
             policy=pol,
@@ -131,7 +175,9 @@ def run_pass(
             **kwargs
         );
     } finally {
-        eff = inst.policy if (inst is not None and inst.policy is not None) else pol;
+        eff = inst.ctx.policy
+            if (inst is not None and inst.ctx.policy is not None)
+            else pol;
         deliver_alerts(errors, warnings, prog, eff);
         try {
             ledger = prog.analysis;
@@ -139,7 +185,7 @@ def run_pass(
             ledger.pass_runs[pass_name] = ledger.pass_runs.get(pass_name, 0) + 1;
             if inst is not None {
                 ledger.pass_time[pass_name] = (
-                    ledger.pass_time.get(pass_name, 0.0) + inst.time_taken
+                    ledger.pass_time.get(pass_name, 0.0) + inst.ctx.time_taken
                 );
             }
         } except Exception {}
@@ -167,12 +213,19 @@ obj _SetupProgress {
 glob setup_progress = _SetupProgress();
 
 obj CompileProgress {
-    has _listeners: list[Callable[[str], None]] postinit;
+    has _listeners: list[Callable[[str], None]] postinit,
+        _finished_listeners: list[Callable[[str], None]] postinit;
 
     def postinit -> None;
     def notify(file_path: str) -> None;
     @contextmanager
-    def listen(callback: Callable[[str], None]) -> Iterator[None];
+    def track(file_path: str) -> Iterator[None];
+
+    @contextmanager
+    def listen(
+        callback: Callable[[str], None],
+        on_finished: Callable[[str], None] | None = None
+    ) -> Iterator[None];
 }
 
 glob compile_progress = CompileProgress();

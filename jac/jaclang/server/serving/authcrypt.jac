@@ -14,7 +14,7 @@ glob SCRYPT_N: int = 16384,
      SCRYPT_DKLEN: int = 64,
      SCRYPT_SALT_BYTES: int = 16,
      SCRYPT_MAXMEM: int = 48 * 1024 * 1024,
-     _BCRYPT_PREFIXES: tuple = ('$2a$', '$2b$', '$2y$'),
+     _BCRYPT_PREFIXES: tuple[str, ...] = ('$2a$', '$2b$', '$2y$'),
      _SHA256_HEX_LEN: int = 64,
      _HEX_DIGITS: str = '0123456789abcdef',
      PLACEHOLDER_JWT_SECRET: str = 'supersecretkey_for_testing_only!',
@@ -82,11 +82,11 @@ def project_signing_secret(base_path: str) -> str {
 
 def _unpersistable_secret(path: str, reason: str) -> str {
     return (
-        f"no [scale.jwt] secret is configured and none could be kept at {path} "
+        f"no [serve.auth] secret is configured and none could be kept at {path} "
         f"({reason}). Refusing to sign with a secret this process would keep to "
         'itself: every other process serving this project would reject the '
         'tokens it issues, and every session would end when it does. Set '
-        '[scale.jwt] secret, or make the project data directory writable '
+        '[serve.auth] secret, or make the project data directory writable '
         '(JAC_DATA_PATH points it elsewhere).'
     );
 }

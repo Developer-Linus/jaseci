@@ -154,11 +154,13 @@ test "the running compiler digest covers the real compiler tree" {
     pkg = os.path.dirname(os.path.abspath(jaclang.__file__));
     rels = compiler_source_files(pkg);
     for expected in [
+        "compiler_inputs.txt",
         "jac0.py",
         "compiler/driver/jir.jac",
         "compiler/frontend/unitree.jac",
         "compiler/backends/py/jcir_gen_pass.jac",
-        "compiler/backends/py/impl/jcir_gen_pass.impl.jac",
+        "compiler/backends/py/jcir_gen_pass.impl/expr.impl.jac",
+        "compiler/backends/native/na_ir_gen_pass.impl/core.impl.jac",
         "compiler/passes/type_checker_pass.jac",
         "dist/precompile_bytecode.jac"
     ] {
@@ -169,7 +171,9 @@ test "the running compiler digest covers the real compiler tree" {
     assert rels == sorted(rels);
     for rel in rels {
         assert "/tests/" not in rel and not rel.startswith("tests/") , f"{rel} is test material and must not gate the seed";
-        assert rel.endswith(".jac") or rel.endswith(".py");
+        assert rel == "compiler_inputs.txt"
+            or rel.endswith(".jac")
+            or rel.endswith(".py") , f"{rel} is neither compiler source nor its input manifest";
     }
     assert running_compiler_digest() == compiler_source_digest(pkg);
     assert running_compiler_digest() == running_compiler_digest();

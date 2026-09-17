@@ -27,10 +27,9 @@ import from jaclang.scale.deploy.target.kubernetes.manifest_builder {
     with_config_revision,
     CONFIG_REVISION_ANNOTATION,
     ManifestBuilder,
-    GATEWAY_NAME,
-    k8s_safe_name,
     ScalingMode
 }
+import from jaclang.scale.runtime.context.util { GATEWAY_NAME, k8s_safe_name }
 import from jaclang.scale.deploy.target.kubernetes.database_provisioner {
     DatabaseProvisioner
 }
@@ -51,6 +50,7 @@ import from jaclang.scale.injector.pvc_injector {
     bundle_keys_from_pod_spec,
     bundle_pvc_name
 }
+import from jaclang.scale.runtime.fleet { FleetSpec }
 
 glob logger = logging.getLogger(__name__),
      REVISION_ANNOTATION: str = "deployment.kubernetes.io/revision",
@@ -218,14 +218,16 @@ def reap_stale_scaling_resources_for_bundle(
 
 obj KubernetesTarget(KubernetesTargetBase) {
     has _deploy_context: DeployContext = DeployContext(),
-        microservices_config: (dict[str, any] | None) = None;
+        fleet: (FleetSpec | None) = None,
+        gateway_config: (dict[str, any] | None) = None,
+        app_overrides: dict[str, dict[str, any]] = {};
 
-    def _ms_cfg -> dict[str, any] {
-        if self.microservices_config is not None {
-            return self.microservices_config;
+    def _gateway_cfg -> dict[str, any] {
+        import from jaclang.scale.config.config_loader { normalize_gateway_config }
+        if self.gateway_config is not None {
+            return normalize_gateway_config(self.gateway_config);
         }
-        import from jaclang.scale.config.config_loader { load_microservices_config }
-        return load_microservices_config();
+        return get_scale_config().get_gateway_config();
     }
 
     def deploy(app_config: AppConfig) -> DeploymentResult {
@@ -273,6 +275,19 @@ obj KubernetesTarget(KubernetesTargetBase) {
                 f"Pod runtime jac {pinned}" if pinned else "Pod runtime resolved"
             );
         }
+
+        self._emit("config", "start", "Checking the config the pods load");
+        try {
+            self._manifest_builder(app_config).check_pod_config(
+                app_config, self.k8s_config.python_image
+            );
+        } except Exception as e {
+            self._emit("config", "error", f"pod config check failed: {e}");
+            return DeploymentResult(
+                success=False, message=f"pod config check failed: {e}"
+            );
+        }
+        self._emit("config", "ok", "Pod config resolves");
 
         self._emit("provision", "start", "Provisioning backends");
         try {
@@ -398,7 +413,7 @@ obj KubernetesTarget(KubernetesTargetBase) {
                     continue;
                 }
                 pod_name = str(p.metadata.name);
-                labels = p.metadata.labels or {};
+                labels: dict[str, any] = p.metadata.labels or {};
                 app = str(labels.get("app", ""));
                 in_fleet = (app in fleet_app_names) if fleet_app_names else True;
                 if current_hashes and app in fleet_app_names {
@@ -408,7 +423,7 @@ obj KubernetesTarget(KubernetesTargetBase) {
                     }
                 }
                 phase = str(p.status.phase or '?');
-                statuses = list(p.status.init_container_statuses or [])
+                statuses: list[any] = list(p.status.init_container_statuses or [])
                     + list(p.status.container_statuses or []);
                 pod_reason = "";
                 pod_crash = "";
@@ -759,7 +774,8 @@ obj KubernetesTarget(KubernetesTargetBase) {
             ).items
                 if pod_selector
                 else [];
-            for p in stuck {
+            stuck_pods: list[any] = stuck;
+            for p in stuck_pods {
                 timeout_detail += (
                     f" [pod {p.metadata.name}]"
                     + self._pod_failure_detail(core_v1, ns, str(p.metadata.name), p)
@@ -786,10 +802,10 @@ obj KubernetesTarget(KubernetesTargetBase) {
             if pod is None {
                 pod = core_v1.read_namespaced_pod(pod_name, namespace);
             }
-            statuses = (pod.status.init_container_statuses or [])
+            statuses: list[any] = (pod.status.init_container_statuses or [])
                 + (pod.status.container_statuses or []);
             for cs in statuses {
-                states: list = [];
+                states: list[tuple[str, any]] = [];
                 if cs.state and cs.state.terminated {
                     states.append(("terminated", cs.state.terminated));
                 }
@@ -816,8 +832,8 @@ obj KubernetesTarget(KubernetesTargetBase) {
     }
 
     def _observability_requested -> bool {
-        logs_cfg = self._read_microservices_logs_config();
-        tracing_cfg = self._read_microservices_tracing_config();
+        logs_cfg = self._read_gateway_logs_config();
+        tracing_cfg = self._read_gateway_tracing_config();
         return bool(self.k8s_config.monitoring_enabled)
             or bool(logs_cfg.get("enabled", False))
             or bool(tracing_cfg.get("enabled", False));
@@ -865,7 +881,7 @@ obj KubernetesTarget(KubernetesTargetBase) {
         gate_label = "elbv2.k8s.aws/pod-readiness-gate-inject";
         try {
             ns = core_v1.read_namespace(name=namespace);
-            labels: dict = dict(getattr(ns.metadata, "labels", {}) or {});
+            labels: dict[str, any] = dict(getattr(ns.metadata, "labels", {}) or {});
             if labels.get(gate_label) == "enabled" {
                 return;
             }
@@ -895,7 +911,7 @@ obj KubernetesTarget(KubernetesTargetBase) {
     def _ensure_privileged_namespace(core_v1: any, namespace: str) -> None {
         try {
             ns = core_v1.read_namespace(name=namespace);
-            labels: dict = dict(getattr(ns.metadata, "labels", {}) or {});
+            labels: dict[str, any] = dict(getattr(ns.metadata, "labels", {}) or {});
             new_labels = privileged_pss_labels(labels);
             if new_labels is None {
                 if self.logger {
@@ -939,21 +955,21 @@ obj KubernetesTarget(KubernetesTargetBase) {
 
     def _build_observability_config -> KubernetesConfig {
         overrides: dict[str, any] = dict(self.k8s_config.to_dict());
-        overrides["loki_enabled"] = self._read_microservices_logs_config().get(
+        overrides["loki_enabled"] = self._read_gateway_logs_config().get(
             "enabled", False
         );
-        overrides["tracing_enabled"] = self._read_microservices_tracing_config().get(
+        overrides["tracing_enabled"] = self._read_gateway_tracing_config().get(
             "enabled", False
         );
         return KubernetesConfig.from_dict(KubernetesConfig, overrides);
     }
 
-    def _read_microservices_logs_config -> dict[str, any] {
-        return dict(self._ms_cfg().get("logs", {}));
+    def _read_gateway_logs_config -> dict[str, any] {
+        return dict(self._gateway_cfg().get("logs", {}));
     }
 
-    def _read_microservices_tracing_config -> dict[str, any] {
-        return dict(self._ms_cfg().get("tracing", {}));
+    def _read_gateway_tracing_config -> dict[str, any] {
+        return dict(self._gateway_cfg().get("tracing", {}));
     }
 
     def generate_manifests(app_config: AppConfig) -> dict[str, any] {
@@ -961,16 +977,23 @@ obj KubernetesTarget(KubernetesTargetBase) {
         self.k8s_config.python_image = resolve_pod_base_image(
             app_config.code_folder, self.k8s_config.python_image, probe=not self.dry_run
         );
-        builder = ManifestBuilder(
+        return self._manifest_builder(app_config).generate_manifests(
+            app_config, self.k8s_config.python_image
+        );
+    }
+
+    def _manifest_builder(app_config: AppConfig) -> ManifestBuilder {
+        return ManifestBuilder(
             k8s_config=self.k8s_config,
             secrets=self.secrets,
             deploy_context=self._context_with_env(),
             logger=self.logger,
             project_dir=app_config.code_folder,
-            microservices_config=self.microservices_config,
+            fleet=self.fleet,
+            gateway_config=self.gateway_config,
+            app_overrides=dict(self.app_overrides),
             dry_run=self.dry_run
         );
-        return builder.generate_manifests(app_config, self.k8s_config.python_image);
     }
 
     def _context_with_env -> DeployContext {
@@ -1431,7 +1454,8 @@ obj KubernetesTarget(KubernetesTargetBase) {
             listed = apps_v1.list_namespaced_deployment(
                 namespace=namespace, label_selector=FLEET_SELECTOR
             );
-            for dep in list(listed?.items or []) {
+            dep_items: list[any] = list(listed?.items or []);
+            for dep in dep_items {
                 try {
                     names.append(str(dep.metadata.name));
                 } except Exception {

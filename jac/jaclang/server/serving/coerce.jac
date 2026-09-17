@@ -1,6 +1,6 @@
 import inspect;
 import typing;
-import from dataclasses { is_dataclass }
+import from jaclang.runtime.object_interop { is_record }
 import from enum { EnumMeta }
 import from types { UnionType }
 import from typing { Union, get_args, get_origin, get_type_hints }
@@ -9,7 +9,7 @@ import from jaclang.server.serving.endpoint { APIParameter, JEndPoint, Parameter
 
 
 obj RequestValidationError(Exception) {
-    has errors: list[dict] = [];
+    has errors: list[dict[str, any]] = [];
 
     def __str__ -> str {
         return f"{len(self.errors)} validation error(s)";
@@ -68,10 +68,11 @@ def _construct_object(value: any, target: any) -> any {
     } except Exception {
         hints = {};
     }
-    sig = inspect.signature(init_fn);
+    sig = inspect.signature(target);
     kwargs: dict[str, any] = {};
     for (pname, param) in sig.parameters.items() {
-        if pname in ('self', 'args', 'kwargs') {
+        if param.kind
+            in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD) {
             continue;
         }
         if pname in value {
@@ -83,7 +84,7 @@ def _construct_object(value: any, target: any) -> any {
     return target(**kwargs);
 }
 
-def _as_item_list(value: any) -> list {
+def _as_item_list(value: any) -> list[any] {
     if isinstance(value, (list, tuple, set)) {
         return list(value);
     }
@@ -162,13 +163,13 @@ def coerce_value(value: any, target: any = None) -> any {
         and not issubclass(
             target, (str, int, float, bool, bytes, list, dict, tuple, set)
         )
-        and (is_dataclass(target) or hasattr(target, '__init__')) {
+        and (is_record(target) or hasattr(target, '__init__')) {
         return _construct_object(value, target);
     }
     return value;
 }
 
-def _coerce_union(value: any, options: tuple) -> any {
+def _coerce_union(value: any, options: tuple[object, ...]) -> any {
     none_type = type(None);
     if value is None {
         for opt in options {
@@ -280,7 +281,7 @@ def _fresh_default(value: any) -> any {
 
 def bind_parameters(ep: JEndPoint, request: Request, body_json: any) -> dict[str, any] {
     kwargs: dict[str, any] = {};
-    errors: list[dict] = [];
+    errors: list[dict[str, any]] = [];
     declared: set[str] = set();
     for param in (ep.parameters or []) {
         declared.add(param.name);

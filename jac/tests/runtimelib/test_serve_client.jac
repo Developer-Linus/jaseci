@@ -7,6 +7,7 @@ import io;
 import json;
 import logging;
 import os;
+import types;
 import re;
 import shutil;
 import uuid;
@@ -16,6 +17,14 @@ import from jaclang.data.serializer { Serializer }
 import from jaclang.testing.testing { JacTestClient }
 
 glob FIXTURES = str(Path(__file__).parent / "fixtures");
+
+# Direct introspection follows the same explicit preparation contract as serving.
+def prepare_source(path: str) {
+    import from jaclang.compiler.driver.application { prepare_application }
+    import from jaclang.runtime.runtime { JacRuntime as Jac }
+    prepare_application(path, Jac.get_program(), str(Path(path).parent));
+}
+
 
 def _as_any(v: any) -> any {
     return v;
@@ -139,11 +148,8 @@ def make_dualrole_client(tmp_path: str) -> JacTestClient {
     shutil.copy(fixtures_src / "dualrole_app.jac", dest / f"{module_name}.jac");
     with open(str(dest / "jac.toml"), "w") as tf {
         tf.write(
-            "[project]\nname = \"dualrole\"\n\n[placement.pins]\n"
-            "\"dualrole_guestbook\" = \"server\"\n"
-            "\"dualrole_analytics\" = \"server\"\n"
-            "\n[scale.microservices.routes]\n"
-            "\"dualrole_analytics\" = \"/analytics\"\n"
+            "[project]\nname = \"dualrole\"\n\n"
+            f'[apps.web]\nkind = "web-app"\nentry-point = "{module_name}"\n\n[apps.analytics]\nkind = "service"\nentry-point = "dualrole_analytics"\nroute = "/analytics"\n\n[placement.pins]\n"dualrole_guestbook" = "server"\n"dualrole_analytics" = "server"\n'
         );
     }
     for name in [
@@ -195,7 +201,7 @@ interop facts land in that hub rather than `Jac.program.mod.hub` -- the exact
 condition under which the serve endpoint collector missed them. Returns
 `(client, cleanup_dir)`; the caller must rmtree `cleanup_dir`.
 """
-def make_bundled_crossboundary_client -> tuple {
+def make_bundled_crossboundary_client -> tuple[any, ...] {
     import jaclang;
     jaclang_root = Path(jaclang.__file__).resolve().parent;
     fixtures_src = Path(fixture_abs_path("")).resolve();
@@ -220,9 +226,9 @@ def make_bundled_crossboundary_client -> tuple {
     return (client, str(dest));
 }
 
-"""Create test client with base_route_app configured for SPA catch-all."""
+"""Create a test client whose served module declares an `app` page: the served
+app sits at `/`, so the root and every clean URL render the SPA shell."""
 def make_spa_client(tmp_path: str) -> JacTestClient {
-    import from jaclang.project.config { JacConfig, ServeConfig }
     fixtures_src = Path(fixture_abs_path("")).resolve();
     unique_id = uuid.uuid4().hex[:8];
     module_name = f"spa_app_{unique_id}";
@@ -240,13 +246,14 @@ def make_spa_client(tmp_path: str) -> JacTestClient {
     return JacTestClient.from_file(
         str(fixtures_dest / f"{module_name}.jac"),
         base_path=str(fixtures_dest),
-        module_name=module_name,
-        config=JacConfig(serve=ServeConfig(base_route_app="client_page"))
+        module_name=module_name
     );
 }
 
 """Attach a StringIO handler to logger and return (buf, handler, old_level)."""
-def capture_log_start(logger: logging.Logger, level: int = logging.DEBUG) -> tuple {
+def capture_log_start(
+    logger: logging.Logger, level: int = logging.DEBUG
+) -> tuple[any, ...] {
     buf = io.StringIO();
     handler = logging.StreamHandler(buf);
     handler.setLevel(level);
@@ -333,12 +340,12 @@ test "serve register rejects legacy payload" {
             "/user/register", json={"username": "legacy", "password": "pass123"}
         );
         assert not response.ok;
-        assert response.status_code == 400;
+        assert response.status_code == 422;
         client.close();
     }
 }
 
-test "serve login rejects email identity" {
+test "serve login with an unknown email identity is refused" {
     with TemporaryDirectory() as tmpdir {
         client = make_client(tmpdir);
         response = client.post(
@@ -349,9 +356,7 @@ test "serve login rejects email identity" {
             }
         );
         assert not response.ok;
-        assert response.status_code == 400;
-        body = response.json();
-        assert "username" in body.get("error", "");
+        assert response.status_code == 401;
         client.close();
     }
 }
@@ -482,11 +487,12 @@ test "serve get user info different users" {
 test "serve authentication required" {
     with TemporaryDirectory() as tmpdir {
         client = make_client(tmpdir);
-        response = client.get("/protected");
+        response = client.get("/user/info");
         assert not response.ok;
+        assert response.status_code == 401;
         data = response.data;
         assert "error" in data;
-        assert "Unauthorized" in data["error"];
+        assert "token" in data["error"].lower();
         client.close();
     }
 }
@@ -708,9 +714,11 @@ test "serve root app inference follows intent not incidence" {
     # (`client_page`), reachable at /cl/client_page. That is an incidental page,
     # not a declared entry point, so it must NOT be promoted to / -- the root
     # path stays the JSON API index.
+    prepare_source(fixture_abs_path("serve_api.jac"));
     api_intro = ModuleIntrospector("serve_api", FIXTURES);
     assert api_intro.resolve_root_app() == "";
     # A conventionally-named entry page (`app`) signals intent and IS inferred.
+    prepare_source(fixture_abs_path("client_fullstack_app.jac"));
     app_intro = ModuleIntrospector("client_fullstack_app", FIXTURES);
     assert app_intro.resolve_root_app() == "app";
 }
@@ -1164,11 +1172,12 @@ test "serve private walker with auth" {
 test "serve introspection list requires auth" {
     with TemporaryDirectory() as tmpdir {
         ac = make_access_client(tmpdir);
-        response = ac.get("/protected");
+        response = ac.get("/user/info");
         assert not response.ok;
+        assert response.status_code == 401;
         data = response.data;
         assert "error" in data;
-        assert "Unauthorized" in data["error"];
+        assert "token" in data["error"].lower();
         ac.close();
     }
 }
@@ -1767,6 +1776,7 @@ test "serve blocking sync walkers run concurrently via to_thread" {
         introspector = ModuleIntrospector(
             module_name="serve_blocking_io", base_path=str(Path(jac_file).parent)
         );
+        prepare_source(jac_file);
         introspector.load();
         walkers = introspector.get_walkers();
         assert "slow_blocking" in walkers , "slow_blocking walker not found";
@@ -1809,14 +1819,21 @@ test "endpoint effect classifier follows helper calls" {
     introspector = ModuleIntrospector(
         module_name="serve_helper_effects", base_path=str(Path(jac_file).parent)
     );
+    prepare_source(jac_file);
     introspector.load();
     effects = introspector._client_manifest.get("endpoint_effects", {});
+    import json;
+    for (identity, info) in effects.items() {
+        assert json.loads(identity)
+            == [info["app"], info["module"], info["kind"], info["name"]];
+    }
+    effects = {info["kind"] + ":" + info["name"]: info for info in effects.values()};
 
     assert "walker:tag_item" in effects , "tag_item should be classified";
-    assert effects["walker:tag_item"]["is_writer"] , "tag_item mutates the graph via the _add_tag helper -- must be a writer";
+    assert effects["walker:tag_item"]["writes"] , "tag_item mutates the graph via the _add_tag helper -- must be a writer";
 
     assert "walker:list_items" in effects , "list_items should be classified";
-    assert not effects["walker:list_items"]["is_writer"] , "list_items only reports -- must be a reader";
+    assert not effects["walker:list_items"]["writes"] , "list_items only reports -- must be a reader";
 }
 
 test "spawn_walker_sync and spawn_walker_async dispatch to explicit paths" {
@@ -1836,12 +1853,13 @@ test "spawn_walker_sync and spawn_walker_async dispatch to explicit paths" {
         introspector = ModuleIntrospector(
             module_name="serve_blocking_io", base_path=str(Path(jac_file).parent)
         );
+        prepare_source(jac_file);
         introspector.load();
         walker_cls = introspector.get_walkers()["slow_blocking"];
         user_mgr = UserManager(base_path=tmpdir);
         exec_mgr = ExecutionManager(base_path=tmpdir, user_manager=user_mgr);
         user_mgr.create_user("testuser", "testpass");
-        async def run -> tuple {
+        async def run -> tuple[any, ...] {
             # Explicit sync path: must still run concurrently via to_thread.
             start = time();
             tasks = [
@@ -1880,6 +1898,7 @@ test "concurrent async walkers run concurrently end-to-end" {
         introspector = ModuleIntrospector(
             module_name="serve_blocking_io", base_path=str(Path(jac_file).parent)
         );
+        prepare_source(jac_file);
         introspector.load();
         walker_cls = introspector.get_walkers()["slow_async"];
         assert getattr(walker_cls, "__jac_async__", False) , "slow_async walker must be async";
@@ -2027,7 +2046,7 @@ test "CallState.reports is thread-safe (sync walker worker threads put safely)" 
     items_per_thread = 100;
     expected_count = total_threads * items_per_thread;
 
-    received: list = [];
+    received: list[any] = [];
 
     def worker(tid: int) {
         for i in range(items_per_thread) {
@@ -2094,6 +2113,7 @@ test "concurrent multi-user requests do not race on ctx.user_root" {
         introspector = ModuleIntrospector(
             module_name="serve_blocking_io", base_path=str(Path(jac_file).parent)
         );
+        prepare_source(jac_file);
         introspector.load();
         walkers = introspector.get_walkers();
         async_walker = walkers["whoami_async"];
@@ -2109,7 +2129,7 @@ test "concurrent multi-user requests do not race on ctx.user_root" {
         }
         # Sanity: each user got a unique root.
         assert len(set(root_ids.values())) == 3;
-        async def run_probe(walker_cls: any) -> list {
+        async def run_probe(walker_cls: any) -> list[any] {
             tasks = [
                 exec_mgr.spawn_walker(walker_cls, {"sleep_s": 0.1}, uname)
                 for uname in users
@@ -2158,11 +2178,12 @@ test "concurrent multi-user requests do not race on ctx.user_root" {
     }
 }
 
-"""A request whose setup raises outside the walker-execution envelope (here:
-the user's persisted root anchor is gone from the anchor store, e.g. stale
-state written by an older runtime) must surface as a 500 JSON error response
-- never as a silently dropped connection with no HTTP response at all."""
-test "orphaned user root returns 500 json instead of dropping the connection" {
+"""A request whose setup fails before the walker runs (here: the user's
+persisted root anchor is gone from the anchor store, e.g. stale state written
+by an older runtime) must fail closed with a JSON error response that names
+the problem - never continue on another root, and never drop the connection
+with no HTTP response at all."""
+test "orphaned user root is refused with a json error instead of dropping the connection" {
     with TemporaryDirectory() as tmpdir {
         client = make_client(tmpdir);
         reg = client.register_user("orphan_user", "pw12345");
@@ -2171,19 +2192,20 @@ test "orphaned user root returns 500 json instead of dropping the connection" {
         # anchor store, simulating a store that was reset or migrated out from
         # under the users db.
         um = client.user_manager;
-        um._ensure_connection();
-        um._conn.execute(
-            "UPDATE users SET root_id = ? WHERE username = ?",
-            ("deadbeefdeadbeefdeadbeefdeadbeef", "orphan_user")
+        orphan = um.find_user_by_identity("orphan_user");
+        assert orphan is not None;
+        assert um.update_user_fields(
+            str(orphan["user_id"]), {"root_id": "deadbeefdeadbeefdeadbeefdeadbeef"}
         );
-        um._conn.commit();
         resp = client.post("/walker/CreateTask", json={"title": "x"});
-        assert resp.status_code == 500 , f"expected a 500 error envelope, got {resp.status_code}: {resp.text}";
+        assert resp.status_code == 401 , f"expected a fail-closed error envelope, got {resp.status_code}: {resp.text}";
         body = resp.json();
-        assert "error" in body , f"500 body should carry an error: {resp.text}";
+        assert "error" in body , f"the body should carry an error: {resp.text}";
         # Registered users are NOT healed: silently minting a new root would
         # mask real data loss. The error names the problem instead.
-        assert "does not exist in the anchor store" in str(body.get("error")) , f"error should explain the missing root anchor: {resp.text}";
+        assert body["error"]["code"] == "IDENTITY_UNRESOLVABLE" , resp.text;
+        assert "does not exist in the anchor store"
+            in str(body["error"].get("message")) , f"error should explain the missing root anchor: {resp.text}";
         client.close();
     }
 }
@@ -2202,18 +2224,16 @@ test "missing guest root anchor is healed with a fresh root" {
         assert first.ok , f"anonymous walker call should work: {first.text}";
         # Point the guest row at a root anchor that does not exist.
         um = client.user_manager;
-        um._ensure_connection();
-        um._conn.execute(
-            "UPDATE users SET root_id = ? WHERE username = ?",
-            ("feedfacefeedfacefeedfacefeedface", "__guest__")
+        guest = um.find_user_by_identity("__guest__");
+        assert guest is not None;
+        assert um.update_user_fields(
+            str(guest["user_id"]), {"root_id": "feedfacefeedfacefeedfacefeedface"}
         );
-        um._conn.commit();
         healed = client.post("/walker/whereami", json={});
         assert healed.ok , f"guest request should heal, got {healed.status_code}: {healed.text}";
-        row = um._conn.execute(
-            "SELECT root_id FROM users WHERE username = ?", ("__guest__", )
-        ).fetchone();
-        assert row[0] != "feedfacefeedfacefeedfacefeedface" , "guest root_id should have been replaced by the heal";
+        after = um.find_user_by_identity("__guest__");
+        assert after is not None;
+        assert after["root_id"] != "feedfacefeedfacefeedfacefeedface" , "guest root_id should have been replaced by the heal";
         # And the healed root keeps working on subsequent requests.
         again = client.post("/walker/whereami", json={});
         assert again.ok , f"healed guest root should persist: {again.text}";
@@ -2227,10 +2247,14 @@ liveness/readiness probe surface."""
 test "stdlib server answers health endpoints" {
     with TemporaryDirectory() as tmpdir {
         client = make_client(tmpdir);
-        for path in ["/healthz", "/healthz/live", "/healthz/ready"] {
+        for (path, status) in [
+            ("/healthz", "ok"),
+            ("/healthz/live", "alive"),
+            ("/healthz/ready", "ready")
+        ] {
             resp = client.get(path);
             assert resp.status_code == 200 , f"{path} should be 200: {resp.text}";
-            assert resp.json().get("status") == "ok" , f"{path} body: {resp.text}";
+            assert resp.json().get("status") == status , f"{path} body: {resp.text}";
         }
         client.close();
     }
@@ -2244,7 +2268,8 @@ test "ensure_bundle retries a missing-bun failure and a build error alike" {
     import from jaclang.server.server { ModuleIntrospector }
     import from jaclang.client.client_bundle { ClientBundleError, MissingBunError }
     intro = ModuleIntrospector("serve_api", FIXTURES);
-    intro._module = object();
+    intro._module = types.ModuleType("serve_api");
+    intro._module.__file__ = fixture_abs_path("serve_api.jac");
     bun_missing = MagicMock();
     bun_missing.build.side_effect = MissingBunError("bun is not available");
     intro._bundle_builder = bun_missing;
@@ -2257,7 +2282,8 @@ test "ensure_bundle retries a missing-bun failure and a build error alike" {
     assert bun_missing.build.call_count == 2 , "missing bun must be re-checked on every call, not memoized";
 
     intro2 = ModuleIntrospector("serve_api", FIXTURES);
-    intro2._module = object();
+    intro2._module = types.ModuleType("serve_api");
+    intro2._module.__file__ = fixture_abs_path("serve_api.jac");
     broken = MagicMock();
     broken.build.side_effect = RuntimeError("vite exploded");
     intro2._bundle_builder = broken;
@@ -2300,7 +2326,8 @@ test "concurrent ensure_bundle callers share one build instead of each running t
     import from concurrent.futures { ThreadPoolExecutor }
     import from jaclang.server.server { ModuleIntrospector }
     intro = ModuleIntrospector("serve_api", FIXTURES);
-    intro._module = object();
+    intro._module = types.ModuleType("serve_api");
+    intro._module.__file__ = fixture_abs_path("serve_api.jac");
     builder = _SlowRealBuilder();
     intro._bundle_builder = builder;
 
@@ -2327,7 +2354,8 @@ test "a module reload during a build wins over the build's result" {
     import time;
     import from jaclang.server.server { ModuleIntrospector }
     intro = ModuleIntrospector("serve_api", FIXTURES);
-    intro._module = object();
+    intro._module = types.ModuleType("serve_api");
+    intro._module.__file__ = fixture_abs_path("serve_api.jac");
     builder = _SlowRealBuilder();
     intro._bundle_builder = builder;
 
@@ -2350,10 +2378,63 @@ test "a module reload during a build wins over the build's result" {
     );
 }
 
-"""/graph, /graph/data and /docs must be served by the stdlib server too -
-previously they existed only on the scale (FastAPI) server, so apps embedding
-them 404'd whenever serving fell back to the zero-dependency stack."""
+glob _GRAPH_LOGIN_HARNESS: str = """
+import { JSDOM } from "jsdom";
+
+const [base, username, password] = process.argv.slice(2);
+const html = await (await fetch(base + "/graph")).text();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = async (ok) => { for (let i = 0; i < 400 && !ok(); i++) await sleep(25); };
+
+// `send` replaces the body on the wire, so the server's own rejection reaches the modal.
+const ROWS = [
+  { name: "valid credentials", password, token: true, badge: "User Graph", error: null },
+  { name: "wrong password", password: password + "x", token: false, badge: "Public Graph", error: "Invalid credentials" },
+  { name: "rejected body", password, send: { username, password }, token: false, badge: "Public Graph", error: "identity is required" },
+];
+
+let failed = 0;
+for (const row of ROWS) {
+  const calls = [];
+  const dom = new JSDOM(html, {
+    url: base + "/graph",
+    runScripts: "dangerously",
+    beforeParse(window) {
+      window.fetch = (url, init = {}) => {
+        calls.push({ url, auth: (init.headers || {}).Authorization });
+        const body = row.send && url.endsWith("/user/login") ? JSON.stringify(row.send) : init.body;
+        return fetch(url, { ...init, body });
+      };
+    },
+  });
+  const { document, localStorage } = dom.window;
+  const button = document.getElementById("login-btn");
+  document.getElementById("login-username").value = username;
+  document.getElementById("login-password").value = row.password;
+  button.click();
+  await until(() => !button.disabled);
+  const errorEl = document.getElementById("login-error");
+  const seen = {
+    token: Boolean(localStorage.getItem("jac_token")),
+    badge: document.getElementById("mode-badge").textContent,
+    error: errorEl.style.display === "block" ? errorEl.textContent : null,
+    authedGraph: calls.some((c) => c.url.endsWith("/graph/data") && Boolean(c.auth)),
+  };
+  const want = { token: row.token, badge: row.badge, error: row.error, authedGraph: row.token };
+  const ok = JSON.stringify(seen) === JSON.stringify(want);
+  console.log((ok ? "PASS  " : "FAIL  ") + row.name + ": " + JSON.stringify(seen) + (ok ? "" : " want " + JSON.stringify(want)));
+  failed += ok ? 0 : 1;
+}
+process.exit(failed ? 1 : 0);
+""";
+
+"""The stdlib server serves /graph, /graph/data and /docs, and the /graph login
+modal signs in against it (#8951)."""
 test "stdlib server serves graph visualizer and docs" {
+    import from jaclang.client.bun_installer { get_bun }
+    import from jaclang.server.settings { ServeSettings }
+    import from .react_jsdom_harness { REACT_JSDOM_DEPS, bun_install, run_harness }
+
     with TemporaryDirectory() as tmpdir {
         client = JacTestClient.from_file(
             fixture_abs_path("serve_shared_root.jac"), base_path=tmpdir
@@ -2376,6 +2457,33 @@ test "stdlib server serves graph visualizer and docs" {
         paths = spec.json()["paths"];
         assert "/walker/leave_note" in paths , "openapi should list the module's walkers";
         assert "/user/login" in paths , "openapi should list auth endpoints";
+        _require_client_integration();
+        bun = get_bun();
+        assert bun is not None , "bun is on PATH but get_bun() could not locate it";
+        registered = client.register_user("graph_viewer", "pw12345678");
+        assert registered.ok , f"register failed: {registered.text}";
+        client.server.settings = ServeSettings.load(
+            tmpdir, {"host": "127.0.0.1", "port": 0}
+        );
+        stop = client.server.serve_background(no_client=True);
+        try {
+            work = Path(tmpdir) / "graph_login";
+            work.mkdir();
+            bun_install(bun, work, "graph-login", {"jsdom": REACT_JSDOM_DEPS["jsdom"]});
+            (work / "harness.mjs").write_text(_GRAPH_LOGIN_HARNESS, encoding="utf-8");
+            run_harness(
+                bun,
+                work,
+                [
+                    f"http://127.0.0.1:{client.server.port}",
+                    "graph_viewer",
+                    "pw12345678"
+                ],
+                "graph login"
+            );
+        } finally {
+            stop();
+        }
         client.close();
     }
 }
@@ -2408,6 +2516,10 @@ test "spa fallback status is route aware when pages exist" {
         proj = Path(tmpdir);
         shutil.copy(fixture_abs_path("client_app.jac"), proj / "routed_app.jac");
         write_routed_pages(proj);
+        if not (proj / "routed_app.jac").exists() {
+            (proj / "routed_app.jac").write_text("def:pub app -> int { return 1; }\n");
+        }
+        prepare_source(str(proj / "routed_app.jac"));
         intro = ModuleIntrospector("routed_app", str(proj));
         assert intro.spa_fallback_status("/") == 200;
         assert intro.spa_fallback_status("/about") == 200;
@@ -2478,8 +2590,8 @@ test "serve spa fallback keeps 200 for known page routes" {
 }
 
 """The route table must follow the app across reloads: every reload path goes
-through _load_manifest, which clears the cached patterns so the next fallback
-request rescans pages/. Without the reset, a page added after first request
+through preparation followed by _load_manifest, which clears the cached patterns
+so the next fallback request reads the newly prepared route table. Without the reset, a page added after first request
 404s until restart and a deleted page keeps answering 200."""
 test "spa fallback route table refreshes on manifest reload" {
     import from jaclang.server.server { ModuleIntrospector }
@@ -2487,14 +2599,20 @@ test "spa fallback route table refreshes on manifest reload" {
         proj = Path(tmpdir);
         shutil.copy(fixture_abs_path("client_app.jac"), proj / "routed_app.jac");
         write_routed_pages(proj);
+        if not (proj / "routed_app.jac").exists() {
+            (proj / "routed_app.jac").write_text("def:pub app -> int { return 1; }\n");
+        }
+        prepare_source(str(proj / "routed_app.jac"));
         intro = ModuleIntrospector("routed_app", str(proj));
         assert intro.spa_fallback_status("/pricing") == 404;
         page_src = "def:pub View() -> JsxPage {\n    return <div>p</div>;\n}\n";
         (proj / "pages" / "pricing.jac").write_text(page_src);
         assert intro.spa_fallback_status("/pricing") == 404 , "table is cached until a reload";
+        prepare_source(str(proj / "routed_app.jac"));
         intro._load_manifest();
         assert intro.spa_fallback_status("/pricing") == 200 , f"patterns={intro._load_spa_routes()}";
         (proj / "pages" / "about.jac").unlink();
+        prepare_source(str(proj / "routed_app.jac"));
         intro._load_manifest();
         assert intro.spa_fallback_status("/about") == 404;
         assert intro.spa_fallback_status("/pricing") == 200;
@@ -2511,8 +2629,407 @@ test "spa fallback root is route aware without an index page" {
         pages.mkdir(parents=True, exist_ok=True);
         page_src = "def:pub View() -> JsxPage {\n    return <div>p</div>;\n}\n";
         (pages / "dashboard.jac").write_text(page_src);
+        if not (proj / "routed_app.jac").exists() {
+            (proj / "routed_app.jac").write_text("def:pub app -> int { return 1; }\n");
+        }
+        prepare_source(str(proj / "routed_app.jac"));
         intro = ModuleIntrospector("routed_app", str(proj));
         assert intro.spa_fallback_status("/") == 404;
         assert intro.spa_fallback_status("/dashboard") == 200;
+    }
+}
+
+# =============================================================================
+# sv_client: app-keyed bridge runtime (#8823)
+# =============================================================================
+import asyncio;
+import from jaclang.server { sv_client }
+import from jaclang.server.bridge {
+    BridgeError,
+    BridgeRejected,
+    BridgeTimeout,
+    BridgeUnavailable,
+    bridge_error_from
+}
+import from jaclang.runtime.constants { Constants as Con }
+import from jaclang.server.outbox {
+    SqliteOutboxStore,
+    cached_result,
+    scoped_idempotency_key,
+    use_store
+}
+import from jaclang.server.serving.client {
+    ClientConnectionError,
+    ClientReadTimeout,
+    ClientRequestNotSent
+}
+
+obj _BridgeStubResponse {
+    has payload: dict[str, any],
+        headers: dict[str, any] = {},
+        text: str = "";
+
+    def json -> dict[str, any] {
+        return self.payload;
+    }
+}
+
+obj _BridgeStubClient {
+    has calls: list[any] = [],
+        payload: dict[str, any] = {},
+        headers_seen: list[any] = [];
+
+    def post(
+        path: str, json: dict[str, any], headers: (dict[str, any] | None) = None
+    ) -> _BridgeStubResponse {
+        self.calls.append((path, json));
+        self.headers_seen.append(dict(headers or {}));
+        return _BridgeStubResponse(payload=self.payload);
+    }
+}
+
+obj _LocalProviderModule {
+    has seen: list[str] = [];
+
+    def greet(name: str) -> str {
+        self.seen.append(name);
+        return "hi " + name;
+    }
+
+    async def greet_async(name: str) -> str {
+        return "async hi " + name;
+    }
+}
+
+def _reset_bridge_state {
+    sv_client.clear_test_clients();
+    sv_client.clear_local_providers();
+    sv_client.clear_consumer_providers();
+    sv_client.clear_read_cache();
+    sv_client.set_consumer_app("");
+    for app in list(sv_client._registry.keys()) {
+        sv_client.unregister(app);
+    }
+}
+
+test "sv_client: peer url env key is app-keyed" {
+    assert sv_client.peer_url_env_key("social_graph") == "JAC_APP_SOCIAL_GRAPH_URL";
+    assert sv_client.peer_url_env_key("scoring-svc") == "JAC_APP_SCORING_SVC_URL";
+    assert sv_client.peer_route_env_key("social_graph") == "JAC_APP_SOCIAL_GRAPH_ROUTE";
+}
+
+test "sv_client: resolve_url appends the provider route to a gateway base" {
+    _reset_bridge_state();
+    try {
+        sv_client.register("social", "http://gateway:8000/", route="/api/social");
+        assert sv_client.resolve_url("social") == "http://gateway:8000/api/social";
+        sv_client._declare_consumer_provider("web", "scoring", "/api/scoring");
+        sv_client.register("scoring", "http://gateway:8000");
+        # A peer URL is used as given: the route a consumer declares is what
+        # the gateway and colocated mounts serve, and a direct member serves
+        # its endpoints at the root. Only a route registered with the URL is
+        # appended, which is how a consumer is pointed at a public gateway.
+        assert sv_client.resolve_url("scoring") == "http://gateway:8000";
+        assert sv_client.provider_route("scoring") == "/api/scoring";
+        assert sv_client.get_consumer_providers("web") == ["scoring"];
+    } finally {
+        _reset_bridge_state();
+    }
+}
+
+test "sv_client: unregistered app is BridgeUnavailable, not RuntimeError" {
+    _reset_bridge_state();
+    os.environ.pop(sv_client.peer_url_env_key("ghost"), None);
+    try {
+        asyncio.run(sv_client.call("ghost", "anything", {}));
+        assert False , "call to an unregistered app must raise";
+    } except BridgeUnavailable as e {
+        assert e.app == "ghost";
+        assert "JAC_APP_GHOST_URL" in str(e);
+    } finally {
+        _reset_bridge_state();
+    }
+}
+
+test "sv_client: call is awaitable and routes through the app-keyed test client" {
+    _reset_bridge_state();
+    stub = _BridgeStubClient(payload={"ok": True, "data": {"result": 41}});
+    sv_client.register_test_client("scoring", stub);
+    try {
+        got = asyncio.run(sv_client.call("scoring", "score", {"x": 1}));
+        assert got == 41 , f"unexpected result {got}";
+        assert stub.calls[0][0] == "/function/score";
+        assert stub.calls[0][1] == {"x": 1};
+    } finally {
+        _reset_bridge_state();
+    }
+}
+
+test "sv_client: provider-side failure envelope maps to the BridgeError family" {
+    _reset_bridge_state();
+    stub = _BridgeStubClient(
+        payload={"ok": False, "error": {"message": "score exploded"}}
+    );
+    sv_client.register_test_client("scoring", stub);
+    try {
+        asyncio.run(sv_client.call("scoring", "score", {}));
+        assert False , "failed envelope must raise";
+    } except BridgeError as e {
+        assert e.app == "scoring";
+        assert e.name == "score";
+        assert "score exploded" in e.detail;
+    } finally {
+        _reset_bridge_state();
+    }
+}
+
+test "sv_client: register_local short-circuits function calls in-process" {
+    _reset_bridge_state();
+    module = _LocalProviderModule();
+    sv_client.register_local("social", module);
+    try {
+        assert sv_client.is_local("social");
+        got = asyncio.run(sv_client.call("social", "greet", {"name": "ada"}));
+        assert got == "hi ada";
+        assert module.seen == ["ada"];
+        got_async = asyncio.run(
+            sv_client.call("social", "greet_async", {"name": "bob"})
+        );
+        assert got_async == "async hi bob";
+        try {
+            asyncio.run(sv_client.call("social", "missing", {}));
+            assert False , "unknown local function must raise";
+        } except BridgeError as e {
+            assert e.status == 404;
+        }
+    } finally {
+        _reset_bridge_state();
+    }
+}
+
+glob _READ_CACHE_TOML: str = (
+         '[project]\nname = "rc"\n\n[apps.web]\nkind = "web-app"\nentry-point = "web.main"\n\n[apps.cli]\nkind = "cli"\nentry-point = "cli.main"\n\n[apps.social]\nkind = "service"\nentry-point = "social"\n\n[apps.web.scale]\nread_cache = true\n'
+     );
+
+test "sv_client: read_cache serves effect-free bridged calls from memory" {
+    import from jaclang.project.config { JacConfig, get_config, set_config }
+    previous = get_config();
+    set_config(JacConfig.from_toml_str(_READ_CACHE_TOML));
+    _reset_bridge_state();
+    module = _LocalProviderModule();
+    sv_client.register_local("social", module);
+    sv_client.set_consumer_app("web");
+    try {
+        first = asyncio.run(
+            sv_client.call("social", "greet", {"name": "ada"}, effects=[])
+        );
+        second = asyncio.run(
+            sv_client.call("social", "greet", {"name": "ada"}, effects=[])
+        );
+        assert first == "hi ada" and second == "hi ada";
+        assert module.seen == ["ada"] , f"a cached read must not re-invoke: {module.seen}";
+        asyncio.run(sv_client.call("social", "greet", {"name": "bob"}, effects=[]));
+        assert module.seen == ["ada", "bob"] , "different kwargs are a different key";
+        sv_client.set_consumer_app("cli");
+        asyncio.run(sv_client.call("social", "greet", {"name": "ada"}, effects=[]));
+        assert module.seen == ["ada", "bob", "ada"] , (
+            "an app without read_cache goes to the owner every time"
+        );
+    } finally {
+        set_config(previous);
+        _reset_bridge_state();
+    }
+}
+
+test "sv_client: an effectful call to the provider app invalidates its cached reads" {
+    import from jaclang.project.config { JacConfig, get_config, set_config }
+    previous = get_config();
+    set_config(JacConfig.from_toml_str(_READ_CACHE_TOML));
+    _reset_bridge_state();
+    module = _LocalProviderModule();
+    sv_client.register_local("social", module);
+    sv_client.set_consumer_app("web");
+    try {
+        asyncio.run(sv_client.call("social", "greet", {"name": "ada"}, effects=[]));
+        asyncio.run(sv_client.call("social", "greet", {"name": "ada"}, effects=[]));
+        assert module.seen == ["ada"];
+        asyncio.run(
+            sv_client.call("social", "greet", {"name": "eve"}, effects=["Profile"])
+        );
+        asyncio.run(sv_client.call("social", "greet", {"name": "ada"}, effects=[]));
+        assert module.seen == ["ada", "eve", "ada"] , (
+            f"an effectful call must clear the provider's cached reads: {module.seen}"
+        );
+        asyncio.run(sv_client.call("social", "greet", {"name": "ada"}, effects=[]));
+        assert module.seen == ["ada", "eve", "ada"] , "and the re-read is cached again";
+    } finally {
+        set_config(previous);
+        _reset_bridge_state();
+    }
+}
+
+test "bridge_error_from: transport failures map by kind" {
+    unavailable = bridge_error_from(
+        ClientRequestNotSent(detail="connect refused"), "social", "greet"
+    );
+    assert isinstance(unavailable, BridgeUnavailable);
+    assert unavailable.app == "social" and unavailable.name == "greet";
+
+    timeout = bridge_error_from(ClientReadTimeout(detail="stalled"), "social", "greet");
+    assert isinstance(timeout, BridgeTimeout);
+
+    rejected = bridge_error_from(
+        ClientConnectionError(detail="HTTP 403", status_code=403), "social", "greet"
+    );
+    assert isinstance(rejected, BridgeRejected);
+    assert rejected.status == 403;
+
+    server_side = bridge_error_from(
+        ClientConnectionError(detail="HTTP 503", status_code=503), "social", "greet"
+    );
+    assert isinstance(server_side, BridgeError);
+    assert not isinstance(server_side, BridgeRejected);
+    assert server_side.status == 503;
+
+    generic = bridge_error_from(RuntimeError("boom"), "social", "greet");
+    assert isinstance(generic, BridgeError);
+    assert generic.detail == "boom";
+
+    passthrough = BridgeTimeout(app="a", name="b", detail="c");
+    assert bridge_error_from(passthrough, "x", "y") is passthrough;
+}
+
+test "serve: X-Jac-Idempotency-Key replays the first response for a repeated call" {
+    with TemporaryDirectory() as tmpdir {
+        use_store(SqliteOutboxStore(path=os.path.join(tmpdir, "outbox.sqlite")));
+        try {
+            client = make_client(tmpdir);
+            headers = {"X-Jac-Idempotency-Key": "outbox-entry-1"};
+            first = client.post(
+                "/function/greet", json={"name": "ada"}, headers=headers
+            );
+            assert first.ok , f"greet should be callable: {first.data}";
+            scoped = scoped_idempotency_key(
+                "outbox-entry-1", Con.GUEST.value, "serve_api", "greet"
+            );
+            assert cached_result(scoped) is not None , (
+                "a successful keyed call is remembered in the outbox seen-table "
+                "under the caller, app and function it was made for"
+            );
+            second = client.post(
+                "/function/greet", json={"name": "bob"}, headers=headers
+            );
+            assert second.ok;
+            assert second.data == first.data , (
+                "a repeated idempotency key must replay the first response, "
+                f"got {second.data} vs {first.data}"
+            );
+            fresh = client.post(
+                "/function/greet",
+                json={"name": "bob"},
+                headers={"X-Jac-Idempotency-Key": "outbox-entry-2"}
+            );
+            assert fresh.ok;
+            assert fresh.data != first.data;
+            client.close();
+        } finally {
+            use_store(None);
+        }
+    }
+}
+
+test "sv_client: bearer token is sent on bridged calls and falls back to JAC_BRIDGE_TOKEN" {
+    _reset_bridge_state();
+    stub = _BridgeStubClient(payload={"ok": True, "data": {"result": 1}});
+    sv_client.register_test_client("social", stub);
+    saved = os.environ.pop(sv_client.BRIDGE_TOKEN_ENV, None);
+    try {
+        sv_client.set_bearer_token("");
+        asyncio.run(sv_client.call("social", "load_feed", {}));
+        assert stub.headers_seen[-1] == {} , "no token means no Authorization header";
+
+        os.environ[sv_client.BRIDGE_TOKEN_ENV] = "env-token";
+        asyncio.run(sv_client.call("social", "load_feed", {}));
+        assert stub.headers_seen[-1] == {"Authorization": "Bearer env-token"};
+
+        sv_client.set_bearer_token("explicit-token");
+        asyncio.run(sv_client.call("social", "load_feed", {}));
+        assert stub.headers_seen[-1] == {"Authorization": "Bearer explicit-token"} , (
+            "an explicit token wins over the environment"
+        );
+    } finally {
+        sv_client.set_bearer_token("");
+        os.environ.pop(sv_client.BRIDGE_TOKEN_ENV, None);
+        if saved is not None {
+            os.environ[sv_client.BRIDGE_TOKEN_ENV] = saved;
+        }
+        _reset_bridge_state();
+    }
+}
+
+obj _StubWalker {
+    has name: str = "",
+        reports: list[any] = [];
+
+    static def _from_wire(d: any) -> any {
+        inst = _StubWalker();
+        if isinstance(d, dict) {
+            for (k, v) in d.items() {
+                setattr(inst, k, v);
+            }
+        }
+        return inst;
+    }
+}
+
+test "sv_client: awaited walker spawn rehydrates the stub with reports" {
+    _reset_bridge_state();
+    stub = _BridgeStubClient(
+        payload={
+            "ok": True,
+            "data": {"result": {"name": "ada"}, "reports": [{"msg": "hi ada"}]}
+        }
+    );
+    sv_client.register_test_client("social", stub);
+    try {
+        got = asyncio.run(
+            sv_client.spawn_walker(
+                "social",
+                "greet_walker",
+                {"name": "ada"},
+                _StubWalker,
+                idempotency_key="entry-42"
+            )
+        );
+        assert isinstance(got, _StubWalker);
+        assert got.name == "ada";
+        assert got.reports == [{"msg": "hi ada"}];
+        assert stub.calls[0][0] == "/walker/greet_walker";
+        assert stub.headers_seen[-1].get("X-Jac-Idempotency-Key") == "entry-42" , (
+            "a deferred delivery forwards its idempotency key on the wire"
+        );
+    } finally {
+        _reset_bridge_state();
+    }
+}
+
+test "sv_client: a walker spawn without a stub class is refused before the provider runs" {
+    _reset_bridge_state();
+    stub = _BridgeStubClient(
+        payload={"ok": True, "data": {"result": {"name": "ada"}, "reports": []}}
+    );
+    sv_client.register_test_client("social", stub);
+    try {
+        try {
+            asyncio.run(
+                sv_client.spawn_walker("social", "greet_walker", {"name": "ada"}, None)
+            );
+            assert False , "a spawn with no boundary contract must raise";
+        } except BridgeError as e {
+            assert "no declared boundary contract" in str(e);
+        }
+        assert stub.calls == [] , "the provider must not have been asked to run the walker";
+    } finally {
+        _reset_bridge_state();
     }
 }

@@ -1,9 +1,9 @@
 import from kubernetes.client.exceptions { ApiException }
 import from jaclang.scale.deploy.target.kubernetes.manifest_builder {
     ManifestBuilder,
-    GATEWAY_NAME,
     ScalingMode
 }
+import from jaclang.scale.runtime.context.util { GATEWAY_NAME }
 import from jaclang.scale.deploy.target.kubernetes.target {
     KubernetesTarget,
     apply_http_activations_for_bundle,
@@ -36,13 +36,15 @@ import from jaclang.scale.tests.deploy.http_activation_test_support {
     mocked_keda_autoscaler as _mocked_keda
 }
 
+import from jaclang.scale.runtime.fleet { fleet_of }
+
 
 def _builder(
-    services: dict, k8s_config: KubernetesConfig | None = None
+    services: dict[str, any], k8s_config: KubernetesConfig | None = None
 ) -> ManifestBuilder {
     return ManifestBuilder(
         k8s_config=k8s_config or KubernetesConfig(app_name="t", namespace="t-ns"),
-        microservices_config={"services": services},
+        fleet=fleet_of({}, overrides=services),
         dry_run=True
     );
 }
@@ -50,12 +52,12 @@ def _builder(
 
 # Minimal Deployment/Service manifests: _resolve_scaling only reads
 # metadata.name off each, so a full manifest is unnecessary here.
-def _dep(name: str) -> dict {
+def _dep(name: str) -> dict[str, any] {
     return {"metadata": {"name": name}};
 }
 
 
-def _svc(name: str) -> dict {
+def _svc(name: str) -> dict[str, any] {
     return {"metadata": {"name": name}};
 }
 
@@ -406,10 +408,11 @@ test "generate_manifests raises when two services inherit the shared catch-all r
                     "rules": [{"hosts": ["*"]}]
                 }
             ),
-            microservices_config={
-                "routes": {name: f"/{name}" for name in services},
-                "services": services
-            },
+            fleet=fleet_of(
+                {name: f"/{name}" for name in services},
+                root_app="main",
+                overrides=services
+            ),
             dry_run=True
         );
         raised = False;

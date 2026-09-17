@@ -1,4 +1,4 @@
-"""Tests for the C-ABI shared-library build (`jac nacompile --shared`).
+"""Tests for the C-ABI shared-library build (`jac build --native --lib`).
 
 These exercise the three pure-Jac linkers' shared-object paths — ELF .so
 (ET_DYN), Mach-O .dylib (MH_DYLIB), and PE .dll (IMAGE_FILE_DLL) — driven by a
@@ -12,6 +12,10 @@ since those binaries cannot be executed on a Linux host.
 """
 
 import os;
+import from jaclang.compiler.driver.compile_options {
+    push_native_target,
+    pop_native_target
+}
 import struct;
 import sys;
 import tempfile;
@@ -24,7 +28,7 @@ import from jaclang.compiler.backends.native.na_compile_pass { native_linked_ir_
 import from jaclang.compiler.backends.native.elf_linker { ElfLinker }
 import from jaclang.compiler.backends.native.macho_linker { MachOLinker }
 import from jaclang.compiler.backends.native.pe_linker { PeLinker }
-import from jaclang.compiler.backends.native.linker_common {
+import from jaclang.compiler.backends.native.floor {
     clib_needed_libs,
     clib_symbol_lib_map
 }
@@ -33,7 +37,8 @@ import from jaclang.compiler.backends.native.linker_common {
 # tests on the production code path -- a prior divergence here let a quoted-
 # symbol glob-init bug in _inject_shared_init slip past this whole file.
 import from jaclang.compiler.backends.native.shared_emit {
-    inject_shared_init as _inject_shared_init
+    inject_shared_init as _inject_shared_init,
+    internalize_native_implementation
 }
 import jaclang.compiler.backends.native.llvm.binding as llvm;
 
@@ -48,9 +53,8 @@ glob FIXTURES = os.path.join(
 wrappers (mirroring the nacompile CLI), and emit a PIC relocatable object.
 
 Returns (object_bytes, export_symbols)."""
-def emit_shared_object(fixture: str, triple: str) -> tuple {
-    prev = os.environ.get("JAC_NATIVE_TARGET", None);
-    os.environ["JAC_NATIVE_TARGET"] = triple;
+def emit_shared_object(fixture: str, triple: str) -> tuple[any, ...] {
+    prev = push_native_target(triple);
     try {
         prog = JacProgram();
         ir = prog.compile(
@@ -63,23 +67,20 @@ def emit_shared_object(fixture: str, triple: str) -> tuple {
         ir_txt = native_linked_ir_text(ir);
         exports = list(ir.gen._exported_symbols);
         # Delegate to the production emitter so shared-init + RC-wrapper
-        # injection is identical to `jac nacompile --shared` (no divergence).
+        # injection is identical to `jac build --native --lib` (no divergence).
         (src, _extra_exports) = _inject_shared_init(ir_txt, []);
         exports.extend(_extra_exports);
         llvm.initialize_all_targets();
         llvm.initialize_all_asmprinters();
         mod = llvm.parse_assembly(src);
+        internalize_native_implementation(mod, exports + ["__jac_shared_init"]);
         mod.verify();
         tm = llvm.Target.from_triple(triple).create_target_machine(
             opt=2, reloc="pic", codemodel="small"
         );
         relobj = tm.emit_object(mod);
     } finally {
-        if prev is None {
-            os.environ.pop("JAC_NATIVE_TARGET", None);
-        } else {
-            os.environ["JAC_NATIVE_TARGET"] = prev;
-        }
+        pop_native_target(prev);
     }
     return (relobj, exports);
 }
@@ -110,7 +111,7 @@ def _exec_seg_flags(raw: bytes, sig_off: int) -> (int | None) {
 
 
 """Scan Mach-O load commands for the fields the dylib test asserts on."""
-def _macho_info(raw: bytes) -> dict {
+def _macho_info(raw: bytes) -> dict[str, any] {
     filetype = struct.unpack_from("<I", raw, 12)[0];
     ncmds = struct.unpack_from("<I", raw, 16)[0];
     off = 32;
@@ -214,7 +215,7 @@ test "_inject_shared_init emits the glob-init call for a quoted symbol" {
     (out_q, _e) = _inject_shared_init(ir_quoted, []);
     assert "call void @__jac_glob_init()" in out_q , (
         "_inject_shared_init dropped the own-module glob-init call on the "
-        "quoted-symbol form (regression: globals never initialize in --shared)"
+        "quoted-symbol form (regression: globals never initialize in --lib)"
     );
     # The unquoted form must still match too.
     ir_unquoted = 'define void @__jac_glob_init()\n';
@@ -232,11 +233,11 @@ test "_inject_shared_init emits the glob-init call for a quoted symbol" {
 
 
 test "ELF shared object initializes a global clib struct on dlopen" {
-    # Regression guard for the `--shared` global-clib-struct segfault. The
+    # Regression guard for the `--lib` global-clib-struct segfault. The
     # struct pointer `g` is populated by __jac_glob_init, which only runs if
     # __jac_shared_init calls it -- exactly what the quoted-symbol bug broke.
     # Built as a plain executable the same code is fine (the JIT path resolves
-    # the init via get_function_address); only --shared's AOT text scan broke.
+    # the init via get_function_address); only --lib's AOT text scan broke.
     (relobj, exports) = emit_shared_object(
         "shared_glob_struct.jac", "x86_64-unknown-linux-gnu"
     );
@@ -313,7 +314,7 @@ test "Mach-O dylib has MH_DYLIB filetype, export trie, and init section" {
 """Build a dylib from the scalar-only fixture for `triple` and return its
 parsed Mach-O info. Kept separate from the object-handle FIXTURE so these
 load-command assertions don't depend on object attribute-access support."""
-def _build_scalar_dylib(triple: str, name: str) -> dict {
+def _build_scalar_dylib(triple: str, name: str) -> dict[str, any] {
     (relobj, exports) = emit_shared_object("shared_export_scalar.jac", triple);
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d {
         out = os.path.join(d, name);
@@ -539,13 +540,13 @@ test "PE dll has IMAGE_FILE_DLL, export directory, and a non-zero entry" {
 # ─── CLI shared-init regression ──────────────────────────────────────────────
 # The test helper `emit_shared_object` builds __jac_shared_init by hand and
 # uses the correct glob-init probe (`"__jac_glob_init" in ir_txt`). The
-# `jac nacompile --shared` CLI does the same injection in `_inject_shared_init`
+# `jac build --native --lib` CLI does the same injection in `_inject_shared_init`
 # (nacompile.impl.jac), but its probe checked `"@__jac_glob_init(" — which
 # never matches llvmlite's quoted `@"__jac_glob_init"` output, so the call was
-# silently dropped and every runtime-initialized global in a --shared library
+# silently dropped and every runtime-initialized global in a --lib library
 # stayed NULL. This test drives the actual CLI so a regression in the probe
 # surfaces as a segfault, not a silent no-op.
-"""Fixture source: a --shared lib with a global clib struct that needs runtime
+"""Fixture source: a --lib lib with a global clib struct that needs runtime
 init (not a compile-time constant). The export reads the struct field; if
 __jac_shared_init never called __jac_glob_init, the global pointer is NULL and
 the field read segfaults."""
@@ -564,7 +565,7 @@ glob _CLI_SHARED_FIXTURE = (
          "}\n"
      );
 
-test "jac nacompile --shared initialises runtime globals via __jac_shared_init" {
+test "jac build --native --lib initialises runtime globals via __jac_shared_init" {
     # The CLI probe + DT_INIT_ARRAY path is ELF-specific; skip on non-Linux.
     if not sys.platform.startswith("linux") {
         return;
@@ -581,12 +582,12 @@ test "jac nacompile --shared initialises runtime globals via __jac_shared_init" 
         }
         lib_out = os.path.join(d, "lib.so");
         res = subprocess.run(
-            [jac, "nacompile", "--shared", lib_src, "-o", lib_out],
+            [jac, "build", "--native", "--lib", lib_src, "-o", lib_out],
             capture_output=True,
             text=True,
             timeout=300
         );
-        assert res.returncode == 0 , f"nacompile --shared failed:\n{res.stderr}";
+        assert res.returncode == 0 , f"nacompile --lib failed:\n{res.stderr}";
         assert os.path.exists(lib_out) , "shared library not produced";
         # dlopen triggers DT_INIT_ARRAY -> __jac_shared_init -> __jac_glob_init.
         # If the init call was dropped, the global pointer is NULL and set_g
@@ -672,7 +673,7 @@ glob _CLI_PROCESS_EXTERN_FIXTURE = (
      );
 
 
-test "jac nacompile --shared resolves a CPython C-API import from the host process (macOS host only)" {
+test "jac build --native --lib resolves a CPython C-API import from the host process (macOS host only)" {
     # What the compiler kernel does, end to end: `import from c` a CPython
     # C-API symbol and get called from Python through ctypes. This test process
     # is CPython, so a correctly linked dylib finds PyDict_Size by flat lookup
@@ -693,12 +694,12 @@ test "jac nacompile --shared resolves a CPython C-API import from the host proce
         }
         lib_out = os.path.join(d, "libprocext.dylib");
         res = subprocess.run(
-            [jac, "nacompile", "--shared", lib_src, "-o", lib_out],
+            [jac, "build", "--native", "--lib", lib_src, "-o", lib_out],
             capture_output=True,
             text=True,
             timeout=600
         );
-        assert res.returncode == 0 , f"nacompile --shared failed:\n{res.stderr}";
+        assert res.returncode == 0 , f"nacompile --lib failed:\n{res.stderr}";
         assert os.path.exists(lib_out) , "shared library not produced";
         # dlopen: the 0.37.3 kernel died on this line.
         lib = ctypes.PyDLL(lib_out);
@@ -710,5 +711,108 @@ test "jac nacompile --shared resolves a CPython C-API import from the host proce
         );
     } finally {
         shutil.rmtree(d, ignore_errors=True);
+    }
+}
+
+
+test "private native helpers cannot satisfy another library's C symbols" {
+    import ctypes;
+    llvm.initialize_all_targets();
+    llvm.initialize_all_asmprinters();
+    native = llvm.parse_assembly(
+        """
+        @state = global i64 41
+        @public_state = global i64 9
+        declare i64 @foreign_operation(i64)
+        define hidden i32 @linker_support() { ret i32 0 }
+        define i64 @crc32() {
+            %value = load i64, ptr @state
+            %result = add i64 %value, 1
+            ret i64 %result
+        }
+        define i64 @native_probe() {
+            %result = call i64 @crc32()
+            ret i64 %result
+        }
+    """
+    );
+    internalize_native_implementation(native, ["native_probe", "public_state"]);
+    # Linking this second module used to collide with the implementation's
+    # global state and crc32. Dynamic linking could silently bind the wrong ABI.
+    library = llvm.parse_assembly(
+        """
+        @state = global i64 777
+        define i64 @crc32() {
+            %result = load i64, ptr @state
+            ret i64 %result
+        }
+        define i64 @library_probe() {
+            %result = call i64 @crc32()
+            ret i64 %result
+        }
+    """
+    );
+    native.link_in(library);
+    native.verify();
+    assert any(
+        value.name == "foreign_operation" and value.is_declaration
+        for value in native.functions
+    );
+    target = llvm.Target.from_default_triple().create_target_machine();
+    engine = llvm.create_mcjit_compiler(native, target);
+    engine.finalize_object();
+    call = ctypes.CFUNCTYPE(ctypes.c_int64);
+    assert call(engine.get_function_address("native_probe"))() == 42;
+    assert call(engine.get_function_address("library_probe"))() == 777;
+    assert engine.get_global_value_address("public_state") != 0;
+    assert engine.get_function_address("linker_support") != 0;
+    engine.close();
+}
+
+test "opaque native owners account for object and growing list allocations" {
+    import ctypes;
+    import from jaclang.compiler.backends.native.shared_emit { init_object_codegen }
+    program = JacProgram();
+    module = program.compile(
+        file_path=os.path.join(FIXTURES, "shared_heap_accounting.jac"),
+        options=CompileOptions(
+            aot_mode=True, default_codespace="native", memory_profile="managed"
+        )
+    );
+    assert not program.errors_had;
+    assert module is not None;
+    (source, exports) = _inject_shared_init(
+        native_linked_ir_text(module), module.gen.interop_manifest
+    );
+    assert "jac_heap_size" in exports and "jac_list_heap_size" in exports;
+    init_object_codegen();
+    compiled = llvm.parse_assembly(source);
+    compiled.verify();
+    target = llvm.Target.from_default_triple().create_target_machine();
+    engine = llvm.create_mcjit_compiler(compiled, target);
+    engine.finalize_object();
+    ctypes.CFUNCTYPE(None)(engine.get_function_address("__jac_shared_init"))();
+    make = ctypes.CFUNCTYPE(ctypes.c_void_p)(engine.get_function_address("make_owned"));
+    grow = ctypes.CFUNCTYPE(None, ctypes.c_void_p)(
+        engine.get_function_address("grow_owned")
+    );
+    size = ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_void_p)(
+        engine.get_function_address("owned_size")
+    );
+    release = ctypes.CFUNCTYPE(None, ctypes.c_void_p)(
+        engine.get_function_address("jac_release")
+    );
+    heap_size = ctypes.CFUNCTYPE(ctypes.c_int64, ctypes.c_uint64)(
+        engine.get_function_address("jac_heap_size")
+    );
+    assert heap_size(0) == 0;
+    owner = make();
+    try {
+        before = size(owner);
+        assert before > 0;
+        grow(owner);
+        assert size(owner) >= before + 1000 * 8;
+    } finally {
+        release(owner);
     }
 }

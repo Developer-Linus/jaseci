@@ -217,6 +217,18 @@ test "fixture loading registration and api exclusion" {
     };
     assert len(introspector.get_walkers()) == 0;
     assert len(introspector.get_functions()) == 0;
+
+    # ...but the scheduler API must still resolve them by name (#9025): the
+    # filter above is an HTTP-routing policy, not a statement that the target
+    # does not exist, and POST /jobs answered 404 for every DYNAMIC target
+    # while it shared that accessor.
+    for name in ["DateWalker", "IntervalWalker", "CronWalker"] {
+        assert introspector.find_target(name) is getattr(module, name) , name;
+    }
+    for name in ["date_function", "interval_function", "cron_function"] {
+        assert introspector.find_target(name) is getattr(module, name) , name;
+    }
+    assert introspector.find_target("NoSuchTarget") is None;
 }
 
 test "scheduler executes walkers and functions correctly" {
@@ -255,4 +267,39 @@ test "scheduler executes walkers and functions correctly" {
     fn_count = module.execution_log.count("interval-function");
     assert walker_count >= 2 , f"Expected >=2 interval-walker runs, got {walker_count}";
     assert fn_count >= 2 , f"Expected >=2 interval-function runs, got {fn_count}";
+}
+
+
+"""The server registers every static @schedule target with its scheduler, even
+though scheduled walkers and functions are not HTTP endpoints and so never
+appear in the introspector's endpoint listings."""
+test "the served app registers its scheduled targets with the scheduler" {
+    import from tempfile { TemporaryDirectory }
+    import from jaclang.testing.testing { JacTestClient }
+    with TemporaryDirectory() as tmpdir {
+        client = JacTestClient.from_file(
+            str(Path(FIXTURES) / "scheduled_tasks.jac"), base_path=tmpdir
+        );
+        try {
+            server: any = client.server;
+            assert "IntervalWalker" not in server.get_walkers();
+            assert "interval_function" not in server.get_functions();
+            server._register_scheduled_tasks();
+            names = {task.name for task in server.scheduler._tasks};
+            for expected in [
+                "IntervalWalker",
+                "interval_function",
+                "CronWalker",
+                "cron_function",
+                "StaticWalker",
+                "static_fn"
+            ] {
+                assert expected in names , f"{expected} not registered: {sorted(
+                    names
+                )}";
+            }
+        } finally {
+            client.close();
+        }
+    }
 }

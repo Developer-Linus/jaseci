@@ -1,8 +1,11 @@
+import from jaclang.compiler.passes.context { CompileContext }
+import from jaclang.compiler.passes.scope_walk { ScopeWalker }
 import from jaclang.compiler.frontend.unitree {
     Ability,
     Archetype,
     Assignment,
     AtomTrailer,
+    AwaitExpr,
     BinaryExpr,
     Bool,
     CompareExpr,
@@ -28,6 +31,7 @@ import from jaclang.compiler.frontend.unitree {
     Int,
     IterForStmt,
     KWPair,
+    LambdaExpr,
     MatchPattern,
     Module,
     ModuleItem,
@@ -38,12 +42,13 @@ import from jaclang.compiler.frontend.unitree {
     ReturnStmt,
     Semi,
     SubTag,
+    Test,
     Token,
     UniNode,
     UniScopeNode,
     WhileStmt
 }
-import from jaclang.compiler.passes.transform { Transform }
+
 import from jaclang.compiler.frontend.constant { ExprCtx, SymbolType }
 import from jaclang.compiler.frontend.diagnostics {
     W1103,
@@ -61,7 +66,8 @@ import from jaclang.compiler.frontend.diagnostics {
     E2018,
     E2027,
     E2055,
-    E2083
+    E2083,
+    E2085
 }
 import type from jaclang.compiler.driver.program { JacProgram }
 
@@ -254,17 +260,21 @@ def is_ambient_provider_module(mod_path: str) -> bool {
         and "runtime" in mod_path;
 }
 
-walker StaticAnalysisPass(Transform) {
-    has prog: JacProgram,
-        ir_in: Module,
-        cancel_token: any = None,
-        _checked_scopes: set[int] = set();
+walker UnusedSymbolWalker(ScopeWalker) {
+    has analysis: StaticAnalysisPass;
 
-    static has PROVIDES: tuple = ('static-checks', ),
-        HOST_PASS: bool = True;
+    can check_scope with UniScopeNode entry {
+        self.analysis._check_unused_symbols(here);
+    }
+}
 
-    def postinit -> None;
-    def transform(ir_in: Module) -> Module;
+walker StaticAnalysisPass {
+    has ctx: CompileContext,
+        prog: JacProgram,
+        module: Module;
+
+    static has HOST_PASS: bool = True;
+
     def _run_impl(ir_in: Module) -> Module;
     can run_walk with Module entry;
     def _check_unused_symbols(scope: UniScopeNode) -> None;

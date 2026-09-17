@@ -10,8 +10,28 @@ import from jaclang.project.pyvenv {
     summarize_pip_failure
 }
 
-glob EMIT_EJECT: str = "eject",
-     EMIT_PUBLISH: str = "publish";
+glob VENV_DEPS_MARKER: str = ".jac-deps-hash";
+
+
+def _venv_deps_hash(specs: list[str]) -> str {
+    import hashlib;
+    return hashlib.sha256("\n".join(sorted(specs)).encode("utf-8")).hexdigest();
+}
+
+
+def venv_deps_satisfied(venv_dir: Path, specs: list[str]) -> bool {
+    try {
+        marker = (venv_dir / VENV_DEPS_MARKER).read_text(encoding="utf-8");
+    } except OSError {
+        return False;
+    }
+    return marker.strip() == _venv_deps_hash(specs);
+}
+
+
+def write_venv_deps_marker(venv_dir: Path, specs: list[str]) {
+    (venv_dir / VENV_DEPS_MARKER).write_text(_venv_deps_hash(specs), encoding="utf-8");
+}
 
 obj ResolvedDependency {
     has name: str,
@@ -107,12 +127,6 @@ obj EcosystemProvider {
     }
 
     def list_installed(config: JacConfig) -> list[str] {
-        return [];
-    }
-
-    def emit_standalone(
-        config: JacConfig, deps: list[ResolvedDependency], out_dir: Path, mode: str
-    ) -> list[Path] {
         return [];
     }
 }
@@ -308,8 +322,12 @@ obj PythonProvider(EcosystemProvider) {
             return self._install_global(specs, ctx);
         }
         venv_dir = self._project_venv(config);
-        ensure_venv(venv_dir, ctx.verbose);
         is_dry_run = ctx.is_dry_run();
+
+        if not is_dry_run and venv_deps_satisfied(venv_dir, specs) {
+            return True;
+        }
+        ensure_venv(venv_dir, ctx.verbose);
         (before_snapshot_ok, before_set) = (
             self._snapshot_installed(config) if not is_dry_run else (False, set())
         );
@@ -542,24 +560,6 @@ obj PythonProvider(EcosystemProvider) {
             return [];
         }
     }
-
-    override def emit_standalone(
-        config: JacConfig, deps: list[ResolvedDependency], out_dir: Path, mode: str
-    ) -> list[Path] {
-        lines: list[str] = [];
-        for dep in deps {
-            spec = self.pip_spec(dep);
-            if dep.origin.startswith("capability:") {
-                lines.append(f"{spec}  # via {dep.origin}");
-            } else {
-                lines.append(spec);
-            }
-        }
-        out_dir.mkdir(parents=True, exist_ok=True);
-        req_path = out_dir / "requirements.txt";
-        req_path.write_text("\n".join(lines) + "\n", encoding="utf-8");
-        return [req_path];
-    }
 }
 
 def _major_minor(version: str) -> str {
@@ -675,14 +675,23 @@ def capability_dependencies(
         resolve_closure,
         scale_intent_from_config
     }
-    import from jaclang.project.kinds { plan_project_run }
+    import from jaclang.project.kinds { plan_app_run }
     if config is None {
         return [];
     }
     if not action {
         proj_root = str(config.project_root) if config.project_root else ".";
-        plan = plan_project_run(config, proj_root);
-        action = plan.action if plan else "execute";
+        action = "execute";
+        for app in (list(config.apps.values()) or [config.resolve_app("")]) {
+            try {
+                if plan_app_run(config, proj_root, app).action == "serve" {
+                    action = "serve";
+                    break;
+                }
+            } except ValueError {
+                continue;
+            }
+        }
     }
     intent = scale_intent_from_config(config);
     if intent and action != "serve" {

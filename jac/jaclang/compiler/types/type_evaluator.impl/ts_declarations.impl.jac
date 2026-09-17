@@ -15,7 +15,7 @@ impl TypeEvaluator._ts_decl_path(from_loc: ModulePath) -> (str | None) {
     if cache_key in self._ts_decl_path_cache {
         return self._ts_decl_path_cache[cache_key];
     }
-    import from jaclang.compiler.driver.modresolver {
+    import from jaclang.project.modresolver {
         resolve_client_npm_declarations,
         sibling_declaration_file
     }
@@ -373,7 +373,7 @@ impl TypeEvaluator._ts_synth_class_types(
         }
         for (mname, group) in kept_by_name.items() {
             if len(group) > 1 {
-                member_type = AnyType(is_foreign=True);
+                member_type: TypeBase = AnyType(is_foreign=True);
             } else {
                 m = group[0];
                 member_type = self._map_ts_type(m.ty, decls, None, shells);
@@ -464,7 +464,7 @@ impl TypeEvaluator._untyped_external_is_error(node_: UniNode) -> bool {
     if not mod_path {
         return False;
     }
-    import from jaclang.compiler.driver.modresolver { find_jac_project_root }
+    import from jaclang.project.modresolver { find_jac_project_root }
     proj_root = find_jac_project_root(mod_path);
     if not proj_root {
         return False;
@@ -486,4 +486,14 @@ impl TypeEvaluator._untyped_external_is_error(node_: UniNode) -> bool {
     }
     self._untyped_external_cfg_cache[proj_root] = result;
     return result;
+}
+
+impl TypeEvaluator._jac_virtual_sibling_dts(
+    import_node: Import, from_mod_type: ModuleType
+) -> (str | None) {
+    if not import_node.is_virtual_jac or from_mod_type.file_uri is None {
+        return None;
+    }
+    import from jaclang.project.modresolver { sibling_declaration_file }
+    return sibling_declaration_file(str(from_mod_type.file_uri));
 }

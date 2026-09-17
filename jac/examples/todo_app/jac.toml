@@ -2,7 +2,7 @@
 name = "todo-app"
 version = "0.1.0"
 description = "Jac desktop todo example"
-entry-point = "main.jac"
+entry-point = "main"
 kind = "desktop"
 
 [dependencies.npm]
@@ -23,8 +23,6 @@ typescript = "^5.3.3"
 [dev-dependencies]
 watchdog = ">=3.0.0"
 
-[serve]
-base_route_app = "app"
 
 [client]
 

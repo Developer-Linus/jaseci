@@ -693,6 +693,8 @@ glob JAC_RUNTIME_JS_OBJECT: str = r"""{
       return d;
     },
     eq(a, b) {
+      if (a === null || a === undefined || typeof a !== "object") return a === b;
+      if (b === null || b === undefined || typeof b !== "object") return false;
       const ka = Object.keys(a), kb = Object.keys(b);
       if (ka.length !== kb.length) return false;
       for (const k of ka) {
@@ -1177,10 +1179,42 @@ glob JAC_RUNTIME_JS_OBJECT: str = r"""{
   types: __JAC_TYPES_RUNTIME__,
 
   builtin: {
+    bindFields(args, keywords, names) {
+      if (args.length > names.length) {
+        throw new _jac.exc.TypeError(`Expected at most ${names.length} positional arguments, got ${args.length}`);
+      }
+      const props = Object.assign(Object.create(null), keywords);
+      for (let i = 0; i < args.length; i++) {
+        const name = names[i];
+        if (Object.prototype.hasOwnProperty.call(props, name)) {
+          throw new _jac.exc.TypeError(`Multiple values for argument '${name}'`);
+        }
+        props[name] = args[i];
+      }
+      return props;
+    },
     round(n, ndigits) {
       if (ndigits === undefined) return Math.round(n);
       const f = Math.pow(10, ndigits);
       return Math.round(n * f) / f;
+    },
+    min(iterable, key) {
+      let found = false, best, bestKey;
+      for (const v of _jac.builtin.iter(iterable)) {
+        const k = key ? key(v) : v;
+        if (!found || k < bestKey) { best = v; bestKey = k; found = true; }
+      }
+      if (!found) throw new _jac.exc.ValueError("min() arg is an empty sequence");
+      return best;
+    },
+    max(iterable, key) {
+      let found = false, best, bestKey;
+      for (const v of _jac.builtin.iter(iterable)) {
+        const k = key ? key(v) : v;
+        if (!found || k > bestKey) { best = v; bestKey = k; found = true; }
+      }
+      if (!found) throw new _jac.exc.ValueError("max() arg is an empty sequence");
+      return best;
     },
     sum(iterable, start) {
       let total = start || 0;
@@ -1297,6 +1331,18 @@ glob JAC_RUNTIME_JS_OBJECT: str = r"""{
     },
     id(o) {
       if (o === null || o === undefined) return 0;
+      if (typeof o === "object" || typeof o === "function") {
+        // Share reference identity across separately emitted Jac modules,
+        // without retaining otherwise unreachable objects.
+        const key = Symbol.for("jac.objectIdentity");
+        const state = globalThis[key] ??= { ids: new WeakMap(), next: 1 };
+        let value = state.ids.get(o);
+        if (value === undefined) {
+          value = state.next++;
+          state.ids.set(o, value);
+        }
+        return value;
+      }
       if (typeof o === "number") return o;
       return typeof o === "string" ? _jac.builtin._strHash(o) : 0;
     },
@@ -1847,7 +1893,7 @@ def build_osp_core_js -> str {
     if _OSP_CORE_JS_CACHE {
         return _OSP_CORE_JS_CACHE[0];
     }
-    import from jaclang.compiler.backends.kernel_units {
+    import from jaclang.compiler.backends.common.kernel_units {
         es_pass_fingerprint,
         load_unit_artifact,
         osp_core_unit_path,
@@ -1870,9 +1916,12 @@ def build_osp_core_js -> str {
         file_path=cl_copy,
         options=CompileOptions(force_codespace='client', no_cgen=True)
     );
-    import from jaclang.compiler.driver.pass_driver { run_pass }
-    program = run_pass(EsastGenPass, ir, prog).ir_out.gen.es_ast;
-    kept: list = [];
+    import from jaclang.compiler.driver.pipeline { require_product, CompilationProduct }
+    if not require_product(prog, ir, CompilationProduct.CLIENT) {
+        raise RuntimeError("Could not compile OSP client runtime");
+    }
+    program = ir.gen.es_ast;
+    kept: list[es.Statement | es.ModuleDeclaration] = [];
     if isinstance(program, es.Program) {
         for stmt in program.body {
             is_jac_rt = (
@@ -1917,16 +1966,21 @@ function __ospId(o) {
   if (h === undefined) { h = __ospO.length; __ospO.push(o); __ospH.set(o, h); }
   return h;
 }
-function __ospConnW(src, tgt, mkEdge, undirected, tag = -1) {
+function __ospConnW(src, tgt, mkEdge, undirected, tag = -1, edgesOnly = false) {
   const srcs = Array.isArray(src) ? src : [src];
   const tgts = Array.isArray(tgt) ? tgt : [tgt];
+  for (const value of [...srcs, ...tgts]) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new TypeError("connect operands must be nodes or flat collections of nodes");
+    }
+  }
   const sh = srcs.map(__ospId);
   const th = tgts.map(__ospId);
   const eh = [];
   for (let i = 0; i < sh.length * th.length; i++) eh.push(__ospId(mkEdge()));
   const r = __ospC.osp_conn_many(sh, th, eh, undirected ? 1 : 0, tag, 0, 0);
   if (r < 0) throw new Error("cannot connect a destroyed node");
-  return tgts.length === 1 ? tgts[0] : tgts;
+  return edgesOnly ? eh.map((h) => __ospO[h]) : tgt;
 }
 function __ospRefsW(origin, dir, tag = -1, edgesOnly = 0, pred = null) {
   const oh = __ospId(origin);

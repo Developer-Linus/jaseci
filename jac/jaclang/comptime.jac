@@ -1,10 +1,9 @@
 import sys;
 import platform as _platform;
-import from dataclasses {
-    MISSING as _MISSING,
-    fields as _dc_fields,
-    is_dataclass as _is_dataclass,
-    field as _dc_field
+import from jaclang.runtime.object_model { MISSING as _MISSING, ObjectField as _field }
+import from jaclang.runtime.object_interop {
+    fields as _record_fields,
+    is_record as _is_record
 }
 import from enum { Enum as _PyEnum }
 import from typing { get_type_hints as _get_type_hints }
@@ -148,7 +147,7 @@ def semstr(t: any, field: str = "") -> (str | None) {
 
 def fields(t: type) -> list[FieldInfo] {
     out: list[FieldInfo] = [];
-    if not _is_dataclass(t) {
+    if not _is_record(t) {
         return out;
     }
     try {
@@ -157,14 +156,14 @@ def fields(t: type) -> list[FieldInfo] {
         hints = {};
     }
     inner = t?._jac_semstr_inner;
-    sems: dict = inner if isinstance(inner, dict) else {};
-    for f in _dc_fields(t) {
+    sems: dict[str, any] = inner if isinstance(inner, dict) else {};
+    for f in _record_fields(t) {
         if f.name.startswith("_") {
             continue;
         }
         plain = f.`default;
         factory = f.default_factory;
-        has_dflt = plain is not _MISSING or factory is not _MISSING;
+        has_dflt = plain is not _MISSING or factory is not None;
         dflt: any = plain if plain is not _MISSING else None;
         out.append(
             FieldInfo(
@@ -180,8 +179,8 @@ def fields(t: type) -> list[FieldInfo] {
 }
 
 def has_field(t: type, field: str) -> bool {
-    if _is_dataclass(t) {
-        for f in _dc_fields(t) {
+    if _is_record(t) {
+        for f in _record_fields(t) {
             if f.name == field {
                 return True;
             }
@@ -199,7 +198,7 @@ def set_field(target: any, field: str, value: any) {
     setattr(target, field, value);
 }
 
-def members(e: type) -> list {
+def members(e: type) -> list[any] {
     if isinstance(e, `type) and issubclass(e, _PyEnum) {
         return `list(e);
     }
@@ -222,7 +221,7 @@ def embed_bytes(path: str) -> bytes {
     }
 }
 
-def _scalar_size_align(t: any) -> (tuple | None) {
+def _scalar_size_align(t: any) -> (tuple[int, int] | None) {
     import from jaclang.runtime.scalars { shape_of }
     name = t?.__name__ if isinstance(t, `type) else str(t);
     if name == "bool" {
@@ -239,12 +238,12 @@ def _scalar_size_align(t: any) -> (tuple | None) {
     return None;
 }
 
-def _size_align(t: any) -> tuple {
+def _size_align(t: any) -> tuple[int, int] {
     scalar = _scalar_size_align(t);
     if scalar is not None {
         return scalar;
     }
-    if not _is_dataclass(t) {
+    if not _is_record(t) {
         return (8, 8, );
     }
     try {
@@ -254,7 +253,7 @@ def _size_align(t: any) -> tuple {
     }
     off = 0;
     top = 1;
-    for f in _dc_fields(t) {
+    for f in _record_fields(t) {
         ft = hints.get(f.name, f.`type);
         inner = _scalar_size_align(ft) or (8, 8, );
         (sz, al) = inner;
@@ -280,26 +279,26 @@ def record(cls: type, **fields: any) -> any {
     return inst;
 }
 
-glob _SPECIALIZED: dict = {};
+glob _SPECIALIZED: dict[tuple[object, ...], type] = {};
 
 def specialize(cls: type, **ct: any) -> type {
     import copy as _copy;
-    import functools as _functools;
     key = (cls, tuple(sorted(ct.items(), key=_ct_sort_key)), );
     hit = _SPECIALIZED.get(key);
     if hit is not None {
         return hit;
     }
-    annotations: dict = {};
-    ns: dict = {"__annotations__": annotations, "__ct_args__": dict(ct)};
+    annotations: dict[str, any] = {};
+    ns: dict[str, any] = {"__annotations__": annotations, "__ct_args__": dict(ct)};
     for (k, v) in ct.items() {
         annotations[k] = `type(v);
         if isinstance(v, (list, dict, set)) {
-            ns[k] = _dc_field(
-                default_factory=_functools.partial(_copy.copy, v), kw_only=True
-            );
+            def copy_default(value: object = v) -> object {
+                return _copy.copy(value);
+            }
+            ns[k] = _field(default_factory=copy_default, kw_only=True);
         } else {
-            ns[k] = _dc_field(`default=v, kw_only=True);
+            ns[k] = _field(`default=v, kw_only=True);
         }
     }
     made = `type(cls.__name__, (cls, ), ns);
@@ -307,6 +306,6 @@ def specialize(cls: type, **ct: any) -> type {
     return made;
 }
 
-def _ct_sort_key(item: tuple) -> str {
+def _ct_sort_key(item: tuple[str, any]) -> str {
     return str(item[0]);
 }

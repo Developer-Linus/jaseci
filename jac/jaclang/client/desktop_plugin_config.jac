@@ -134,9 +134,17 @@ def _desktop_config_schema -> PluginConfigSchema {
                 "com.myapp", "Reverse-domain identifier (com.example.myapp)"
             ),
             "version": schema_str_option("1.0.0", "Desktop app version"),
+            "icon": schema_str_option(
+                "",
+                "App icon for packaged builds, a .icns or .png path relative to the project; the macOS bundle carries it"
+            ),
             "engine": schema_str_option(
                 "native",
                 "Desktop engine: 'native' (OS webview) or 'cef' (Chromium Embedded Framework)"
+            ),
+            "backend": schema_str_option(
+                "embedded",
+                "Where the app's server runs: 'embedded' (in the desktop process, from the sealed image shipped with the binary) or the URL of a remote server the bundle talks to"
             ),
             "window": schema_dict_option(
                 "Window geometry: title, width, height, min_width, min_height, resizable.",
@@ -200,7 +208,7 @@ class JacDesktopPluginConfig {
         return PluginMetadata(
             name="desktop",
             version=pkg_version("jaclang"),
-            description="Jac-native desktop target (webview + nacompile)."
+            description="Jac-native desktop target (webview + native build)."
         ).to_dict();
     }
 

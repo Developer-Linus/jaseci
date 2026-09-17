@@ -1,6 +1,6 @@
 import from jaclang.runtime.archetype { GenericEdge, Root }
 import from jaclang.runtime.archetype { ObjectSpatialFunction as DSFunc }
-import from jaclang.compiler.frontend.constant { EdgeDir }
+import from jaclang.runtime.constants { EdgeDir }
 import from jaclang.runtime.constructs { Archetype as Obj }
 import from jaclang.runtime.constructs { EdgeArchetype as Edge }
 import from jaclang.runtime.constructs { JsxElement }
@@ -33,7 +33,6 @@ glob __all__ = [
          'impl_patch_filename',
          'jac_test',
          'jsx',
-         'field',
          'log_report',
          'refs',
          'hop',
@@ -74,7 +73,6 @@ glob __all__ = [
      destroy = JacRuntimeInterface.destroy,
      peek_attr = JacRuntimeInterface.peek_attr,
      peek_item = JacRuntimeInterface.peek_item,
-     field = JacRuntimeInterface.field,
      filter_on = JacRuntimeInterface.filter_on,
      get_mtir = JacRuntimeInterface.get_mtir,
      impl_patch_filename = JacRuntimeInterface.impl_patch_filename,

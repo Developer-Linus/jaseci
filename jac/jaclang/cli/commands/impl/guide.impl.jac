@@ -6,6 +6,7 @@ import from jaclang.cli.console { console }
 import from jaclang.cli.guide_store {
     Guide,
     list_guides,
+    guide_sections,
     list_docs,
     get_guide,
     guide_group,
@@ -125,7 +126,7 @@ def _print_nav(as_json: bool) -> int {
         return 0;
     }
 
-    def walk(items: list, depth: int) {
+    def walk(items: list[object], depth: int) {
         pad = "  " * (depth + 1);
         for item in items {
             if not isinstance(item, dict) {
@@ -140,7 +141,7 @@ def _print_nav(as_json: bool) -> int {
                 _emit(f"{pad}{title}  [{name}]");
             } elif "items" in item {
                 console.print(f"{pad}{title}", style="bold");
-                walk(item["items"] as list, depth + 1);
+                walk(item["items"] as list[object], depth + 1);
             } elif "url" in item {
                 _emit(f"{pad}{title}  {item['url']}");
             }
@@ -149,7 +150,7 @@ def _print_nav(as_json: bool) -> int {
     console.print();
     console.print("Bundled docs navigation", style="bold");
     console.print();
-    walk(manifest.get("nav", []) as list, 0);
+    walk(manifest.get("nav", []) as list[object], 0);
     console.print();
     console.print("Read a doc with:  jac guide <name>", style="muted");
     console.print("Manifest as JSON: jac guide --nav --json", style="muted");
@@ -157,7 +158,7 @@ def _print_nav(as_json: bool) -> int {
     return 0;
 }
 
-def _index_payload -> list[dict] {
+def _index_payload -> list[dict[str, any]] {
     payload = [
         {
             "name": g.name,
@@ -182,8 +183,20 @@ impl guide(
     search: str = "",
     export: str = "",
     nav: bool = False,
-    as_json: bool = False
+    as_json: bool = False,
+    section: str = "",
+    sections: bool = False
 ) -> int {
+    if (section or sections)
+        and (not topic or export or nav or search or (section and sections)) {
+        message = "Use --section or --sections with one topic, without --search, --nav, or --export.";
+        if as_json {
+            _emit(json.dumps({"error": message}));
+        } else {
+            console.error(message);
+        }
+        return 1;
+    }
     if export {
         return _export_guides(export);
     }
@@ -193,7 +206,7 @@ impl guide(
 
     if topic {
         for (ns, members) in doc_corpora() {
-            if topic.strip("/") == ns {
+            if topic.strip("/") == ns and not (section or sections) {
                 return _corpus_listing(ns, members, as_json);
             }
         }
@@ -210,6 +223,72 @@ impl guide(
                 );
             }
             return 1;
+        }
+        if section or sections {
+            entries = guide_sections(g);
+            if sections {
+                if as_json {
+                    _emit(
+                        json.dumps(
+                            {
+                                "name": g.name,
+                                "sections": [
+                                    {
+                                        "title": e.title,
+                                        "slug": e.slug,
+                                        "level": e.level,
+                                        "line": e.line_no
+                                    } for e in entries
+                                ]
+                            },
+                            indent=2
+                        )
+                    );
+                } else {
+                    for e in entries {
+                        _emit(f"{e.slug}  {e.title}");
+                    }
+                }
+                return 0;
+            }
+            matches = [
+                e
+                for e in entries
+                if e.slug == section
+            ];
+            if not matches {
+                matches = [
+                    e
+                    for e in entries
+                    if e.title.lower() == section.lower()
+                ];
+            }
+            if len(matches) != 1 {
+                message = f"Section '{section}' not found or ambiguous. Use 'jac guide {g.name} --sections' for exact slugs.";
+                if as_json {
+                    _emit(json.dumps({"error": message}));
+                } else {
+                    console.error(message);
+                }
+                return 1;
+            }
+            selected = matches[0];
+            if as_json {
+                _emit(
+                    json.dumps(
+                        {
+                            "name": g.name,
+                            "section": selected.slug,
+                            "title": selected.title,
+                            "body": selected.body
+                        },
+                        indent=2
+                    )
+                );
+            } else {
+                _emit(selected.body);
+            }
+            return 0;
         }
         if as_json {
             _emit(
@@ -260,6 +339,10 @@ impl guide(
         sets = " | ".join([ns for (ns, _) in corpora]);
         console.print(f"List a doc set:       jac guide {sets}", style="muted");
     }
+    console.print(
+        "Read selectively:    jac guide <name> --sections / --section <slug>",
+        style="muted"
+    );
     console.print("Search everything:    jac guide --search <keywords>", style="muted");
     console.print("Full index as JSON:   jac guide --json", style="muted");
     console.print();

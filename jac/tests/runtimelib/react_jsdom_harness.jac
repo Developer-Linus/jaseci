@@ -56,7 +56,7 @@ def compile_react(path: str) -> str {
     ];
     assert not fatal , f"compile errors in {path}: {[str(e) for e in fatal]}";
     es_pass = run_pass(EsastGenPass, ir, prog, backend=ReactBackend());
-    return es_to_js(es_pass.ir_out.gen.es_ast);
+    return es_to_js(es_pass.module.gen.es_ast);
 }
 
 """Point the shim's dotted core import at a flat sibling (mirrors the bundler)."""
@@ -86,6 +86,7 @@ def compile_page(path: str, backend: any) -> str {
 """Emit the compiled `@jac/runtime` shim + its core into the work dir."""
 def write_runtime(work: Path) {
     runtime_path = resolve_client_runtime_cl_path("react");
+    write_runtime_support(work, runtime_path);
     (work / "jac_runtime.js").write_text(
         rewrite_core_specifier(compile_react(runtime_path)), encoding="utf-8"
     );
@@ -93,6 +94,15 @@ def write_runtime(work: Path) {
         compile_react(str(Path(runtime_path).parent / "client_runtime_core.jac")),
         encoding="utf-8"
     );
+}
+
+def write_runtime_support(work: Path, runtime_path: str) {
+    for name in ["auth_contract", "endpoint_cache"] {
+        (work / (name + ".js")).write_text(
+            compile_react(str(Path(runtime_path).parent / (name + ".jac"))),
+            encoding="utf-8"
+        );
+    }
 }
 
 """`bun install` a dep set into `work`; defaults to the shared one.
@@ -124,7 +134,7 @@ def bun_install(bun: str, work: Path, name: str, deps: (dict[str, str] | None) =
 """Run `work/harness.mjs` once, with `args` appended, and assert it exited 0.
 
 Prefers a real `node` when present; falls back to `bun run`."""
-def run_harness(bun: str, work: Path, args: list, label: str) {
+def run_harness(bun: str, work: Path, args: list[any], label: str) {
     node_bin = shutil.which("node");
     if node_bin {
         cmd = [node_bin, str(work / "harness.mjs")] + args;

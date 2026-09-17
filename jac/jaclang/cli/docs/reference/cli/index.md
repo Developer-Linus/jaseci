@@ -1,8 +1,8 @@
 # CLI Reference
 
-The `jac` command is your primary interface for working with Jac projects. It handles the full development lifecycle: running programs (`jac run`), type-checking code (`jac check`), running tests (`jac test`), formatting and linting (`jac fmt`, `jac check --lint`), managing dependencies (`jac install`, `jac remove`, `jac update`), serving APIs (`jac run`), and even compiling to native binaries (`jac nacompile`, or `jac build --as native`). Think of it as combining the roles of `python`, `pip`, a test runner, `black`, and `flask` into a single unified tool.
+The `jac` command is your primary interface for working with Jac projects. It handles the full development lifecycle: running programs (`jac run`), type-checking code (`jac check`), running tests (`jac test`), formatting and linting (`jac fmt`, `jac check --lint`), managing dependencies (`jac install`, `jac remove`, `jac update`), serving APIs (`jac run`), and even compiling to native binaries (`jac build <file> --native`). Think of it as combining the roles of `python`, `pip`, a test runner, `black`, and `flask` into a single unified tool.
 
-Every capability ships built into the core binary. The `scale` subsystem (formerly the `jac-scale` plugin) provides deployment commands and flags -- for example, `jac scale deploy` for Kubernetes deployment. The full-stack client framework (formerly the `jac-client` / `jac-desktop` plugins) contributes others, such as `jac build --client desktop` for desktop app packaging. byLLM likewise ships built in, contributing `jac model` and the AI language features.
+Every capability ships built into the core binary. The `scale` subsystem (formerly the `jac-scale` plugin) provides deployment commands and flags -- for example, `jac scale deploy` for Kubernetes deployment. The full-stack client framework (formerly the `jac-client` / `jac-desktop` plugins) contributes others, such as the client-shell builds a `desktop` or `mobile` app gets from a plain `jac build <app>`. byLLM likewise ships built in, contributing `jac model` and the AI language features.
 
 > **💡 Enhanced Output**: All CLI commands render beautiful, colorful Rich-style output out of the box -- themes, panels, and spinners are built into jaclang by default, with no extra install needed.
 
@@ -12,13 +12,13 @@ A task-first index into the commands below. The full alphabetical list follows i
 
 | I want to… | Command(s) |
 |---|---|
-| Run a program | `jac run` (no filename → runs the project by its `kind`; `--entry <walker>` runs a specific entrypoint) |
-| Start a web/API server | `jac run` (server kinds serve; `--serve` forces it) |
+| Run a program | `jac run [app\|file]` (no target → the default app, by its `kind`; `--entry <walker>` runs a specific entrypoint) |
+| Start a web/API server | `jac run [app]` (server kinds serve; `--serve` forces it; `--fleet` runs the workspace's service apps as separate processes) |
 | Run the live hot-reload dev loop | `jac run --dev` |
 | Deploy to Kubernetes | `jac scale deploy` · `jac scale status` · `jac scale destroy` |
 | Create a new project | `jac create` |
-| Set up / build a client shell (web, desktop, mobile) | `jac setup` · `jac build --client <target>` |
-| Compile a native binary or C-ABI shared library | `jac nacompile` · `jac build --as native` |
+| Build a client (web, desktop, mobile) | `jac build [app]` (`--as client` builds only the client bundle; a mobile app's Expo scaffold is provisioned on first use) · `jac setup [app]` provisions ahead of time |
+| Compile a native binary or C-ABI shared library | `jac build <file> --native` (`--lib`, `--memory`, `--target-triple`, `--debug`) |
 | Build one distributable artifact (.jab, wheel, npm, source) | `jac build --as {jab,wheel,npm,source,…}` |
 | Add, remove, or update dependencies | `jac install <pkg>` · `jac remove` · `jac update` |
 | Install project dependencies (preview with `--plan`) | `jac install` · `jac install --plan` |
@@ -40,11 +40,11 @@ A task-first index into the commands below. The full alphabetical list follows i
 
 | Command | Description |
 |---------|-------------|
-| `jac run` | Execute *or* serve a Jac file, a `.jab`, or (no filename) the current project, per its kind (`--entry <walker>`, `--debug`, `--serve`, `--port`, `--dev`) |
-| `jac build` | Type-check gate, then emit one artifact (`--as jab\|sealed\|binary\|wheel\|npm\|source\|native`; default `.jab`; `--client` builds a client shell) |
-| `jac create` | Create new project (`--pack` to bundle a directory into a `.jacpack` template) |
-| `jac check` | Type check code (`--lint` to lint, `--lint --fix` to auto-fix) |
-| `jac test` | Run tests |
+| `jac run` | Execute *or* serve an app (by name), a Jac file, a `.jab`, or (no target) the default app, per its kind (`--entry <walker>`, `--debug`, `--serve`, `--port`, `--dev`, `--fleet`) |
+| `jac build` | Type-check gate, then emit one artifact per app (`--as jab\|sealed\|binary\|wheel\|npm\|source\|native`; default `.jab`; `--all` builds every app into `dist/<app>/`; `--as client` builds only an app's client bundle) |
+| `jac create` | Create a new project, or (`--app <name> --kind <kind>`) add an app to this one; `--awesome` scaffolds the flagship workspace; `--pack` bundles a directory into a `.jacpack` template |
+| `jac check` | Type check code -- with no paths, the whole workspace, one program per app (`--app <name>` for one; `--lint` to lint, `--lint --fix` to auto-fix) |
+| `jac test` | Run tests (`jac test <app>` uses that app's `[test]` config) |
 | `jac fmt` | Format code |
 | `jac precommit` | Run format + check using `jac.toml` lint settings (installable as a git hook) |
 | `jac clean` | Clean project build artifacts |
@@ -53,10 +53,10 @@ A task-first index into the commands below. The full alphabetical list follows i
 | `jac code` | Query code structure via the compiler (symbols, uses, walkers, slices) |
 | `jac mcp` | Start the MCP server so AI assistants can use the live Jac compiler |
 | `jac completions` | Generate (and optionally install) shell completions |
-| `jac nacompile` | Compile the native (`na`) subset to a binary, shared library, or WebAssembly |
 | `jac model` | Manage byLLM local-model weights (Gemma 4, Qwen 3.5, …) |
 | `jac config` | Manage project configuration |
-| `jac scale` | Deploy to a platform (`jac scale deploy`), and manage local microservices (status/stop/restart/logs) and platform deployments (status/destroy) |
+| `jac explain` | Explain what the compiler inferred: memory, placement, or the optimized IR |
+| `jac scale` | Deploy to a platform (`jac scale deploy`), and manage the local service fleet (status/stop/restart/logs) and platform deployments (status/destroy) |
 | `jac install` | Install project dependencies from `jac.toml` (`--plan` to preview the resolved plan), or `jac install <pkg>` to add packages to `jac.toml` and install them (`--no-save` to skip recording) |
 | `jac x` | Run an installed CLI tool (Python console-script or npm tool) under the `jac` runtime |
 | `jac remove` | Remove packages from project |
@@ -64,7 +64,7 @@ A task-first index into the commands below. The full alphabetical list follows i
 | `jac tool` | Language tools & source transforms (`jac2py`, `py2jac`, `jac2js`, `grammar`, IR, AST) |
 | `jac guide` | Show curated Jac reference guides |
 | `jac lsp` | Language server |
-| `jac setup` | Setup client build target (jac-client) |
+| `jac setup` | Provision an app's client ahead of time (`jac setup [app]`); run and build do it on first use |
 | `jac db` | Manage the project's Postgres store (embedded or external): status, inspect, sql, serve, stop, fetch |
 
 ---
@@ -85,7 +85,7 @@ The CLI cleanup in #7255 folded these former top-level commands into their homes
 | `jac jac2js` | [`jac tool jac2js`](#jac-tool) |
 | `jac py2jac` | [`jac tool py2jac`](#jac-tool) |
 | `jac jac2py` | [`jac tool jac2py`](#jac-tool) |
-| `jac start` | [`jac run --serve`](#jac-run) (`--port`, `--client`, `--faux`, `--takeover` ride along) |
+| `jac start` | [`jac run --serve`](#jac-run) (`--port`, `--faux`, `--takeover` ride along) |
 | `jac dev` | [`jac run --dev`](#jac-run) |
 | `jac start --scale` | [`jac scale deploy`](#jac-scale-deploy) (with `--target`, `--enable-tls`, `--dry-run`, `--show-yaml`) |
 
@@ -118,18 +118,18 @@ Displays the Jac version and platform, plus documentation and community links:
 
 ### jac run
 
-Execute a Jac file, a prebuilt `.jab` artifact, or (with no filename) run the current project.
+Run an **app** by name, a Jac file, a prebuilt `.jab` artifact, or (with no target) the project's default app -- executing or serving per the app's kind.
 
 **Note:** `jac <file>` is shorthand for `jac run <file>` - both work identically.
 
 ```bash
-jac run [-h] [-s] [--show] [-m] [--no-main] [-c] [--no-cache] [-e DIAGNOSTICS] [--profile PROFILE] [--entry ENTRY] [-n NODE] [-r ROOT] [--debug] [--serve | --no-serve] [-p PORT] [-d | --dev] [--api-port API_PORT] [--no-client] [-f | --faux] [--client {web,pwa,mobile,desktop}] [--host HOST] [--platform {auto,android,ios}] [--takeover | --no-takeover] [filename] [args ...]
+jac run [-h] [-s] [--show] [-m] [--no-main] [-c] [--no-cache] [-e DIAGNOSTICS] [--profile PROFILE] [--entry ENTRY] [-n NODE] [-r ROOT] [--debug] [--serve | --no-serve] [-p PORT] [-d | --dev] [--api-port API_PORT] [--no-client] [-f | --faux] [--host HOST] [--platform {auto,android,ios,web}] [--takeover | --no-takeover] [--fleet] [target] [args ...]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `filename` | Jac file (or `.jab` artifact) to run. Omit to dispatch on the project's `jac.toml` | (project) |
-| `-s, --show` | Print the resolved run plan (kind, action, equivalent command) without executing | `False` |
+| `target` | An app name from `[apps]` in `jac.toml`, or a path to a `.jac`, `.py` or `.jab` file. A target that matches an app key is the app (app names never contain `/` or end in `.jac`); anything else is a file. Omit to run `[project] default-app`, or the sole app | (default app) |
+| `-s, --show` | Print the resolved run plan without executing -- in a workspace with no target, one row per app (`app`, `kind`, `entry_rel`, `action`, `ui`, `route`; `ui` is `dom`, `mobui` or `-`) | `False` |
 | `-m, --main` | Treat module as `__main__` | `True` |
 | `-c, --cache` | Enable compilation cache | `True` |
 | `-e, --diagnostics` | Diagnostic verbosity: `error`, `all`, or `none` | `error` |
@@ -155,22 +155,22 @@ Serving only -- rejected when the resolved action is *execute* or *build*:
 | `--api-port` | Separate API port for HMR mode (0 = same as `--port`) | `0` |
 | `--no-client` | Skip client bundling/serving (API only) | `False` |
 | `-f, --faux` | Print endpoint docs only, no server | `False` |
-| `--client` | Client build target (`web`, `pwa`, `mobile`, `desktop`) | `web` |
-| `--host` | Mobile dev (`--client mobile --dev`) optional live-reload host/IP override | `""` |
-| `--platform` | Mobile platform selector for `--client mobile` (`auto`, `android`, `ios`) | `auto` |
+| `--host` | Mobile dev: optional host/IP the device reaches this machine on (a LAN address is auto-selected when omitted) | `""` |
+| `--platform` | Mobile apps: `android` or `ios` runs on a device or simulator, `web` runs the same app in a browser via react-native-web; `auto` = the app's `[apps.<name>] platform`, else `android` | `auto` |
+| `--fleet` | Run the workspace's service apps as separate local processes behind this server instead of colocating them in it | `False` |
 
 Project scope for a named file -- accepted whether the resolved action is *execute*, *serve* or *build*:
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--takeover` | Run the named file as the surrounding project even when the file lives outside it, and evict any other session holding this project's database before serving | (the file's own project decides) |
+| `--takeover` | Run the named file as the surrounding project even when the file lives outside it (it becomes the entry of the project's default app), and evict any other session holding this project's database before serving | (the file's own project decides) |
 | `--no-takeover` | Run the named file standalone, leaving the surrounding project's config, output tree and dev session untouched | (the file's own project decides) |
 
-A named file otherwise runs under the project that owns it: the nearest `jac.toml` at or above the file. A file that owns no project runs standalone, even from a working directory inside one, so a one-off script never commandeers a running dev server.
+A named file otherwise runs under the project that owns it: the nearest `jac.toml` at or above the file, and within a workspace the app whose root contains the file. A file that owns no project runs standalone, even from a working directory inside one, so a one-off script never commandeers a running dev server.
 
-Like Python, everything after the filename is passed to the script. Jac flags must come **before** the filename.
+Like Python, everything after the target is passed to the script. Jac flags must come **before** the target.
 
-**Project-aware run (no filename).** Inside a project, a bare `jac run` resolves the project *kind* from `[project] kind` in `jac.toml` (or infers it from the entry-point's codespace) and does the natural action for that kind: **execute** runnable kinds (`cli`, `cli-native`), **serve** server kinds (`service`, `web-app`, ...), or **build** artifact kinds (`native-binary`, `native-lib`, `py-package`, `js-package`). Use `jac run --show` to preview the plan and the equivalent command without running it. A serve-only flag against a kind that executes (or the reverse) is a hard error, not a silent no-op -- pass `--serve` / `--no-serve` to override the kind deliberately. See [project kinds](../../quick-guide/project-kinds.md) and [config `[project]`](../config/index.md).
+**App-aware run.** `jac run` resolves the target app -- the named app, `[project] default-app`, or the sole app (a project with no `[apps]` table is one implicit app) -- reads its *kind* (`[apps.<name>] kind`, or `[project] kind`, or inferred from the entry-point's codespace) and does the natural action for that kind: **execute** runnable kinds (`cli`, `cli-native`), **serve** server kinds (`service`, `web-app`, ...), or **build** artifact kinds (`native-binary`, `native-lib`, `py-package`, `js-package`). Flag defaults with a `config_key` (`--port`, `--cache`, ...) come from the app's *effective config* -- base `jac.toml` merged with its `[apps.<name>.*]` overlays and the active profile. Use `jac run --show` to preview the plan and the equivalent command without running it. A serve-only flag against a kind that executes (or the reverse) is a hard error, not a silent no-op -- pass `--serve` / `--no-serve` to override the kind deliberately. See [project kinds](../../quick-guide/project-kinds.md), [Workspaces & Apps](../apps.md) and [config `[apps]`](../config/index.md#apps).
 
 **Diagnostics modes:**
 
@@ -188,10 +188,14 @@ The diagnostics level can also be set in `jac.toml` under `[run].diagnostics`. T
 # Run a file (fails on compile errors by default)
 jac run main.jac
 
-# Run the current project per its jac.toml kind (no filename)
+# Run the default app per its jac.toml kind (no target)
 jac run
 
-# Preview what the project would run/build, without doing it
+# Run a named app of the workspace
+jac run web
+jac run cli -- score jaseci-labs/jac      # argv after -- goes to the program
+
+# Preview what each app would run/build, without doing it
 jac run --show
 
 # Run without cache (flags before filename)
@@ -276,13 +280,21 @@ jac run greet.jac --name Alice
 
 ---
 
-**Serving (`--serve`, `--port`, `--dev`).** When the project kind is a server kind (`service`, `service-mesh`, `web-app`, `web-static`, `desktop`), `jac run` serves instead of executing -- with or without an explicit filename. Every `:pub` / `:priv` walker becomes an API endpoint, with OpenAPI docs, auth, and persistence. Outside a server-kind project, `--serve` asks for the same thing explicitly.
+**Serving (`--serve`, `--port`, `--dev`, `--fleet`).** When the app's kind is a serving kind (`service`, `service-mesh`, `web-app`, `web-static`, `desktop`), `jac run` serves instead of executing -- with or without an explicit target. Every `:pub` / `:priv` walker becomes an API endpoint, with OpenAPI docs, auth, and persistence. Outside a server-kind app, `--serve` asks for the same thing explicitly.
+
+In a workspace with **service apps** (`kind = "service"`), serving one app also brings up the services it bridges to. By default they are **colocated**: loaded into the served app's process and registered locally, so bridged calls never leave the process. `--fleet` (or `[scale.gateway] colocate = false`) runs each service app as its own local process behind the served app's gateway instead; the boundary is compiled the same way either way. See [Workspaces & Apps](../apps.md#boundary-is-structural-topology-is-profile).
 
 `--dev` adds Hot Module Replacement, rebuilding on every save; live-reload is powered by the `watchdog` library bundled in the `jac` binary, so no extra install is needed. A sealed `.jab` never serves in dev mode -- run the project source instead.
 
 ```bash
-# Serve the current project (server kinds serve on a bare `jac run`)
+# Serve the default app (server kinds serve on a bare `jac run`)
 jac run
+
+# Serve a named app; its service apps are colocated in this process
+jac run web
+
+# ...or run each service app as its own local process
+jac run web --fleet
 
 # Serve a file that no jac.toml marks as servable
 jac run --serve app.jac
@@ -299,11 +311,14 @@ jac run --dev --no-client
 # Print the endpoint docs without starting a server
 jac run --faux
 
-# Mobile dev (Android default)
-jac run --client mobile --dev main.jac
+# Mobile dev for the app named `mobile` (Metro Fast Refresh on a device or simulator)
+jac run --dev mobile
 
-# Mobile dev on the iOS simulator
-jac run --client mobile --dev --platform ios main.jac
+# The same app in a browser, through react-native-web
+jac run --dev --platform web mobile
+
+# Build the mobile app for iOS and launch it on the simulator
+jac run --platform ios mobile
 
 # Evict a stuck session holding this project's database
 jac run --takeover
@@ -319,17 +334,23 @@ Initialize a new Jac project with configuration. Creates a project folder with t
 
 `jac create` is kind-aware: `--kind <kind>` scaffolds a project for a specific project kind, stamping `[project] kind` into `jac.toml` so the new project's bare `jac run` dispatches correctly (see `jac run`). All built-in kinds ship with `jaclang` -- including `web-app`, `web-static`, `mobile`, and `desktop`, which previously required the separate `jac-client` / `jac-desktop` plugins and now need no extra install.
 
+Inside an existing project, `jac create --app <name> --kind <kind>` scaffolds an **app** of that kind under `<path>/` (default: the app name) and appends an `[apps.<name>]` table to the project's `jac.toml`, turning it into a workspace (see [Workspaces & Apps](../apps.md)). `--awesome` scaffolds the full jaclang.org workspace -- a web app, a mobUI mobile app, a CLI and two service apps over one shared `core/` -- as your project.
+
 ```bash
-jac create [-h] [-f] [-k KIND] [-u USE] [-l] [name]
+jac create [-h] [-f] [-k KIND] [--app APP] [--path PATH] [-u USE] [--awesome] [-l] [--skip] [name]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
 | `name` | Project name (creates folder with this name) | Current directory name |
 | `-f, --force` | Overwrite existing project | `False` |
-| `-k, --kind` | Project kind: cli, cli-native, native-binary, native-lib, service, service-mesh, py-package, js-package, web-app, web-static, desktop, mobile | `cli` |
+| `-k, --kind` | Project or app kind: cli, cli-native, native-binary, native-lib, service, service-mesh, py-package, js-package, web-app, web-static, desktop, mobile | `cli` |
+| `--app` | Scaffold an app of `--kind` inside the current project and register `[apps.<app>]` in its `jac.toml` | None |
+| `--path` | With `--app`: directory for the app, relative to the project root | the app name |
+| `--awesome` | Scaffold the full jaclang.org workspace (landing, docs, leaderboard, socialize, wasm game, mobile, cli) as your project | `False` |
 | `-u, --use` | Custom template: file path or URL to a `.jacpack`, or a named variant (e.g. `jac-shadcn`) | `default` |
 | `-l, --list` | List available project kinds and named variants | `False` |
+| `--skip` | Skip dependency installation (Python + npm); run `jac install` later | `False` |
 | `--pack DIR` | Bundle a template directory into a distributable `.jacpack` file (absorbs `jac jacpack pack`) | None |
 | `--pack_output F` | Output path for the bundled `.jacpack` (with `--pack`) | `<name>.jacpack` |
 
@@ -353,6 +374,14 @@ jac create myapp --kind web-app
 
 # Scaffold a shadcn-themed full-stack app
 jac create myapp --use jac-shadcn
+
+# Add apps to the project you are in: a service and a mobUI mobile client
+jac create --app scoring --kind service
+jac create --app mobile --kind mobile
+jac create --app admin --kind web-app --path tools/admin
+
+# The flagship workspace (jaclang.org: web + mobile + cli + two service apps over core/)
+jac create mysite --awesome
 
 # Create from a local .jacpack file / directory / URL
 jac create myapp --use ./my-template.jacpack
@@ -411,12 +440,13 @@ jac create --pack ./my-template --pack_output custom-name.jacpack
 Type check Jac code for errors. Pass `--lint` to also run the linter (this absorbs the former `jac lint`), and `--lint --fix` to auto-fix lint violations.
 
 ```bash
-jac check [-h] [-e] [-i [IGNORE ...]] [-p] [--nowarn] [--lint] [--fix] paths [paths ...]
+jac check [-h] [-e] [-i [IGNORE ...]] [-p] [--nowarn] [--lint] [--fix] [--app APP] [paths ...]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `paths` | Files/directories to check | Required |
+| `paths` | Files/directories to check. Omit inside a project to check the whole workspace | (workspace) |
+| `--app` | Restrict a workspace check to one `[apps.<name>]` entry of `jac.toml` | None |
 | `-e, --print_errs` | Print detailed error messages | `True` |
 | `-i, --ignore` | Space-separated list of files/folders to ignore | None |
 | `-p, --parse_only` | Only check syntax (skip type checking) | `False` |
@@ -424,9 +454,22 @@ jac check [-h] [-e] [-i [IGNORE ...]] [-p] [--nowarn] [--lint] [--fix] paths [pa
 | `--lint` | Also run the linter and report style/lint violations | `False` |
 | `--fix` | With `--lint`, auto-fix lint violations (code corrections) | `False` |
 
+**The workspace gate.** With no paths, `jac check` traverses imports from every
+declared app entry in its compilation context, including page roots for client
+apps. Shared helpers are checked in each context that reaches them. Diagnostics
+carry an app prefix when several apps are checked. `--app <name>` selects one
+context; explicit files remain explicit roots. Unreachable source is checked by
+naming it explicitly. See [Workspaces & Apps](../apps.md#working-with-a-workspace).
+
 **Examples:**
 
 ```bash
+# Check the whole workspace: one program per app, then the orphan sweep
+jac check
+
+# Check one app of the workspace
+jac check --app web
+
 # Check a file
 jac check main.jac
 
@@ -469,12 +512,12 @@ Run tests in Jac files.
 > **Note:** `jac test` uses the runner built into the `jac` binary. There is no external test framework to install, and no plugin configuration to write.
 
 ```bash
-jac test [-h] [-t TEST_NAME] [-f FILTER] [-x] [-m MAXFAIL] [-d DIRECTORY] [-v] [filepath]
+jac test [-h] [-t TEST_NAME] [-f FILTER] [-x] [-m MAXFAIL] [-d DIRECTORY] [-v] [target]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `filepath` | Test file to run | None |
+| `target` | An app name from `[apps]`, or a test file or directory. An app target runs that app's tests with `[test]` taken from the app's effective config and `directories` resolved against the app root | (default app / project) |
 | `-t, --test_name` | Specific test name | None |
 | `-f, --filter` | Filter tests by pattern | None |
 | `-x, --xit` | Exit on first failure | `False` |
@@ -497,8 +540,11 @@ jac test main.jac -t my_test_name
 # Run tests in directory
 jac test -d tests/
 
-# Run all tests in current directory
+# Run all tests in current directory (the default app's [test] config)
 jac test
+
+# Run one app's tests, with its own [test] overlay
+jac test mobile
 
 # Stop on first failure
 jac test main.jac -x
@@ -551,6 +597,8 @@ jac fmt . --check
 # Skip already-formatted files (biggest win in pre-commit / CI)
 jac fmt . --cache
 ```
+
+**Exit status:** 0 on success, including when files were reformatted (`jac fmt . && next` proceeds); 1 on syntax/format failures, invalid paths, or unfixable lint errors. With `--check`, exits 1 if any file *would* be reformatted (no files are written) - this is the CI gate. With `--lintfix`, auto-fixable findings are fixed and reported as warnings; unfixable errors still exit 1.
 
 > **Note**: For auto-linting (code corrections), use `jac check --lint --fix` instead. See [`jac check`](#jac-check) above.
 >
@@ -912,7 +960,7 @@ Local model cache: /home/you/.cache/jac/models
 
 The `jac db` command group manages the project's Postgres store -- a database inside the embedded cluster the runtime provisions automatically, or the external database `JAC_DB_URL` / `[scale.database].url` points at.
 
-The embedded cluster is **shared by the whole machine**, not per project: one PostgreSQL instance lives at `$JAC_CACHE_HOME/pg/main` (default `~/.cache/jac/pg/main`) and holds one database per project, named `jac_<project>_<digest of the project's absolute path>`. Two projects therefore share a server but never a database, and moving or deleting a project directory leaves its database behind (`jac db list` shows it as `orphaned`; `jac db prune` reclaims it).
+The embedded cluster is **shared by the whole machine**, not per project: one PostgreSQL instance lives at `$JAC_CACHE_HOME/pg/main` (default `~/.cache/jac/pg/main`) and holds one database per project, named `jac_<project>_<digest of the project's absolute path>`. Two projects therefore share a server but never a database, and moving or deleting a project directory leaves its database behind (`jac db list` shows it as `orphaned`; `jac db prune -y` reclaims it on the spot, and the cluster's start-time sweep reclaims it on its own once the directory has been gone for a day, see [Retention](#retention)).
 
 For the architectural background (fingerprints, drift detection, quarantine philosophy, alias decorator), see [Persistence & Schema Migration](../persistence.md).
 
@@ -955,13 +1003,13 @@ jac db list
 data dir : /home/you/.cache/jac/pg/main
 databases: 3 (23.1 MB)
 
-NAME                              SIZE  KIND     STATE         LAST USED            OWNER
-jac_myapp_1a2b3c4d              7.9 MB  project  live          2026-08-12 21:14:03  /home/you/myapp
-jac_scratch_3142_9f1c           7.7 MB  scratch  dead scratch  2026-08-12 20:02:55  /tmp/jac-test-base-x1y2
-jac_oldapp_5e6f7a8b             7.6 MB  project  orphaned      2026-07-30 11:48:12  /home/you/deleted-app
+NAME                              SIZE  KIND     STATE                    LAST USED            OWNER
+jac_myapp_1a2b3c4d              7.9 MB  project  live                     2026-08-12 21:14:03  /home/you/myapp
+jac_scratch_3142_9f1c           7.7 MB  scratch  dead scratch             2026-08-12 20:02:55  /tmp/jac-test-base-x1y2
+jac_oldapp_5e6f7a8b             7.6 MB  project  orphaned, reclaim in 21h 2026-07-30 11:48:12  /home/you/deleted-app
 ```
 
-The states are `live` (the owning directory still exists), `orphaned` (it does not), `scratch` / `silent scratch` / `dead scratch` (a throwaway store for internal work, see below), and `unattributed` (no owner recorded, e.g. created before the runtime tracked owners). Listing never creates a database, so it is safe to run for a look around.
+The states are `live` (the owning directory still exists), `orphaned` (it does not; a suffix says where the start-time sweep is with it: nothing yet, `reclaim in 21h`, `reclaimable`, or `in use` when something is still connected, see [Retention](#retention)), `scratch` / `silent scratch` / `dead scratch` (a throwaway store for internal work, see below), and `unattributed` (no owner recorded, e.g. created before the runtime tracked owners). Listing never creates a database, so it is safe to run for a look around.
 
 ### jac db prune
 
@@ -973,7 +1021,7 @@ jac db prune -y          # drop it
 jac db prune --empty -y  # also drop unattributed databases that hold no data
 ```
 
-Candidates are scratch databases whose owning process is gone, and project databases whose recorded owning path has been deleted. "Gone" means one of two things: the recorded pid is checkable from here and no longer exists, or an earlier prune already found the database silent and unused and it still is (see [Scratch stores](#scratch-stores)), which is why reclaiming a scratch database left by another host takes two runs of prune rather than one. Databases with no recorded owner at all (created before the runtime recorded owners, or by tooling that opened the cluster directly) cannot be attributed; they are reported and left alone. `--empty` additionally considers those, but only the ones holding nothing beyond the system root, so an old cluster full of empty test-worker databases can be reclaimed without risking anyone's data.
+Candidates are scratch databases whose owning process is gone, and project databases whose recorded owning path has been deleted. "Gone" means one of two things: the recorded pid is checkable from here and no longer exists, or an earlier prune already found the database silent and unused and it still is (see [Scratch stores](#scratch-stores)), which is why reclaiming a scratch database left by another host takes two runs of prune rather than one. An orphaned project database is reported with the same state the start-time sweep acts on (whether it has been marked, and how long until the sweep reclaims it), and `-y` drops it on the spot: the sweep's grace protects against automatic loss, not against an operator who has read the report. `-y` also records the marks the sweep uses and clears the ones whose directory is back, so a prune and a cluster start never disagree about where a database stands. Databases with no recorded owner at all (created before the runtime recorded owners, or by tooling that opened the cluster directly) cannot be attributed; they are reported and left alone. `--empty` additionally considers those, but only the ones holding nothing beyond the system root, so an old cluster full of empty test-worker databases can be reclaimed without risking anyone's data.
 
 ### jac db drop
 
@@ -987,7 +1035,14 @@ Only `jac_*` databases can be dropped, and a database another process is connect
 
 ### Retention
 
-By default the runtime never deletes a project database: it is created on first contact and stays until you drop it. A cluster start always reaps scratch databases whose owning process is gone, and, if you opt in, sweeps stale project databases too:
+By default the runtime never deletes a project database whose directory exists: it is created on first contact and stays until you drop it. A cluster start always reaps scratch databases whose owning process is gone, and project databases whose owning directory is gone, in two phases so that a directory that is moved and moved back, or briefly unmounted, is never mistaken for a deleted project:
+
+1. The first start to find a database's directory missing **marks** it (`jac db list` shows `orphaned, reclaim in 24h`).
+2. A later start **drops** it once the mark is older than the grace period and nothing is connected to it. The grace is 24 hours by default; `JAC_DB_ORPHAN_GRACE_HOURS` overrides it, and `0` means the first start after the one that marked it.
+
+A directory that comes back before then clears the mark, so the clock starts over if it goes missing again. The sweep runs when the embedded cluster starts, not on every `jac run` (the cluster stays up between runs), and it spends at most 20 seconds dropping per start, leaving the rest for the next one, so a large backlog never stalls a start; `jac db prune -y` reclaims a backlog in one go. Each start logs one line per thing it did: databases marked, unmarked, reclaimed, or left for later.
+
+If you opt in, a start also sweeps stale project databases whose directory still exists:
 
 ```toml
 [database]
@@ -998,7 +1053,9 @@ With `retention_days` set (or `JAC_DB_RETENTION_DAYS` in the environment), start
 
 ### Scratch stores
 
-Work that keeps nothing across invocations should not leave a database behind. A process launched with `JAC_DB_SCRATCH=1` opens a single scratch database (`jac_scratch_<pid>_<nonce>`) instead of one per project path, and drops it when the process exits. The test runner and the deploy seal / vendor steps use this, which is why running tests or deploying no longer grows the cluster.
+Work that keeps nothing across invocations should not leave a database behind. A process launched with `JAC_DB_SCRATCH=1` opens a single scratch database (`jac_scratch_<pid>_<nonce>`) instead of one per project path, and drops it when the process exits. The test runner uses this for the fresh base it hands every test file, and the deploy seal / vendor steps use it for their staging runs.
+
+A process can instead own everything its descendants create. With `JAC_DB_SCRATCH_OWNER=<pid>` in the environment, every project database a process opens is recorded as a scratch-kind database owned by that pid, under its normal project name: the data still survives from one child process to the next, two directories still get two databases, and the whole set is dropped when the owner exits or reaped by the next scratch reap once the owner's pid is gone. The test runner exports its own pid this way before it forks its workers, so a `jac run`, `jac serve` or `jac test` a test spawns, and a base a test opens in-process without marking it scratch, no longer leaves a permanent database keyed to a temp directory behind. A test that needs to observe a real project database removes `JAC_DB_SCRATCH_OWNER` from its child's environment, the way the database lifecycle tests do.
 
 A process that dies without running its exit handler (a `SIGKILL`, an OOM, a container that is replaced) cannot drop its own scratch database, so the next scratch store to open reclaims it. Deciding that its owner is really gone takes more than the recorded pid, which is only meaningful on the host that recorded it. While a scratch database is open its registry record is heartbeated once a minute, and a record is reclaimed only when one of these holds:
 
@@ -1064,7 +1121,8 @@ jac config [action] [key] [value] [-g GROUP] [-o FORMAT]
 
 **Configuration Groups:**
 
-- `project` - Project metadata (name, version, description)
+- `project` - Project metadata (name, version, description, default-app)
+- `apps` - The workspace's `[apps.<name>]` tables (kind, path, entry-point, platform, route)
 - `run` - Runtime settings (cache, session)
 - `build` - Build settings (output directory)
 - `test` - Test settings (verbose, filters)
@@ -1142,7 +1200,7 @@ jac scale deploy --dry-run --show-yaml  # ... plus the raw multi-doc YAML
 
 `jac scale <action>` is the unified noun for scale operations. It has two modes depending on the argument:
 
-- **Local microservices** -- `jac scale <action> [name]` manages locally-running services: `status`, `stop`, `restart`, `logs`.
+- **Local service fleet** -- `jac scale <action> [app]` manages the service apps `jac run --fleet` started as local processes: `status`, `stop`, `restart`, `logs`.
 - **Platform deployment** -- given a `.jac` app file, `jac scale <action> <file.jac> [--target T] [--component C]` operates on a platform deployment: `status` (health of each component) and `destroy` (tear the deployment down). This absorbs the former top-level `jac status` / `jac destroy` verbs.
 
 To *deploy* in the first place, run [`jac scale deploy`](#jac-scale-deploy).
@@ -1154,7 +1212,7 @@ jac scale <action> [name|file] [--target TARGET] [--component COMPONENT]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `action` | `status`, `stop`, `restart`, `logs` (local) or `status`, `destroy` (platform, with a `.jac` file) | Required |
-| `name` / `file` | Local service name, or the path to the `.jac` app file for platform actions | None |
+| `app` / `file` | Local service app name, or the path to the `.jac` app file for platform actions | None |
 | `--target` | Deployment target platform (platform actions) | `kubernetes` |
 | `--component` | Restrict the action to a single component (platform actions) | None |
 
@@ -1194,11 +1252,11 @@ jac scale <action> [name|file] [--target TARGET] [--component COMPONENT]
 **Examples:**
 
 ```bash
-# Local microservices
+# Local service fleet (apps started by `jac run --fleet`)
 jac scale status
-jac scale logs my-service
-jac scale restart my-service
-jac scale stop my-service
+jac scale logs social_graph
+jac scale restart social_graph
+jac scale stop social_graph
 
 # Platform deployment status of a .jac app
 jac scale status app.jac
@@ -1496,22 +1554,22 @@ jac clean --all --force
 
 ### jac build
 
-Emit **one** artifact. Type checking runs on the critical path of every compilation, so the artifact compile is itself the gate: a program that does not type-check produces no artifact. By default `jac build` produces a `.jab` -- a single self-describing sealed app bundle. Use `--as` to select a different projection. `jac build` is now the single front door that the former `jac bundle` (wheel/npm), `jac eject` (source), and project-level `jac nacompile` (native/binary) folded into.
+Emit **one** artifact. Type checking runs on the critical path of every compilation, so the artifact compile is itself the gate: a program that does not type-check produces no artifact. By default `jac build` produces a `.jab` -- a single self-describing sealed app bundle. Use `--as` to select a different projection. `jac build` is now the single front door that the former `jac bundle` (wheel/npm), `jac eject` (source), and project-level `jac build --native` (native/binary) folded into.
 
 ```bash
-jac build [-h] [--as {jab,sealed,binary,wheel,npm,source,native}] [-o OUTPUT] [-n] [-c] [-f]
-          [--client {web,pwa,static,mobile,desktop,cef,react-native}] [-p PLATFORM] [filename]
+jac build [-h] [--all] [--as {jab,sealed,binary,wheel,npm,source,native,client}] [-o OUTPUT] [-n] [-c] [-f]
+          [-p {windows,macos,linux,all,android,ios,web}] [target]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `filename` | Entry `.jac` file (omit to use the project entry) | (project) |
-| `--as` | Artifact projection: `jab`, `sealed`, `binary`, `wheel`, `npm`, `source`, `native` | `jab` |
+| `target` | An app name from `[apps]`, or an entry `.jac` file (omit for `[project] default-app`, or the sole app) | (default app) |
+| `--all` | Build every app in the workspace into `<output>/<app>/` (each per its kind's output layout) | `False` |
+| `--as` | Artifact projection: `jab`, `sealed`, `binary`, `wheel`, `npm`, `source`, `native`, `client` | `jab` |
 | `-o, --output` | Output directory | `dist` |
 | `-c, --check_only` | Run the gate only; emit nothing | `False` |
 | `-f, --fat` | Vendor the Python dependency closure into the bundle (`jab` / `binary` only) so it materializes offline | `False` |
-| `--client` | Build a client shell (`web`, `pwa`, `static`, `mobile`, `desktop`, `cef`, `react-native`) | None |
-| `-p, --platform` | Platform selector for `--client` builds | Current platform |
+| `-p, --platform` | Platform for desktop (`windows`, `macos`, `linux`, `all`) and mobile (`android`, `ios`; `web` builds the mobile app for a browser) apps | the app's `[apps.<name>] platform`, else the current platform |
 
 **Projections (`--as`):**
 
@@ -1522,17 +1580,17 @@ jac build [-h] [--as {jab,sealed,binary,wheel,npm,source,native}] [-o OUTPUT] [-
 | `binary` | A self-contained app executable: a copy of the `jac` launcher with your sealed `.jab` appended as an overlay | -- |
 | `wheel` | A `pip install`-ready Python wheel in `dist/` | `jac bundle` |
 | `npm` | An npm tarball | `jac bundle --target npm` |
-| `source` | An editable FastAPI + JavaScript source tree (zero `.jac` files) | `jac eject` |
-| `native` | A standalone native binary | project-level `jac nacompile` |
+| `source` | Editable Python, JavaScript, and C with the required Jac runtime source | `jac eject` |
+| `client` | Only the app's client bundle (the browser bundle of a `web-app` / `web-static`, the desktop binary of a `desktop` app, the platform build of a `mobile` app) | -- |
 
 **The type-check gate.** `jac build` refuses to emit an artifact if the program fails type checking, and there is no flag that skips it. Because every compilation type-checks, the artifact compile *is* the gate rather than a separate pass over the project. Use `--check_only` to run the whole-project check and emit nothing (useful in CI).
 
 **The `.jab` artifact.** A `.jab` is a single self-describing sealed app bundle: client dist, serve manifest, and native binaries are baked in and hash-verified at load, so [`jac run app.jab`](#jac-run) execute or serve it with **zero live compilation**. It is kind-aware: `cli` kinds execute, servable kinds production-serve, and attachable packages refuse to run standalone.
 
-**Shipping an executable: `binary` vs `native`.** These two projections solve different problems and are easy to confuse:
+**Shipping an executable: `--as binary` vs `--native`.** These two projections solve different problems and are easy to confuse:
 
 - `--as binary` packages **any** app (walkers, Python imports, a full web client) into one executable by appending the sealed `.jab` onto a copy of the running `jac` launcher. The file carries the full runtime and boots through the same path as `jac run app.jab`, with zero live compilation. Because it embeds the runtime, the artifact is large but complete: hand it to a machine with no Jac, Python, or Node installed. The entry point resolves the same way `jac run` does (a `main.jac` or the `[project]` entry-point in `jac.toml`); an entry-less package is rejected at build time.
-- `--as native` AOT-compiles the restricted `na` subset through LLVM into a **small, dependency-free** binary (no walkers, no async, no Python imports). Reach for it when your program fits the [native pathway](../language/native-pathway.md) and you want the smallest possible artifact.
+- `jac build <file> --native` AOT-compiles the restricted `na` subset through LLVM into a **small, dependency-free** binary (no walkers, no async, no Python imports). Reach for it when your program fits the [native pathway](../language/native-pathway.md) and you want the smallest possible artifact.
 
 **Fat jab: vendoring the Python dependency closure (`--fat`).** A plain `.jab` bundles the sealed app, client dist, and native binaries, but its *Python* dependencies are only declared; they are pip-installed on the target at run or deploy time, so running a jab still assumes the target can reach PyPI. `jac build --fat` (on the `jab` and `binary` projections) resolves the app's runtime Python closure and packs the wheels into the bundle under `_vendor/wheels/`, the same way a Spring Boot fat jar nests every dependency jar:
 
@@ -1577,21 +1635,59 @@ jac build --as npm
 **Building a native binary or editable source tree:**
 
 ```bash
-# Standalone native binary (project-level; see `jac nacompile` for a single file)
-jac build --as native
+# Standalone native binary from one module
+jac build main.jac --native
 
-# Editable FastAPI + JavaScript source tree (formerly `jac eject`)
+# Editable Python, JavaScript, and C source tree
 jac build --as source -o /tmp/myapp-out
 ```
 
-**Building a client shell:**
+Source export follows the selected app and its colocated services. The output
+contains application code, serving and import metadata, declared resources, and
+the shared runtime modules those applications require. Rebuild and run it without
+Jac:
 
 ```bash
-# Build a desktop client shell
-jac build --client desktop
+cd /tmp/myapp-out
+python -m pip install -r requirements.txt
+python build.py
+python main.py
+```
 
-# Build a mobile client shell for a platform
-jac build --client mobile -p android
+JavaScript builds use Node/npm or Bun. Native code is emitted as C from the
+existing native lowering and built with Clang; browser native modules also need
+a WASI sysroot. Exporting native source requires LLVM 22 development files and
+CMake, or a configured `JAC_LLVM_CBE`. Generated C retains the selected target's
+ABI. Original `.jac` files can remain as application resources, such as the site's
+source browser; executable modules use the exported Python, JavaScript, and C.
+
+**Building apps of a workspace:**
+
+```bash
+# The default app's .jab into dist/
+jac build
+
+# One named app
+jac build web
+
+# Every app: dist/web/, dist/mobile/, dist/cli/, ... (sibling bundles the server mounts at /cl/<app>/)
+jac build --all
+```
+
+**Building a client:**
+
+```bash
+# A desktop app (kind = "desktop") builds its native shell
+jac build desktop_app
+
+# A mobile app builds for a platform
+jac build mobile -p android
+
+# The mobile app as a browser bundle (react-native-web)
+jac build mobile -p web
+
+# Only the browser bundle of the web app, no server artifact
+jac build --as client web
 ```
 
 > **Note:** The `[project.include]` / `**/*.jir` collection settings in `jac.toml` govern what `jac build --as wheel` collects (this was formerly `jac bundle`). See the [Configuration Reference](../config/index.md#project) for the full set of publishing fields (`name`, `version`, `license`, `readme`, `authors`, `[project.include]`, and more). For the full end-to-end publishing workflow, see the [Publishing Packages](../publishing.md) guide.
@@ -1604,16 +1700,18 @@ jac build --client mobile -p android
 
 ### jac guide
 
-Show the curated Jac reference guides bundled with the compiler -- the authoritative spec for writing correct, idiomatic Jac. AI coding agents and humans can read them straight from the CLI; nothing to install.
+Show versioned coding guides and documentation bundled with the compiler. AI coding agents and humans can read them straight from the CLI; nothing to install.
 
 ```bash
-jac guide [-h] [-s SEARCH] [-e EXPORT] [-n] [-j] [topic]
+jac guide [-h] [-s SEARCH] [-e EXPORT] [-n] [-j] [--sections | --section SECTION] [topic]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
 | `topic` | Guide or doc to print, or a doc set (`reference`, `quick-guide`, `build`, `tutorials`, `internals`, `community`) to list; omit to show the full index | None |
 | `-s, --search` | Grep every bundled guide and doc (`name:line:` hits) | None |
+| `--sections` | List a topic's headings and section slugs | False |
+| `--section` | Retrieve a topic section by slug or exact heading | None |
 | `-e, --export` | Export all guides as a Claude Code skills directory at this path | None |
 | `-n, --nav` | Print the docs navigation: sections, titles, and reading order | `False` |
 | `-j, --json` | Emit machine-readable JSON (for tools and agents) | `False` |
@@ -1625,7 +1723,9 @@ jac guide [-h] [-s SEARCH] [-e EXPORT] [-n] [-j] [topic]
 jac guide
 
 # Print a specific guide
-jac guide jac-types
+jac guide jac-essentials
+jac guide jac-types --sections
+jac guide jac-types --section pitfalls
 
 # Find guides by keyword
 jac guide --search walker
@@ -1703,31 +1803,24 @@ Editors normally launch this for you; configure your editor's LSP client to run 
 
 ---
 
-### jac nacompile
+### jac build --native
 
-*Hidden from `jac --help` (still functional).*
-
-Compile a `.jac` file to a standalone native ELF executable, forcing the whole module into the native codespace (so anything that cannot lower is a loud error rather than a demotion to the server codespace). No external compiler, assembler, or linker is required. The entire pipeline runs in pure Python using llvmlite and a built-in ELF linker.
-
-> **Project-level vs. file-level.** For a whole-project native build, use [`jac build --as native`](#jac-build) (or `--as binary`). `jac nacompile` remains the file-level tool for compiling an individual `.jac` file, building `--shared` C-ABI libraries, and cross-compiling with `--target wasm32`.
+Compile one `.jac` file through LLVM to a self-contained native artifact: a binary when the module has a `with entry { }` block, a C-ABI shared library otherwise (`--lib` forces the library form). The whole module is forced into the native codespace, so anything that cannot lower is a loud error rather than a demotion, and every native artifact refuses a demoted function.
 
 ```bash
-jac nacompile filename [-o OUTPUT] [--gc MODE] [--enforce-nogc] [--assert-no-rc] [--shared] [-t TARGET] [-g] [--scrub]
+jac build filename.jac --native [-o OUTPUT] [--memory managed|rc|nogc] [--lib] [--target-triple TARGET] [--debug]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `filename` | Path to the `.jac` file (must have `with entry {}` block) | *required* |
-| `-o, --output` | Output binary path | filename without `.jac` |
-| `-t, --target` | Code target: native host, or `wasm32` for a browser `.wasm` module | host |
-| `--shared` | Build a C-ABI shared library (`.so`/`.dylib`/`.dll`) exporting `:pub` symbols instead of an executable | `False` |
-| `-g, --debug` | Emit DWARF debug info + symbol table so the binary is debuggable with gdb/lldb | `False` |
-| `--scrub` | Scrub build: wipe cached IR and recompile everything from scratch | `False` |
-| `--gc` | Memory-management runtime to emit: `cycles` (refcounting + cycle collector), `rc` (refcounting only, no collector code), or `none` (no refcounting call sites) | `jac.toml [gc]` default, else `cycles` |
-| `--enforce-nogc` | Enforce zero-RC ownership coverage (`E1401`-`E1406` hard errors) on the compiled module, regardless of `jac.toml [gc.enforce]` patterns | `False` |
-| `--assert-no-rc` | Fail the build if the emitted IR contains any RC/collector machinery: `__rc_*` helpers, trace functions, roots-buffer globals, or entry-point GC env probes | `False` |
+| `filename` | Path to the `.jac` file | *required* |
+| `-o, --output` | Output artifact path | filename without `.jac` (`lib<name>.so` for a library, `<name>.wasm` for wasm32) |
+| `--memory` | Memory profile for this build: `managed` (reference counting plus the cycle collector, collecting automatically), `rc` (reference counting only), or `nogc` (no runtime; every module is held to the ownership contract and the emitted IR is proven free of RC machinery) | `[memory] profile` in `jac.toml`, else `managed` |
+| `--lib` | Build a C-ABI shared library (`.so`/`.dylib`/`.dll`) exporting `:pub` symbols instead of an executable | inferred from the absence of `with entry` |
+| `--target-triple` | `host`, `wasm32` for a browser `.wasm` module, or an LLVM triple | `[native] target`, else host |
+| `--debug` | DWARF debug info, symbol table, and the RC trace machinery, together | `[native] debug`, else off |
 
-The file must contain a `with entry { }` block (which defines the `jac_entry()` function). Files with Python/server dependencies (`native_imports`) cannot be compiled to standalone binaries.
+A stale IR cache is cleared with `jac clean --cache`. Nothing at compile time reads the environment; a built binary reads only `JAC_GC=off` (disable collection for leak debugging) and `JAC_THREADS` (`flow for` width). `jac explain memory|placement|ir` shows what the compiler inferred; `jac explain memory <file> --memory rc|nogc|managed` explains the module under a profile other than the project's, and prints the per-module RC coverage line (`rc-stats ... promoted=N`) on stderr.
 
 **What happens under the hood:**
 
@@ -1736,26 +1829,7 @@ The file must contain a `with entry { }` block (which defines the `jac_entry()` 
 3. Emits native object code via llvmlite's `emit_object()`
 4. Links into an ELF executable via the built-in pure-Python ELF linker
 
-The resulting binary dynamically links against `libc.so.6`. Memory management uses a self-contained reference counting scheme -- no external garbage collector (libgc) is required -- and `--gc` selects how much of that machinery is emitted, down to `--gc none` with statically inserted frees for [ownership-checked](../language/ownership-borrowing.md) modules. See [Memory Management](../language/native-pathway.md#memory-management) in the native pathway reference.
-
-**Examples:**
-
-```bash
-# Compile to ./chess
-jac nacompile chess.jac
-
-# Compile with custom output name
-jac nacompile chess.jac -o mychess
-
-# Compile an ownership-covered module and prove the artifact
-# contains no RC/collector machinery
-jac nacompile service.jac --gc none --enforce-nogc --assert-no-rc
-
-# Run the binary
-./mychess
-```
-
----
+The resulting binary dynamically links against `libc.so.6`. Memory management is the profile's runtime: reference counting with the cycle collector under `managed`, reference counting under `rc`, and static drops with no runtime under `nogc`.
 
 ### jac completions
 
@@ -1806,60 +1880,63 @@ jac completions --shell fish --install
 
 The built-in full-stack client framework contributes these commands and flags. They ship with `jaclang` core -- no separate install needed.
 
-### jac build --client
+### jac build --as client
 
-Build a **client shell** for a specific target. This is the `--client` mode of [`jac build`](#jac-build); see that section for the artifact projections (`.jab`, wheel, npm, source, native). A bare `jac build` (no `--client`) emits a `.jab`, not a client shell. Client builds type-check like every other compilation.
+Build only an app's **client**. The app's kind decides what that is -- the browser bundle of a `web-app` (or `js-package`), the static page of a `web-static` app, the native shell of a `desktop` app, the platform build of a `mobile` app -- so a `desktop` or `mobile` app already builds its client from a plain `jac build <app>`; `--as client` skips the server artifact for kinds that have one. See [`jac build`](#jac-build) for the other projections (`.jab`, wheel, npm, source, native). Client builds type-check like every other compilation.
 
 ```bash
-jac build [filename] --client TARGET [-p PLATFORM]
+jac build [target] --as client [-p PLATFORM]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `filename` | Path to .jac file | `main.jac` |
-| `--client` | Client shell target (`web`, `desktop`, `pwa`, `mobile`, `static`, `cef`, `react-native`) | None |
-| `-p, --platform` | **Mobile:** `android`, `ios`, `all`. **Desktop:** `windows` names the sidecar `jac-sidecar.exe` | Current platform |
+| `target` | App name, or a `.jac` entry file | (default app) |
+| `-p, --platform` | **Mobile:** `android`, `ios`, or `web` (the app in a browser via react-native-web). **Desktop:** `windows`, `macos`, `linux`, `all` (`windows` names the sidecar `jac-sidecar.exe`) | the app's `platform`, else the current platform |
+
+A `web-app` with a `[client.pwa]` table in `jac.toml` builds as a PWA: the bundle gains `manifest.json`, `sw.js`, the icons and the install banner.
 
 **Examples:**
 
 ```bash
-# Build the web client shell
-jac build --client web
-
-# Build desktop app
-jac build --client desktop
+# A desktop app: its kind picks the desktop shell ([desktop] engine picks native webview or CEF)
+jac build desktop_app
 
 # Build on Windows for the windows binary
-jac build --client desktop --platform windows
+jac build desktop_app --platform windows
 
-# Build mobile app for Android
-jac build --client mobile --platform android
+# A mobile app: native views through React Native
+jac build mobile --platform android
+jac build mobile --platform ios
+jac build mobile --platform web        # the same app as a browser bundle
 
-# Build mobile app for iOS
-jac build --client mobile --platform ios
+# Only the web app's browser bundle
+jac build --as client web
 ```
 
 ### jac setup
 
-One-time initialization for a build target.
+Provision an app's client ahead of time. It is optional: `jac run`, `jac run --dev` and `jac build` check the client target's readiness first and provision whatever is missing on first use, narrating each step. `jac setup` runs the same sequence explicitly, for CI images, offline preparation, or anyone who wants the tools in place before the first run.
 
 ```bash
-jac setup <target> [-p PLATFORM]
+jac setup [app]
 ```
 
-For `target=mobile`, `--platform` supports `android`, `ios`, or `all`.
+| Option | Description |
+|--------|-------------|
+| `app` | An app name from `[apps]`. Omit to set up the default app |
+| `--toolchain <name>` | Provision build tools without a project: `android`, `ios`, `desktop`, `cef` |
+| `--platform <name>` | Also provision the app's build platform toolchain: `android` or `ios` |
+
+What it does depends on the app's kind: a `mobile` app gets its Expo/Metro scaffold at `.jac/mobile-rn/` (with `[dependencies.npm.native]` merged in) and its packages installed; a `web-app` with a `[client.pwa]` table gets a `pwa_icons/` directory with placeholder icons; `desktop` apps need no setup (the native host is generated at build time). Under `JAC_OFFLINE=1` a run cannot provision, so a missing mobile scaffold or stale packages stop with `jac setup <app>` as the hint.
 
 **Examples:**
 
 ```bash
-# Setup Capacitor for mobile builds
+# Set up the default app's client
+jac setup
+
+# The Expo scaffold for the app named `mobile`
 jac setup mobile
-
-# Setup iOS scaffold only (macOS only)
-jac setup mobile --platform ios
-
-# Setup both Android and iOS scaffolds (macOS)
-jac setup mobile --platform all
 ```
 
 ### Extended Flags
@@ -1867,21 +1944,23 @@ jac setup mobile --platform all
 | Base Command | Added Flag | Description |
 |-------------|-----------|-------------|
 | `jac create` | `--kind web-app` | Create full-stack project template |
+| `jac create` | `--app <name> --kind <kind>` | Add an app to the current project |
 | `jac create` | `--skip` | Skip npm package installation |
-| `jac run` | `--client <target>` | Client build target for dev server |
+| `jac run` | `--platform <android\|ios\|web>` | Where a mobile app runs (device/simulator, or a browser via react-native-web) |
+| `jac build` | `--as client` | Build only the app's client bundle |
+| `jac run` | `--fleet` | Run service apps as separate local processes |
 | `jac install` | `--npm` | Add npm (client-side) dependency |
 | `jac remove` | `--npm` | Remove npm (client-side) dependency |
 
 ### Desktop builds
 
-The `desktop` and `cef` client targets ship with `jaclang` core -- no
-separate install. There is no separate `jac desktop` command and no setup step.
-Build and run the OS-native webview target with `jac build --client desktop` /
-`jac run --client desktop`, or the Chromium Embedded Framework target with
-`jac build --client cef` / `jac run --client cef`. Set
-`engine = "cef"` under `[desktop]` for CEF projects. See the
-[jac-desktop Reference](../plugins/jac-desktop.md) for configuration and CEF
-runtime flags.
+The desktop target ships with `jaclang` core -- no separate install. There is
+no separate `jac desktop` command and no setup step. An app with `kind =
+"desktop"` builds and launches its native window from `jac build <app>` /
+`jac run <app>`; `[desktop] engine` picks the renderer, `"native"` (the OS
+webview, default) or `"cef"` (Chromium Embedded Framework), and both build into
+`.jac/client/desktop/`. See the [jac-desktop Reference](../plugins/jac-desktop.md)
+for configuration and CEF runtime flags.
 
 ---
 
