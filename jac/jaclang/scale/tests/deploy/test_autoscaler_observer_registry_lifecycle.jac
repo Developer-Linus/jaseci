@@ -24,8 +24,8 @@ import from jaclang.scale.deploy.autoscale.observer {
 
 
 obj FakeObserver(AutoscalerObserver) {
-    has watch_calls: list = [],
-        stop_calls: list = [],
+    has watch_calls: list[str] = [],
+        stop_calls: list[bool] = [],
         watch_called: bool = False;
 
     def start {}
@@ -55,7 +55,7 @@ obj FakeObserver(AutoscalerObserver) {
 
 
 obj FailingObserver(AutoscalerObserver) {
-    has stop_calls: list = [];
+    has stop_calls: list[bool] = [];
 
     def start {}
     def watch_namespace(namespace: str) {
@@ -122,7 +122,7 @@ test "AutoscalerObserverRegistry: fixed selector, publish-before-watch atomicity
 
     def step_publish_after_watch_concurrent {
         AutoscalerObserverRegistry._instances = {};
-        violations: list = [];
+        violations: list[any] = [];
         violations_lock = Lock();
 
         def worker {
@@ -171,7 +171,7 @@ test "AutoscalerObserverRegistry: fixed selector, publish-before-watch atomicity
         AutoscalerObserverRegistry._instances = {};
         AutoscalerObserverRegistry._refcounts = {};
         AutoscalerObserverRegistry._stopping = {};
-        created_instances: list = [];
+        created_instances: list[any] = [];
 
         def failing_factory -> AutoscalerObserver {
             obs = FailingObserver();

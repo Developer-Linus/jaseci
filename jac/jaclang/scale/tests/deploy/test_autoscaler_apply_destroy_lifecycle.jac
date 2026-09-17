@@ -36,9 +36,11 @@ obj FakeV2Api {
     # Models AutoscalingV2Api's HPA lifecycle. 404 if missing, 409 if
     # already present -- so apply()'s read-then-patch-or-create branching
     # is actually exercised.
-    has store: dict = {};
+    has store: dict[str, any] = {};
 
-    def read_namespaced_horizontal_pod_autoscaler(name: str, namespace: str) -> dict {
+    def read_namespaced_horizontal_pod_autoscaler(
+        name: str, namespace: str
+    ) -> dict[str, any] {
         if name not in self.store {
             raise ApiException(status=404);
         }
@@ -46,8 +48,8 @@ obj FakeV2Api {
     }
 
     def create_namespaced_horizontal_pod_autoscaler(
-        namespace: str, body: dict
-    ) -> dict {
+        namespace: str, body: dict[str, any]
+    ) -> dict[str, any] {
         name = body["metadata"]["name"];
         if name in self.store {
             raise ApiException(status=409);
@@ -69,13 +71,15 @@ obj FakeCustomObjectsApi {
     # Models CustomObjectsApi (ScaledObject/TriggerAuthentication) against
     # an in-memory store keyed by "<plural>/<name>", with the same
     # existence-strict semantics as FakeV2Api above.
-    has store: dict = {};
+    has store: dict[str, any] = {};
 
     def _key(plural: str, name: str) -> str {
         return f"{plural}/{name}";
     }
 
-    def _label_selector_matches(labels: dict, selector: (str | None)) -> bool {
+    def _label_selector_matches(
+        labels: dict[str, any], selector: (str | None)
+    ) -> bool {
         if not selector {
             return True;
         }
@@ -90,7 +94,7 @@ obj FakeCustomObjectsApi {
 
     def get_namespaced_custom_object(
         group: str, version: str, namespace: str, plural: str, name: str
-    ) -> dict {
+    ) -> dict[str, any] {
         key = self._key(plural, name);
         if key not in self.store {
             raise ApiException(status=404);
@@ -99,8 +103,8 @@ obj FakeCustomObjectsApi {
     }
 
     def create_namespaced_custom_object(
-        group: str, version: str, namespace: str, plural: str, body: dict
-    ) -> dict {
+        group: str, version: str, namespace: str, plural: str, body: dict[str, any]
+    ) -> dict[str, any] {
         key = self._key(plural, body["metadata"]["name"]);
         if key in self.store {
             raise ApiException(status=409);
@@ -110,8 +114,13 @@ obj FakeCustomObjectsApi {
     }
 
     def patch_namespaced_custom_object(
-        group: str, version: str, namespace: str, plural: str, name: str, body: dict
-    ) -> dict {
+        group: str,
+        version: str,
+        namespace: str,
+        plural: str,
+        name: str,
+        body: dict[str, any]
+    ) -> dict[str, any] {
         key = self._key(plural, name);
         if key not in self.store {
             raise ApiException(status=404);
@@ -136,7 +145,7 @@ obj FakeCustomObjectsApi {
         namespace: str,
         plural: str,
         label_selector: (str | None) = None
-    ) -> dict {
+    ) -> dict[str, any] {
         items = [
             body
             for (key, body) in self.store.items()
@@ -148,7 +157,9 @@ obj FakeCustomObjectsApi {
         return {"items": items};
     }
 
-    def list_cluster_custom_object(group: str, version: str, plural: str) -> dict {
+    def list_cluster_custom_object(
+        group: str, version: str, plural: str
+    ) -> dict[str, any] {
         return {"items": []};
     }
 }

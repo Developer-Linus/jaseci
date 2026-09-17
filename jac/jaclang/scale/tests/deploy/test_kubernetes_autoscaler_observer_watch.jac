@@ -35,7 +35,7 @@ def scaled_object(
     ready: str = "True",
     active: str = "False",
     target: str = "orders-deployment"
-) -> dict {
+) -> dict[str, any] {
     return {
         "metadata": {"name": name, "resourceVersion": "1"},
         "spec": {"scaleTargetRef": {"name": target}},
@@ -49,7 +49,7 @@ def scaled_object(
     };
 }
 
-def typed_list_response(items: list[dict]) -> any {
+def typed_list_response(items: list[dict[str, any]]) -> any {
     response = unittest.mock.MagicMock();
     response.items = [];
     for i in items {
@@ -61,7 +61,7 @@ def typed_list_response(items: list[dict]) -> any {
     return response;
 }
 
-def build_observer(scaled_objects: list[dict]) -> any {
+def build_observer(scaled_objects: list[dict[str, any]]) -> any {
     mock_custom_api = unittest.mock.MagicMock();
     mock_custom_api.list_namespaced_custom_object.return_value = {
         "items": scaled_objects,
@@ -93,15 +93,15 @@ def build_observer(scaled_objects: list[dict]) -> any {
 }
 
 
-def ready_condition(status: str = "True") -> dict {
+def ready_condition(status: str = "True") -> dict[str, any] {
     return {"type": "Ready", "status": status};
 }
 
-def active_condition(status: str) -> dict {
+def active_condition(status: str) -> dict[str, any] {
     return {"type": "Active", "status": status, "reason": "x"};
 }
 
-def keda_so(conditions: list[dict]) -> dict {
+def keda_so(conditions: list[dict[str, any]]) -> dict[str, any] {
     return {
         "metadata": {"resourceVersion": "1"},
         "spec": {},
@@ -109,11 +109,11 @@ def keda_so(conditions: list[dict]) -> dict {
     };
 }
 
-def hpa_st(current: int, desired: int) -> dict {
+def hpa_st(current: int, desired: int) -> dict[str, any] {
     return {"status": {"current_replicas": current, "desired_replicas": desired}};
 }
 
-def dep_st(replicas: int, ready: int) -> dict {
+def dep_st(replicas: int, ready: int) -> dict[str, any] {
     return {
         "status": {
             "replicas": replicas,
@@ -124,7 +124,11 @@ def dep_st(replicas: int, ready: int) -> dict {
 }
 
 def check_keda(
-    label: str, so: dict, hpa: (dict | None), deployment: (dict | None), expected: str
+    label: str,
+    so: dict[str, any],
+    hpa: (dict[str, any] | None),
+    deployment: (dict[str, any] | None),
+    expected: str
 ) {
     status = KEDAAutoscaler()._normalize_keda_status(so, hpa, deployment);
     assert status.state == expected , f"{label}: expected {expected}, got {status.state}";
