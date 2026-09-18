@@ -567,7 +567,13 @@ def _teardown_ms_config(project_dir: str) {
     shutil.rmtree(project_dir, ignore_errors=True);
 }
 
-def _get_status(target: any, ms_toml: str, replicas: int, ready: int) -> any {
+def _get_status(
+    target: any,
+    ms_toml: str,
+    replicas: int,
+    ready: int,
+    deployment_name: str = "order-service-deployment"
+) -> any {
     (apps, core) = _status_apis(replicas, ready);
     project_dir = _seed_ms_config(ms_toml);
     try {
@@ -578,7 +584,7 @@ def _get_status(target: any, ms_toml: str, replicas: int, ready: int) -> any {
                 kubernetes.client, "CoreV1Api", return_value=core
             ) {
                 with unittest.mock.patch.object(target, "_load_cluster_config") {
-                    return target.get_status("order-service-deployment");
+                    return target.get_status(deployment_name);
                 }
             }
         }
@@ -602,7 +608,7 @@ def _hpa_toml(trigger_type: str | None) -> str {
     );
 }
 
-test "get_status resolves zero-replica eligibility through a real ManifestBuilder: a real trigger parks under keda, a cpu-only or missing trigger still fails, and the plain HPA engine never parks" {
+test "get_status resolves zero-replica eligibility through a real ManifestBuilder: a real trigger parks under keda, a cpu-only or missing trigger still fails, an http_activation service parks regardless of engine, the gateway never borrows that exemption, and the plain HPA engine never parks" {
     keda_target = DeploymentTargetFactory.create(
         "kubernetes",
         {"app_name": "order-service", "namespace": "ns", "autoscaler_engine": "keda"}
@@ -632,6 +638,48 @@ test "get_status resolves zero-replica eligibility through a real ManifestBuilde
     info = _get_status(keda_target, _hpa_toml(None), replicas=0, ready=0);
     assert info.status == ResourceStatus.FAILED , (
         f"no configured trigger at all must still be a real failure: {info.status}"
+    );
+
+    # An http_activation service has no hpa/triggers of its own -- its replica
+    # floor defaults to min=1 with no keda triggers at all, which
+    # is_scale_to_zero_eligible alone would call a real failure. Regression
+    # cover for the worker in #8779's rpc-wake fixture: an http_activation app
+    # parked at zero used to report FAILED here even though it is
+    # scale-to-zero by design.
+    http_activation_toml = (
+        "[apps.order-service]\n"
+        "kind = \"service\"\n"
+        "entry-point = \"order_service\"\n"
+        "\n[apps.order-service.scale.http_activation]\n"
+        "enabled = true\n"
+    );
+    info = _get_status(hpa_target, http_activation_toml, replicas=0, ready=0);
+    assert info.status == ResourceStatus.STOPPED , (
+        f"an http_activation service parked at zero must resolve to STOPPED, "
+        f"not FAILED: {info.status}"
+    );
+
+    # _resolve_scaling always forces the gateway out of HTTP_ACTIVATION (it is
+    # the ingress entry point and must stay warm), so a zero-replica gateway
+    # must not borrow that exemption from the shared default either.
+    gateway_target = DeploymentTargetFactory.create(
+        "kubernetes",
+        {
+            "app_name": "order-service",
+            "namespace": "ns",
+            "http_activation": {"enabled": True}
+        }
+    );
+    info = _get_status(
+        gateway_target,
+        _hpa_toml(None),
+        replicas=0,
+        ready=0,
+        deployment_name="gateway-deployment"
+    );
+    assert info.status == ResourceStatus.FAILED , (
+        f"the gateway must never be treated as intentionally parked via the "
+        f"shared http_activation default: {info.status}"
     );
 }
 
@@ -695,7 +743,7 @@ test "get_status resolves scale-to-zero eligibility for an app name with an unde
     );
 }
 
-test "autoscaler_config_for_deployment resolves a service's real k8s Deployment name back to its config key" {
+test "autoscaler_config_for_deployment and http_activation_config_for_deployment resolve a service's real k8s Deployment name back to its config key" {
     mb = ManifestBuilder(
         k8s_config=KubernetesConfig(app_name="jac-shop", namespace="ns"),
         fleet=fleet_of(
@@ -703,24 +751,34 @@ test "autoscaler_config_for_deployment resolves a service's real k8s Deployment 
             overrides={
                 "order_service": {
                     "hpa": {"min": 0, "max": 2},
-                    "triggers": [{"type": "cron", "metadata": {}}]
+                    "triggers": [{"type": "cron", "metadata": {}}],
+                    "http_activation": {"enabled": True}
                 }
             }
         )
     );
 
     cfg = mb.autoscaler_config_for_deployment("order-service-deployment");
-
     assert cfg is not None and cfg["min"] == 0 , (
         f"the real k8s Deployment name (with its '_' -> '-' k8s_safe_name "
         f"mangling and '-deployment' suffix) must resolve back to the "
         f"'order_service' config key, not fall back to defaults: {cfg}"
     );
+
+    # Same service-key resolution feeds http_activation_config_for_deployment
+    # -- it must land on the same 'order_service' key, not fall back to None.
+    http_cfg = mb.http_activation_config_for_deployment("order-service-deployment");
+    assert http_cfg is not None , (
+        f"the real k8s Deployment name must resolve back to the "
+        f"'order_service' config key here too: {http_cfg}"
+    );
 }
 
-test "autoscaler_config_for_deployment resolves the gateway's deployment name" {
+test "autoscaler_config_for_deployment resolves the gateway's deployment name, and http_activation_config_for_deployment always returns None for it" {
     mb = ManifestBuilder(
-        k8s_config=KubernetesConfig(app_name="jac-shop", namespace="ns"),
+        k8s_config=KubernetesConfig(
+            app_name="jac-shop", namespace="ns", http_activation={"enabled": True}
+        ),
         fleet=fleet_of({"order_service": "/orders"})
     );
 
@@ -728,6 +786,14 @@ test "autoscaler_config_for_deployment resolves the gateway's deployment name" {
     # key resolution itself must not raise and must not collide with a real
     # service -- this only proves the gateway's synthetic name resolves at all.
     cfg = mb.autoscaler_config_for_deployment("gateway-deployment");
-
     assert cfg is not None and cfg["min"] == 1;
+
+    # _resolve_scaling always forces the gateway out of HTTP_ACTIVATION -- it
+    # is the ingress entry point and must stay warm -- so it must never
+    # resolve an http_activation config even under the shared default enabled
+    # here.
+    http_cfg = mb.http_activation_config_for_deployment("gateway-deployment");
+    assert http_cfg is None , (
+        f"the gateway must never resolve an http_activation config: {http_cfg}"
+    );
 }

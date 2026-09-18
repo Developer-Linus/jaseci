@@ -232,15 +232,15 @@ obj KubernetesTargetBase(DeploymentTarget) {
 
     def _is_stopped_by_design(app_name: str) -> bool {
         try {
-            autoscaler_cfg = ManifestBuilder(
-                k8s_config=self.k8s_config, logger=self.logger
-            ).autoscaler_config_for_deployment(
-                app_name
-            );
+            builder = ManifestBuilder(k8s_config=self.k8s_config, logger=self.logger);
+            if builder.http_activation_config_for_deployment(app_name) is not None {
+                return True;
+            }
+            autoscaler_cfg = builder.autoscaler_config_for_deployment(app_name);
         } except Exception as e {
             if self.logger {
                 self.logger.warning(
-                    f"Could not resolve the autoscaler config for "
+                    f"Could not resolve the scaling config for "
                     f"'{app_name}' while checking scale-to-zero eligibility; "
                     f"treating it as not eligible: {e}"
                 );

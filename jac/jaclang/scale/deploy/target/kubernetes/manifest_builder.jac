@@ -12,11 +12,7 @@ import from jaclang.scale.models.deploy_context { DATABASE_URL_ENV, DeployContex
 import from jaclang.scale.deploy.target.kubernetes.kubernetes_config {
     KubernetesConfig
 }
-import from jaclang.scale.deploy.autoscale.autoscaler {
-    DEFAULT_CPU_UTILIZATION_TARGET,
-    DEFAULT_MEMORY_UTILIZATION_TARGET,
-    RESOURCE_ONLY_TRIGGER_TYPES
-}
+import from jaclang.scale.deploy.autoscale.autoscaler { RESOURCE_ONLY_TRIGGER_TYPES }
 import from jaclang.scale.deploy.autoscale.http_activation_config {
     build_http_activation_spec
 }
@@ -1611,6 +1607,22 @@ obj ManifestBuilder {
         return self._get_autoscaler_config(
             self._service_key_for_deployment(deployment_name)
         );
+    }
+
+    def http_activation_config_for_deployment(
+        deployment_name: str
+    ) -> dict[str, any] | None {
+        """Whether a Deployment's own service is parked at zero on purpose
+        because it is HTTP-activated, not metric-scaled. The gateway is
+        excluded because _resolve_scaling always forces it out of
+        HTTP_ACTIVATION -- it is the ingress entry point and must stay warm,
+        so its config can never legitimately explain a zero-replica gateway.
+        """;
+        svc_name = self._service_key_for_deployment(deployment_name);
+        if svc_name == GATEWAY_NAME {
+            return None;
+        }
+        return self._get_http_activation_config(svc_name);
     }
 
     def _service_key_for_deployment(deployment_name: str) -> str {
