@@ -28,6 +28,7 @@ import from jaclang.scale.deploy.autoscale.autoscaler {
     AutoscalerState,
     AutoscalerRuntimeStatus
 }
+import from jaclang.scale.deploy.autoscale.observer { AutoscalerSubscription }
 
 
 def scaled_object(
@@ -280,8 +281,51 @@ test "KubernetesAutoscalerObserver watch loop: correlation, concurrency, and the
         );
     }
 
+    def step_relist_prunes_deleted_resources {
+        # A relist after a watch reconnect only replayed objects still
+        # present; a resource deleted while the watch was down kept its
+        # stale slot forever, so the target kept normalizing against dead
+        # state instead of reflecting the deletion.
+        obs = KubernetesAutoscalerObserver();
+        key = "default::orders-deployment";
+        obs._target_cache[key] = {
+            "scaled_object": scaled_object(target="orders-deployment"),
+            "hpa": None,
+            "deployment": None
+        };
+        obs._last_state[key] = AutoscalerState.ACTIVE.value;
+
+        obs._prune_deleted("default", "scaled_object", []);
+
+        assert obs._target_cache[key]["scaled_object"] is None , (
+            "a resource missing from the relist must clear its cached slot"
+        );
+        assert obs._last_state[key] == AutoscalerState.UNKNOWN.value , (
+            "clearing the last real trigger must reconcile the target down "
+            "to UNKNOWN, not leave the stale ACTIVE state standing"
+        );
+    }
+
+    def step_subscription_rejects_non_positive_max_queue {
+        # A non-positive max_queue reached the drop_oldest branch with an
+        # empty queue, and pop(0) on that empty queue raised, aborting
+        # delivery to every subscriber still left in _emit's loop.
+        for bad in [0, -1] {
+            raised = False;
+            try {
+                AutoscalerSubscription(max_queue=bad);
+            } except ValueError {
+                raised = True;
+            }
+            assert raised , f"max_queue={bad} must be rejected at subscription time";
+        }
+        AutoscalerSubscription(max_queue=1);
+    }
+
     step_correlation_uses_resource_name_not_app_label();
     step_concurrent_watch_namespace_stays_idempotent();
     step_reconcile_target_fully_serializes();
     step_keda_normalize_state_machine_bugs();
+    step_relist_prunes_deleted_resources();
+    step_subscription_rejects_non_positive_max_queue();
 }

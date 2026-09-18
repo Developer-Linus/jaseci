@@ -18,7 +18,8 @@ import from jaclang.scale.deploy.autoscale.autoscaler {
 import from jaclang.scale.observability.logger { Logger }
 
 glob WATCHED_KINDS: list[str] = ["scaled_object", "hpa", "deployment"],
-     MANAGED_SELECTOR: str = "managed=jac-scale";
+     MANAGED_SELECTOR: str = "managed=jac-scale",
+     WATCH_TIMEOUT_SECONDS: float = 5.0;
 
 obj KubernetesAutoscalerObserver(AutoscalerObserver) {
     has _custom_api: (any | None) = None,
@@ -58,6 +59,7 @@ obj KubernetesAutoscalerObserver(AutoscalerObserver) {
     ) -> any;
 
     def _watch_loop(namespace: str, kind: str, label_selector: (str | None)) -> None;
+    def _prune_deleted(namespace: str, kind: str, items: list[dict[str, any]]) -> None;
     def _target_name_for(kind: str, resource: dict[str, any]) -> (str | None);
     def _handle_event(
         namespace: str, kind: str, event_type: str, resource: dict[str, any]

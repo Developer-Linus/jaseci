@@ -18,6 +18,12 @@ obj AutoscalerSubscription {
         _closed: bool = False,
         _lock: Lock = Lock();
 
+    def postinit {
+        if self.max_queue <= 0 {
+            raise ValueError(f"max_queue must be positive, got {self.max_queue}");
+        }
+    }
+
     def _matches(transition: AutoscalerTransition) -> bool {
         if self.autoscaler_name is not None
             and transition.autoscaler_name != self.autoscaler_name {

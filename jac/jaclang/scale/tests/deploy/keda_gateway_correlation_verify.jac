@@ -35,6 +35,7 @@ import from jaclang.scale.sdk { ProgressEvent, ScaleClient, deploy }
 import from jaclang.scale.deploy.autoscale.kubernetes_observer {
     KubernetesAutoscalerObserver
 }
+import from jaclang.scale.deploy.autoscale.keda_autoscaler { KEDAAutoscaler }
 import from jaclang.scale.observability.standard_logger { StandardLogger }
 
 glob SOURCE: str = os.environ.get("KEDA_GW_CORR_E2E_SOURCE", ""),
@@ -43,6 +44,9 @@ glob SOURCE: str = os.environ.get("KEDA_GW_CORR_E2E_SOURCE", ""),
      STORAGE_CLASS: str = os.environ.get("KEDA_GW_CORR_E2E_STORAGE_CLASS", ""),
      POD_BASE_IMAGE: str = os.environ.get("E2E_POD_BASE_IMAGE", ""),
      DEPLOYMENT_NAME: str = "gateway-deployment",
+     # KEDAAutoscaler.resource_name_for("gateway"), the same name
+     # target.jac:_autoscaler_spec derives for the gateway's ScaledObject.
+     SCALED_OBJECT_NAME: str = "gateway-scaledobject",
      OBSERVE_TIMEOUT: int = int(
          os.environ.get("KEDA_GW_CORR_E2E_OBSERVE_TIMEOUT", "180")
      );
@@ -142,6 +146,31 @@ def observe_and_assert {
         f"PASS: '{key}' has one fully populated _target_cache slot -- "
         "scaled_object, hpa, and deployment all joined under the same key."
     );
+
+    # jacHammer's one-shot API, exercised here on the same live ScaledObject,
+    # HPA, and Deployment the observer just correlated -- its result must
+    # agree with the observer's own normalization of the same three objects.
+    observer_status = KEDAAutoscaler()._normalize_keda_status(
+        full_slot.get("scaled_object"),
+        full_slot.get("hpa"),
+        full_slot.get("deployment")
+    );
+    runtime_status = KEDAAutoscaler().get_runtime_status(
+        SCALED_OBJECT_NAME, DEPLOYMENT_NAME, NAMESPACE
+    );
+    print(
+        f"get_runtime_status: state={runtime_status.state} "
+        f"(observer state={observer_status.state})"
+    );
+    if runtime_status.state != observer_status.state {
+        print(
+            "FAIL: get_runtime_status disagreed with the observer's own "
+            f"normalization of the same target: {runtime_status.state} != "
+            f"{observer_status.state}"
+        );
+        sys.`exit(1);
+    }
+    print("PASS: get_runtime_status agrees with the observer's live state.");
 }
 
 def teardown {

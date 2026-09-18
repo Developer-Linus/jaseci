@@ -522,7 +522,7 @@ with entry {
     }
     ```
 
-    For HTTP-activated workloads (`apply_http_activation`, see the KEDA HTTP Add-on note above), `activating` distinguishes "KEDA has requested more replicas" from `active` ("the target Deployment is actually ready to receive traffic") -- watch for `active`, not just a desired-replica bump, before routing a request through.
+    For HTTP-activated workloads (`apply_http_activation`, see the KEDA HTTP Add-on note above), `activating` distinguishes "KEDA has requested more replicas" from `active` ("the target Deployment is actually ready to receive traffic"). Gateway-forwarded and service-to-service traffic to an HTTP-activated target already flows through the KEDA HTTP Add-on interceptor (see below), which holds the request until the target is ready, so waiting for `active` is not required for request correctness. Use it for UX instead, such as showing a "waking up" indicator or measuring cold-start latency, while the request itself is already safely queued behind the interceptor.
 
 #### HTTP Add-on Activation (Scale-to-Zero on Request)
 

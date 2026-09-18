@@ -168,7 +168,8 @@ impl KubernetesAutoscalerObserver._stream{
         list_fn,
         namespace=namespace,
         label_selector=label_selector,
-        resource_version=resource_version
+        resource_version=resource_version,
+        timeout_seconds=WATCH_TIMEOUT_SECONDS
     );
 }
 
@@ -179,6 +180,7 @@ impl KubernetesAutoscalerObserver._watch_loop{
             (resource_version, items, list_fn) = self._list_and_seed(
                 kind, namespace, label_selector
             );
+            self._prune_deleted(namespace, kind, items);
             for resource in items {
                 self._handle_event(namespace, kind, "ADDED", resource);
             }
@@ -214,6 +216,33 @@ impl KubernetesAutoscalerObserver._watch_loop{
 
         backoff = min(0.05 * (2 ** consecutive_failures), 30.0);
         wait_or_stop(self, backoff);
+    }
+}
+
+impl KubernetesAutoscalerObserver._prune_deleted{
+    seen: set[str] = set();
+    for resource in items {
+        name = self._target_name_for(kind, resource);
+        if name is not None {
+            seen.add(name);
+        }
+    }
+    prefix = f"{namespace}::";
+    stale: list[str] = [];
+    with self._lock {
+        for (key, slot) in self._target_cache.items() {
+            if not key.startswith(prefix) or slot.get(kind) is None {
+                continue;
+            }
+            target_name = key[len(prefix):];
+            if target_name not in seen {
+                slot[kind] = None;
+                stale.append(target_name);
+            }
+        }
+    }
+    for target_name in stale {
+        self._reconcile_target(namespace, target_name);
     }
 }
 
