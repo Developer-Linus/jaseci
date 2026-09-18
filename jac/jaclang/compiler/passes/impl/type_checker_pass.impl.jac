@@ -1316,11 +1316,9 @@ impl TypeCheckPass.exit_archetype with Archetype exit {
 impl TypeCheckPass.exit_enum with Enum exit {
     cls_type = self.evaluator.get_type_of_enum(here);
 
-    for child in here.kid {
-        if isinstance(child, Assignment) {
-            for target in child.target {
-                self.evaluator.get_type_of_expression(target);
-            }
+    for child in [here->:Kid:->[?:Assignment]] {
+        for target in child.target {
+            self.evaluator.get_type_of_expression(target);
         }
     }
     if (
@@ -1457,8 +1455,9 @@ impl TypeCheckPass.exit_param_var with ParamVar exit {
 
 impl TypeCheckPass.exit_has_var with HasVar exit {
     import from jaclang.compiler.field_semantics { field_initialization }
-    if (here.defer and here.kid and isinstance(here.kid[-1], Name)) {
-        postinit_nd: Name = here.kid[-1];
+    kids = [here->:Kid:->];
+    postinit_nd = kids[-1] if kids else None;
+    if here.defer and isinstance(postinit_nd, Name) {
         if postinit_nd.sym is None {
             arch = here.parent.parent if isinstance(here.parent, ArchHas) else None;
             if isinstance(arch, Archetype) {
@@ -1840,6 +1839,9 @@ impl TypeCheckPass._check_comptime_only_use(nd: Name) -> None {
     if not is_ct_import and not is_ct_def {
         return;
     }
+    if in_type_position(nd, include_subscripts=False) {
+        return;
+    }
     if self._in_comptime_context(nd) or self.evaluator.ct_quiet {
         return;
     }
@@ -1989,7 +1991,7 @@ impl TypeCheckPass.exit_delete_stmt with DeleteStmt exit {
     }
     for leaf in here.leaf_targets() {
         if DeleteStmt.is_location(leaf)
-            or isinstance(leaf, (Literal, MultiString, FString)) {
+            or DeleteStmt.invalid_target(leaf) is not None {
             continue;
         }
         leaf_type = self.evaluator.get_type_of_expression(leaf);
@@ -2145,7 +2147,7 @@ impl TypeCheckPass._stamp_fixed_width -> None {
                 nd.fw_safe = self._provably_in_range(nd, name);
             }
         }
-        for k in nd.kid {
+        for k in [nd->:Kid:->] {
             stack.append(k);
         }
     }
