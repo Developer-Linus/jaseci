@@ -36,6 +36,7 @@ import from jaclang.scale.deploy.autoscale.kubernetes_observer {
     KubernetesAutoscalerObserver
 }
 import from jaclang.scale.deploy.autoscale.keda_autoscaler { KEDAAutoscaler }
+import from jaclang.scale.deploy.autoscale.autoscaler { AutoscalerState }
 import from jaclang.scale.observability.standard_logger { StandardLogger }
 
 glob SOURCE: str = os.environ.get("KEDA_GW_CORR_E2E_SOURCE", ""),
@@ -119,7 +120,6 @@ def observe_and_assert {
         }
         time.sleep(1.0);
     }
-    observer.stop(drain=True);
 
     print(f"_target_cache keys: {all_keys}");
     print(
@@ -136,6 +136,7 @@ def observe_and_assert {
         and full_slot.get("deployment") is not None
     );
     if not correlated {
+        observer.stop(drain=True);
         print(
             "FAIL: expected a fully populated _target_cache slot for "
             f"'{key}'; got {len(all_keys)} slot(s): {all_keys}"
@@ -148,25 +149,43 @@ def observe_and_assert {
     );
 
     # jacHammer's one-shot API, exercised here on the same live ScaledObject,
-    # HPA, and Deployment the observer just correlated -- its result must
-    # agree with the observer's own normalization of the same three objects.
-    observer_status = KEDAAutoscaler()._normalize_keda_status(
-        full_slot.get("scaled_object"),
-        full_slot.get("hpa"),
-        full_slot.get("deployment")
-    );
-    runtime_status = KEDAAutoscaler().get_runtime_status(
-        SCALED_OBJECT_NAME, DEPLOYMENT_NAME, NAMESPACE
-    );
+    # HPA, and Deployment the observer just correlated. The first full snapshot
+    # can predate the ScaledObject's Active condition and the HPA status
+    # settling, while get_runtime_status reads the cluster now, so poll it
+    # against the observer's live state until both settle on the same state.
+    # An unknown state never counts as agreement.
+    agree_deadline = time.monotonic() + float(OBSERVE_TIMEOUT);
+    observed_state: (str | None) = None;
+    runtime_state = "";
+    agreed = False;
+    while time.monotonic() < agree_deadline {
+        with observer._lock {
+            observed_state = observer._last_state.get(key);
+        }
+        runtime_status = KEDAAutoscaler().get_runtime_status(
+            SCALED_OBJECT_NAME, DEPLOYMENT_NAME, NAMESPACE
+        );
+        runtime_state = runtime_status.state;
+        if (
+            observed_state is not None
+            and observed_state != AutoscalerState.UNKNOWN.value
+            and runtime_state == observed_state
+        ) {
+            agreed = True;
+            break;
+        }
+        time.sleep(1.0);
+    }
+    observer.stop(drain=True);
+
     print(
-        f"get_runtime_status: state={runtime_status.state} "
-        f"(observer state={observer_status.state})"
+        f"get_runtime_status: state={runtime_state} "
+        f"(observer state={observed_state})"
     );
-    if runtime_status.state != observer_status.state {
+    if not agreed {
         print(
-            "FAIL: get_runtime_status disagreed with the observer's own "
-            f"normalization of the same target: {runtime_status.state} != "
-            f"{observer_status.state}"
+            "FAIL: get_runtime_status never settled on the observer's live "
+            f"state within {OBSERVE_TIMEOUT}s: {runtime_state} != {observed_state}"
         );
         sys.`exit(1);
     }
