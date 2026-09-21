@@ -19,6 +19,7 @@
 import unittest.mock;
 import time;
 import threading;
+import from kubernetes.client.exceptions { ApiException }
 import from jaclang.scale.deploy.autoscale.kubernetes_observer {
     KubernetesAutoscalerObserver,
     WATCHED_KINDS
@@ -285,25 +286,102 @@ test "KubernetesAutoscalerObserver watch loop: correlation, concurrency, and the
         # A relist after a watch reconnect only replayed objects still
         # present; a resource deleted while the watch was down kept its
         # stale slot forever, so the target kept normalizing against dead
-        # state instead of reflecting the deletion.
-        obs = KubernetesAutoscalerObserver();
+        # state instead of reflecting the deletion. Driven through the real
+        # _watch_loop so removing the prune call there fails this step.
+        #
+        # A stream that ends cleanly (the server-side bound) must resume from
+        # the last resourceVersion, not relist: only an error, a 410 here,
+        # relists.
+        obs = build_observer([scaled_object(target="orders-deployment")]);
         key = "default::orders-deployment";
-        obs._target_cache[key] = {
-            "scaled_object": scaled_object(target="orders-deployment"),
-            "hpa": None,
-            "deployment": None
-        };
-        obs._last_state[key] = AutoscalerState.ACTIVE.value;
+        streams: dict[str, int] = {};
+        gone: dict[str, bool] = {};
 
-        obs._prune_deleted("default", "scaled_object", []);
+        def flaky_stream(
+            kind: str,
+            list_fn: any,
+            namespace: str,
+            label_selector: any,
+            resource_version: any
+        ) -> any {
+            streams[kind] = streams.get(kind, 0) + 1;
+            if gone.get(kind, False) {
+                gone[kind] = False;
+                raise ApiException(status=410, reason="Gone");
+            }
+            return iter([]);
+        }
 
-        assert obs._target_cache[key]["scaled_object"] is None , (
-            "a resource missing from the relist must clear its cached slot"
-        );
-        assert obs._last_state[key] == AutoscalerState.UNKNOWN.value , (
-            "clearing the last real trigger must reconcile the target down "
-            "to UNKNOWN, not leave the stale ACTIVE state standing"
-        );
+        def wait_until(check: any) -> bool {
+            deadline = time.monotonic() + 5.0;
+            while time.monotonic() < deadline {
+                if check() {
+                    return True;
+                }
+                time.sleep(0.02);
+            }
+            return check();
+        }
+
+        def slot_scaled_object -> any {
+            with obs._lock {
+                return obs._target_cache.get(key, {}).get("scaled_object");
+            }
+        }
+
+        def slot_present -> bool {
+            return slot_scaled_object() is not None;
+        }
+
+        def slot_cleared -> bool {
+            return slot_scaled_object() is None;
+        }
+
+        def streamed_three_times -> bool {
+            return streams.get("scaled_object", 0) >= 3;
+        }
+
+        def state_is_unknown -> bool {
+            return obs._last_state.get(key) == AutoscalerState.UNKNOWN.value;
+        }
+
+        obs._watch_factory = flaky_stream;
+        list_calls = obs._custom_api.list_namespaced_custom_object;
+        try {
+            obs.watch_namespace("default");
+            assert wait_until(slot_present) , (
+                "the initial list must seed the ScaledObject slot"
+            );
+            assert obs._last_state.get(key)
+                not in (None, AutoscalerState.UNKNOWN.value) , (
+                "the seeded target must have a real state before the deletion"
+            );
+            assert wait_until(streamed_three_times) , (
+                "the ScaledObject watch must keep re-opening its stream"
+            );
+            assert list_calls.call_count == 1 , (
+                "a stream that ends cleanly must resume, not relist: "
+                f"{list_calls.call_count} lists after {streams[
+                    'scaled_object'
+                ]} streams"
+            );
+
+            list_calls.return_value = {
+                "items": [],
+                "metadata": {"resourceVersion": "2"}
+            };
+            gone["scaled_object"] = True;
+
+            assert wait_until(slot_cleared) , (
+                "a resource missing from the relist must clear its cached slot"
+            );
+            assert wait_until(state_is_unknown) , (
+                "clearing the last real trigger must reconcile the target down "
+                f"to UNKNOWN, not leave {obs._last_state.get(key)} standing"
+            );
+        } finally {
+            obs.stop(drain=True);
+        }
     }
 
     def step_subscription_rejects_non_positive_max_queue {

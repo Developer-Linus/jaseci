@@ -175,14 +175,20 @@ impl KubernetesAutoscalerObserver._stream{
 
 impl KubernetesAutoscalerObserver._watch_loop{
     consecutive_failures = 0;
+    resource_version: (str | None) = None;
+    list_fn: any = None;
+    relist = True;
     while not self._stop_event.is_set() {
         try {
-            (resource_version, items, list_fn) = self._list_and_seed(
-                kind, namespace, label_selector
-            );
-            self._prune_deleted(namespace, kind, items);
-            for resource in items {
-                self._handle_event(namespace, kind, "ADDED", resource);
+            if relist {
+                (resource_version, items, list_fn) = self._list_and_seed(
+                    kind, namespace, label_selector
+                );
+                self._prune_deleted(namespace, kind, items);
+                for resource in items {
+                    self._handle_event(namespace, kind, "ADDED", resource);
+                }
+                relist = False;
             }
 
             stream = self._stream(
@@ -193,16 +199,23 @@ impl KubernetesAutoscalerObserver._watch_loop{
                     break;
                 }
                 event_type = event["type"];
+                raw_obj = event["object"];
+                resource = raw_obj if kind == "scaled_object" else raw_obj.to_dict();
+                meta = resource.get("metadata") or {};
+                seen_version = meta.get("resourceVersion")
+                    or meta.get("resource_version");
+                if seen_version {
+                    resource_version = seen_version;
+                }
                 if event_type == "BOOKMARK" {
                     continue;
                 }
-                raw_obj = event["object"];
-                resource = raw_obj if kind == "scaled_object" else raw_obj.to_dict();
                 self._handle_event(namespace, kind, event_type, resource);
             }
             consecutive_failures = 0;
         } except Exception as e {
             consecutive_failures += 1;
+            relist = True;
             if self.logger {
                 self.logger.warn(
                     f"autoscaler observer watch loop error ({namespace}/{kind}, "
