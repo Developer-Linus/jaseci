@@ -608,7 +608,7 @@ def _hpa_toml(trigger_type: str | None) -> str {
     );
 }
 
-test "get_status resolves zero-replica eligibility through a real ManifestBuilder: a real trigger parks under keda, a cpu-only or missing trigger still fails, an http_activation service parks regardless of engine, the gateway never borrows that exemption, and the plain HPA engine never parks" {
+test "get_status resolves zero-replica eligibility through a real ManifestBuilder: a real trigger parks under keda, a cpu-only or missing trigger still fails, an http_activation service parks regardless of engine unless it sets a floor of one, the gateway never borrows that exemption, and the plain HPA engine never parks" {
     keda_target = DeploymentTargetFactory.create(
         "kubernetes",
         {"app_name": "order-service", "namespace": "ns", "autoscaler_engine": "keda"}
@@ -658,6 +658,26 @@ test "get_status resolves zero-replica eligibility through a real ManifestBuilde
         f"an http_activation service parked at zero must resolve to STOPPED, "
         f"not FAILED: {info.status}"
     );
+
+    # min_replicas is a real http_activation key that defaults to 0; a service
+    # that sets a floor of one and sits at zero is a real failure, not a park.
+    for (floor_line, expected, why) in [
+        (
+            "min_replicas = 0\n",
+            ResourceStatus.STOPPED,
+            "an explicit floor of zero parks"
+        ),
+        (
+            "min_replicas = 1\n",
+            ResourceStatus.FAILED,
+            "a floor of one at zero replicas is a real failure"
+        )
+    ] {
+        info = _get_status(
+            hpa_target, http_activation_toml + floor_line, replicas=0, ready=0
+        );
+        assert info.status == expected , f"{why}: got {info.status}";
+    }
 
     # _resolve_scaling always forces the gateway out of HTTP_ACTIVATION (it is
     # the ingress entry point and must stay warm), so a zero-replica gateway

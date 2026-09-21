@@ -233,8 +233,9 @@ obj KubernetesTargetBase(DeploymentTarget) {
     def _is_stopped_by_design(app_name: str) -> bool {
         try {
             builder = ManifestBuilder(k8s_config=self.k8s_config, logger=self.logger);
-            if builder.http_activation_config_for_deployment(app_name) is not None {
-                return True;
+            http = builder.http_activation_config_for_deployment(app_name);
+            if http is not None {
+                return int(http.get("min_replicas", 0)) == 0;
             }
             autoscaler_cfg = builder.autoscaler_config_for_deployment(app_name);
         } except Exception as e {
