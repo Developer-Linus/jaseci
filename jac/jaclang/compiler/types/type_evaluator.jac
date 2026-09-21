@@ -119,6 +119,7 @@ import from jaclang.compiler.frontend.constant {
     TOKEN_MAP,
     BindingKind,
     CodeContext,
+    ImmutabilityKind,
     SymbolType,
     Tokens as Tok,
     SymbolAccess,
@@ -252,6 +253,8 @@ import from jaclang.compiler.frontend.diagnostics {
     E1129,
     E1131,
     E1134,
+    E1136,
+    E1137,
     E0049,
     E5094,
     W1050,
@@ -259,7 +262,9 @@ import from jaclang.compiler.frontend.diagnostics {
     W1053,
     W1100,
     W1101,
-    W1102
+    W1102,
+    W2081,
+    W2082
 }
 
 obj PrefetchedTypes {
@@ -363,7 +368,15 @@ enum NarrowingKind {
     LITERAL_NE = "literal_ne",
     HASATTR = "hasattr",
     TYPE_IS = "type_is",
-    TYPE_GUARD = "type_guard"
+    TYPE_GUARD = "type_guard",
+    MEMBERSHIP_IN = "membership_in",
+    MEMBERSHIP_NOT_IN = "membership_not_in"
+}
+
+enum EndpointVerdict {
+    CONFORMS = "conforms",
+    VIOLATES = "violates",
+    UNPROVEN = "unproven"
 }
 
 obj ConditionInfo {
@@ -443,6 +456,7 @@ walker TypeEvaluator {
     def push_symbol_resolution(symbol: Symbol) -> bool;
     def pop_symbol_resolution(symbol: Symbol) -> None;
     def get_type_of_symbol(symbol: Symbol) -> TypeBase;
+    def _published_class_type(symbol: Symbol) -> (TypeBase | None);
     def resolve_to_definition_symbol(symbol: Symbol) -> Symbol;
     def _widen_literal_for_declaration(ty: TypeBase) -> TypeBase;
     def _import_module_from_path(
@@ -503,7 +517,11 @@ walker TypeEvaluator {
     ) -> (TypeBase | None);
 
     def _install_synth_member(
-        scope: UniScopeNode, synth_src: Source, mname: str, member_type: TypeBase
+        scope: UniScopeNode,
+        synth_src: Source,
+        mname: str,
+        member_type: TypeBase,
+        immutability: ImmutabilityKind = ImmutabilityKind.NONE
     ) -> None;
 
     def _ts_synth_class_types(
@@ -578,6 +596,8 @@ walker TypeEvaluator {
     ) -> bool;
 
     def _extern_scalar_type(type_expr: Expr | None) -> TypeBase;
+    def _intrinsic_function_type(name: str) -> (FunctionType | None);
+    def _intrinsic_spec_type(spec: str) -> TypeBase;
     def _check_extern_ctor_args(expr: FuncCall, arch: Archetype) -> None;
     def _extern_member_type(arch: Archetype, name: str) -> TypeBase;
     def _extern_field_type(field: HasVar) -> TypeBase;
@@ -625,6 +645,11 @@ walker TypeEvaluator {
 
     def _get_type_of_symbol(symbol: Symbol) -> TypeBase;
     def _get_type_of_symbol_decl(symbol: Symbol, decl: NameAtom) -> TypeBase;
+    def _as_final_form(ty: TypeBase) -> (ClassType | None);
+    def _final_declared_type(
+        annotation_type: TypeBase, symbol: (Symbol | None), value: (Expr | None)
+    ) -> (TypeBase | None);
+
     def _get_enum_member_type_for_decl(node_: Name) -> (EnumMemberType | None);
     def get_type_of_member(member: ClassMember, class_type: ClassType) -> TypeBase;
     def declaring_class_of(symbol: Symbol, base_type: ClassType) -> (ClassType | None);
@@ -686,9 +711,44 @@ walker TypeEvaluator {
 
     def _native_iter_next_result(expr: FuncCall) -> TypeBase | None;
     def _convert_to_instance(jtype: TypeBase) -> TypeBase;
+    def _edge_endpoint_declared(
+        edge_type: ClassType, want_src: bool
+    ) -> TypeBase | None;
+
     def _edge_endpoint_type(
         edge_type: ClassType, edge_dir: EdgeDir
     ) -> TypeBase | None;
+
+    def _edge_endpoint_verdict(
+        actual: TypeBase, declared: TypeBase
+    ) -> EndpointVerdict;
+
+    def _connected_node_type(operand: TypeBase) -> TypeBase;
+    def _report_endpoint_verdict(
+        at: UniNode,
+        violation: DiagnosticInfo,
+        unproven: DiagnosticInfo,
+        edge_type: ClassType,
+        side: str,
+        actual: TypeBase,
+        declared: TypeBase
+    ) -> None;
+
+    def _check_connect_endpoints(
+        conn_type: TypeBase,
+        edge_dir: EdgeDir,
+        left: Expr,
+        left_type: TypeBase,
+        right: Expr,
+        right_type: TypeBase
+    ) -> None;
+
+    def _check_traversal_origin(
+        edge_type: ClassType,
+        edge_dir: EdgeDir,
+        origin_type: TypeBase | None,
+        at: UniNode
+    ) -> None;
 
     def _type_in_list(ty: TypeBase, type_list: list[TypeBase]) -> bool;
     def _collect_unique_types(ty: TypeBase, result: list[TypeBase]) -> None;
