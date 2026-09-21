@@ -130,7 +130,10 @@ impl TypeEvaluator._build_field_params(
             if has_var.type_tag {
                 var_type_expr = has_var.type_tag.tag;
                 type_cls = self.get_type_of_expression(var_type_expr);
-                param_type = self._convert_to_instance(type_cls);
+                param_type = self._final_declared_type(
+                    type_cls, has_var.name.sym, has_var.value
+                )
+                    or self._convert_to_instance(type_cls);
             }
             initialization = field_initialization(has_var);
             if skip_deferred and not initialization.participates_in_init {
@@ -654,6 +657,10 @@ impl TypeEvaluator._synthesize_enum_metaclass_attr(
 }
 
 impl TypeEvaluator._convert_to_instance(jtype: TypeBase) -> TypeBase {
+    if final_form := self._as_final_form(jtype) {
+        type_args = final_form.private.type_args;
+        return self._convert_to_instance(type_args[0]) if type_args else UnknownType();
+    }
     return convert_to_instance(jtype);
 }
 
@@ -724,31 +731,6 @@ impl TypeEvaluator._report_rejected_method_call(
             solved_type_vars=self._receiver_type_var_bindings(method, receiver)
         );
     }
-}
-
-impl TypeEvaluator._edge_endpoint_type(
-    edge_type: ClassType, edge_dir: EdgeDir
-) -> TypeBase | None {
-    for cls in edge_type.shared.mro {
-        arch = cls.shared.symbol_table;
-        if not isinstance(arch, Archetype) {
-            continue;
-        }
-        endpoint: Expr | None = None;
-        if edge_dir == EdgeDir.OUT {
-            endpoint = arch.tgt_endpoint;
-        } elif edge_dir == EdgeDir.IN {
-            endpoint = arch.src_endpoint;
-        }
-        if endpoint is not None {
-            ep_type = self.get_type_of_expression(endpoint);
-            if isinstance(ep_type, ClassType) {
-                return ep_type;
-            }
-            return None;
-        }
-    }
-    return None;
 }
 
 impl TypeEvaluator._type_in_list(ty: TypeBase, type_list: list[TypeBase]) -> bool {
