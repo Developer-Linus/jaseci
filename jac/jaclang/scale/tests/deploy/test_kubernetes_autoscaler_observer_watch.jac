@@ -292,6 +292,28 @@ test "KubernetesAutoscalerObserver watch loop: correlation, concurrency, and the
         # A stream that ends cleanly (the server-side bound) must resume from
         # the last resourceVersion, not relist: only an error, a 410 here,
         # relists.
+        #
+        # The real stream call must send timeoutSeconds as an integer: the
+        # API server rejected the float 5.0 with a 400 on every watch, which
+        # the fake stream below cannot see.
+        real = KubernetesAutoscalerObserver();
+        with unittest.mock.patch(
+            "jaclang.scale.deploy.autoscale.kubernetes_observer.Watch"
+        ) as watch_cls {
+            watch_cls.return_value.stream.return_value = iter([]);
+            real._stream(
+                "scaled_object",
+                unittest.mock.MagicMock(),
+                "default",
+                "managed=jac-scale",
+                "1"
+            );
+            sent = watch_cls.return_value.stream.call_args.kwargs["timeout_seconds"];
+        }
+        assert type(sent) is int , (
+            f"timeout_seconds must be an int for the API server, got {sent!r}"
+        );
+
         obs = build_observer([scaled_object(target="orders-deployment")]);
         key = "default::orders-deployment";
         streams: dict[str, int] = {};

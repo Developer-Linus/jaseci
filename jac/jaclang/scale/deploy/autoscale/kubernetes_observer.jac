@@ -19,7 +19,7 @@ import from jaclang.scale.observability.logger { Logger }
 
 glob WATCHED_KINDS: list[str] = ["scaled_object", "hpa", "deployment"],
      MANAGED_SELECTOR: str = "managed=jac-scale",
-     WATCH_TIMEOUT_SECONDS: float = 5.0;
+     WATCH_TIMEOUT_SECONDS: int = 5;
 
 obj KubernetesAutoscalerObserver(AutoscalerObserver) {
     has _custom_api: (any | None) = None,
