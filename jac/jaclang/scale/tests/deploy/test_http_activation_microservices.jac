@@ -4,6 +4,7 @@ import from jaclang.scale.deploy.target.kubernetes.manifest_builder {
     GATEWAY_NAME,
     ScalingMode
 }
+import from jaclang.scale.models.resource_status { REPLICA_FLOOR_ANNOTATION }
 import from jaclang.scale.deploy.target.kubernetes.target {
     KubernetesTarget,
     apply_http_activations_for_bundle,
@@ -171,6 +172,8 @@ test "_resolve_scaling: an http_activation service is HTTP_ACTIVATION, carries t
     # Mutual exclusion: activation replaces the metric autoscaler, never coexists
     # (KEDA rejects a second ScaledObject on an HPA-managed target).
     assert plan["autoscaler"] == {};
+    # Scale-to-zero is legal here, so the plan's replica floor is 0.
+    assert plan["replica_floor"] == 0;
 }
 
 test "_resolve_scaling: the gateway never inherits http_activation even when the top-level default enables it" {
@@ -199,6 +202,49 @@ test "_resolve_scaling: the gateway never inherits http_activation even when the
     assert plan["http_activation"] == {};
 }
 
+test "generate_manifests never activates the gateway, even though every microservice inherits the shared default" {
+    import from jaclang.scale.config.app_config { AppConfig }
+    import tempfile;
+    import from pathlib { Path }
+    services = {"billing_ops": {}};
+    with tempfile.TemporaryDirectory() as project {
+        for name in list(services.keys()) + ["main"] {
+            (Path(project) / f"{name}.jac").write_text("");
+        }
+        b = ManifestBuilder(
+            k8s_config=KubernetesConfig(
+                app_name="t",
+                namespace="t-ns",
+                bundle_storage_class="standard",
+                http_activation={
+                    "enabled": True,
+                    "target_port": 8080,
+                    "concurrency_target": 10,
+                    "rules": [{"hosts": ["*"]}]
+                }
+            ),
+            microservices_config={"routes": {"billing_ops": "/"}, "services": services},
+            dry_run=True
+        );
+        bundle = b.generate_manifests(AppConfig(code_folder=project, app_name="t"), "");
+        # The microservice picks up the shared default unchanged...
+        assert bundle["scaling"]["billing_ops"]["mode"] == ScalingMode.HTTP_ACTIVATION;
+        # ...and its Deployment carries that intent for every status reader.
+        assert bundle["deployments"]["billing_ops"]["metadata"]["annotations"][
+            REPLICA_FLOOR_ANNOTATION
+        ]
+            == "0";
+        assert bundle["deployments"][GATEWAY_NAME]["metadata"]["annotations"][
+            REPLICA_FLOOR_ANNOTATION
+        ]
+            == "1";
+        # ...but the gateway, present in every bundle regardless of the routes
+        # table, never does - it is the ingress entry point and must stay warm.
+        assert bundle["scaling"][GATEWAY_NAME]["mode"] != ScalingMode.HTTP_ACTIVATION;
+        assert bundle["scaling"][GATEWAY_NAME]["http_activation"] == {};
+    }
+}
+
 test "_resolve_scaling: a plain service with the default hpa is METRIC, not activation" {
     b = _builder({"worker": {}});
     plan = b._resolve_scaling(
@@ -208,6 +254,28 @@ test "_resolve_scaling: a plain service with the default hpa is METRIC, not acti
     assert plan["autoscaler"] != {};
     assert plan["http_activation"] == {};
     assert plan["scale_target_name"] == "worker-deployment";
+    assert plan["replica_floor"] == plan["autoscaler"]["min"];
+
+    # KEDA's idle_replicas is the floor that matters for scale-to-zero; under
+    # the HPA engine it is inert, so the floor stays at min.
+    keda = _builder(
+        {"worker": {}},
+        k8s_config=KubernetesConfig(
+            app_name="t", namespace="t-ns", autoscaler_engine="keda", idle_replicas=0
+        )
+    );
+    assert keda._resolve_scaling(
+        "worker", _dep("worker-deployment"), _svc("worker-service")
+    )["replica_floor"]
+        == 0;
+    hpa = _builder(
+        {"worker": {}},
+        k8s_config=KubernetesConfig(app_name="t", namespace="t-ns", idle_replicas=0)
+    );
+    assert hpa._resolve_scaling(
+        "worker", _dep("worker-deployment"), _svc("worker-service")
+    )["replica_floor"]
+        == 1;
 }
 
 
