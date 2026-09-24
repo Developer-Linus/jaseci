@@ -463,6 +463,55 @@ obj KubernetesTargetBase(DeploymentTarget) {
         }
     }
 
+    def _destroy_database(app_name: str, namespace: str, apps_v1: any, core_v1: any) {
+        mongodb_name = f"{app_name}-mongodb";
+        delete_if_exists(
+            apps_v1.delete_namespaced_stateful_set,
+            mongodb_name,
+            namespace,
+            'StatefulSet'
+        );
+        delete_if_exists(
+            core_v1.delete_namespaced_service,
+            f"{mongodb_name}-service",
+            namespace,
+            'Service'
+        );
+        delete_k8s_secret(core_v1, namespace, f"{app_name}-mongodb-secret");
+        delete_if_exists(
+            core_v1.delete_namespaced_service_account,
+            f"{app_name}-mongodb-sa",
+            namespace,
+            'ServiceAccount'
+        );
+    }
+
+    def _destroy_cache(app_name: str, namespace: str, apps_v1: any, core_v1: any) {
+        redis_name = f"{app_name}-redis";
+        delete_if_exists(
+            apps_v1.delete_namespaced_deployment, redis_name, namespace, 'Deployment'
+        );
+        delete_if_exists(
+            core_v1.delete_namespaced_service,
+            f"{redis_name}-service",
+            namespace,
+            'Service'
+        );
+        delete_if_exists(
+            core_v1.delete_namespaced_config_map,
+            f"{redis_name}-config",
+            namespace,
+            'ConfigMap'
+        );
+        delete_k8s_secret(core_v1, namespace, f"{app_name}-redis-secret");
+        delete_if_exists(
+            core_v1.delete_namespaced_service_account,
+            f"{app_name}-redis-sa",
+            namespace,
+            'ServiceAccount'
+        );
+    }
+
     def get_status(app_name: str) -> ResourceStatusInfo {
         try {
             self._load_cluster_config();
