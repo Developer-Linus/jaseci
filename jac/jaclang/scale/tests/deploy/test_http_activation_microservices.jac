@@ -234,12 +234,10 @@ test "generate_manifests never activates the gateway, even though every microser
         # ...and its Deployment carries that intent for every status reader.
         assert bundle["deployments"]["billing_ops"]["metadata"]["annotations"][
             REPLICA_FLOOR_ANNOTATION
-        ]
-            == "0";
+        ] == "0";
         assert bundle["deployments"][GATEWAY_NAME]["metadata"]["annotations"][
             REPLICA_FLOOR_ANNOTATION
-        ]
-            == "1";
+        ] == "1";
         # ...but the gateway, present in every bundle regardless of the routes
         # table, never does - it is the ingress entry point and must stay warm.
         assert bundle["scaling"][GATEWAY_NAME]["mode"] != ScalingMode.HTTP_ACTIVATION;
@@ -268,16 +266,14 @@ test "_resolve_scaling: a plain service with the default hpa is METRIC, not acti
     );
     assert keda._resolve_scaling(
         "worker", _dep("worker-deployment"), _svc("worker-service")
-    )["replica_floor"]
-        == 0;
+    )["replica_floor"] == 0;
     hpa = _builder(
         {"worker": {}},
         k8s_config=KubernetesConfig(app_name="t", namespace="t-ns", idle_replicas=0)
     );
     assert hpa._resolve_scaling(
         "worker", _dep("worker-deployment"), _svc("worker-service")
-    )["replica_floor"]
-        == 1;
+    )["replica_floor"] == 1;
 
     # The resolved idle_replicas rides on the plan, so the ScaledObject KEDA
     # gets and the floor every status reader trusts cannot drift apart.
@@ -287,8 +283,7 @@ test "_resolve_scaling: a plain service with the default hpa is METRIC, not acti
     assert worker_plan["idle_replicas"] == 0;
     assert hpa._resolve_scaling(
         "worker", _dep("worker-deployment"), _svc("worker-service")
-    )["idle_replicas"]
-        is None;
+    )["idle_replicas"] is None;
 
     # ...and the gateway is exempt from idle_replicas=0 for the same reason it
     # is exempt from http_activation: nothing wakes the ingress entry point.
@@ -541,8 +536,9 @@ test "every autoscaled mode gives up spec.replicas, not just HTTP activation" {
         assert body["spec"]["template"] == {} , mode;
     }
     # No autoscaler, or no plan at all: the manifest still owns the field.
-    assert _target()._deployment_patch_body(manifest, {"mode": ScalingMode.NONE})
-        is None;
+    assert _target()._deployment_patch_body(
+        manifest, {"mode": ScalingMode.NONE}
+    ) is None;
     assert _target()._deployment_patch_body(manifest, {}) is None;
     assert "replicas" in manifest["spec"] , "the source manifest must not be mutated";
 }
@@ -1805,11 +1801,10 @@ test "the caller passes a target, not an autoscaler name, whichever ScaledObject
     assert out.autoscaler_name == "worker-deployment-http-scaledobject" , out.autoscaler_name;
     assert out.status == ResourceStatus.INACTIVE , out.status;
     tried = [c[1]["name"] for c in custom.get_namespaced_custom_object.call_args_list];
-    assert tried
-        == [
-            "worker-deployment-scaledobject",
-            "worker-deployment-http-scaledobject"
-        ] , tried;
+    assert tried == [
+        "worker-deployment-scaledobject",
+        "worker-deployment-http-scaledobject"
+    ] , tried;
 }
 
 
@@ -1862,8 +1857,7 @@ test "a failed external metric on the HPA overrides KEDA's own Ready condition" 
     assert out.reason == "FailedGetExternalMetric" , out.reason;
     assert out.scaler_ready == False;
     # The HPA name comes from KEDA's own status, never rebuilt from a convention.
-    assert v2.read_namespaced_horizontal_pod_autoscaler.call_args[1]["name"]
-        == "keda-hpa-worker";
+    assert v2.read_namespaced_horizontal_pod_autoscaler.call_args[1]["name"] == "keda-hpa-worker";
 }
 
 
@@ -1898,8 +1892,7 @@ test "an event is a transition only when the state actually moved" {
     # The same state again is what a relist replays, and it must stay silent.
     assert keda._transition_for_event(
         _so_event("MODIFIED", "worker-deployment"), "ns", seen
-    )
-        is None , "an unchanged state must not re-emit";
+    ) is None , "an unchanged state must not re-emit";
 
     # A real move does emit, carrying where it came from.
     custom.get_namespaced_custom_object.return_value = _so(active="True");
@@ -1914,8 +1907,7 @@ test "an event is a transition only when the state actually moved" {
     # target re-registers cleanly if it comes back.
     assert keda._transition_for_event(
         _so_event("DELETED", "worker-deployment"), "ns", seen
-    )
-        is None;
+    ) is None;
     assert "worker-deployment" not in seen;
 }
 
@@ -1974,6 +1966,5 @@ test "the opening list seeds the cache instead of replaying it as transitions" {
     }
     assert keda._transition_for_event(
         _so_event("ADDED", "worker-deployment"), "ns", seeded
-    )
-        is None , "a seeded target must not emit a phantom transition";
+    ) is None , "a seeded target must not emit a phantom transition";
 }

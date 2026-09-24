@@ -585,8 +585,8 @@ impl KEDAAutoscaler.get_runtime_status{
 
         scaling = condition(hpa_conditions, "ScalingActive");
         if scaling is not None
-            and scaling.get("status") == "False"
-            and scaling.get("reason") != "ScalingDisabled" {
+        and scaling.get("status") == "False"
+        and scaling.get("reason") != "ScalingDisabled" {
             out.scaler_ready = False;
         }
         desired = hpa?.status?.desired_replicas;
@@ -748,7 +748,7 @@ impl KEDAAutoscaler.watch_scale_targets{
                     dict(dict(event.get("object") or {}).get("metadata") or {}).get(
                         "resourceVersion"
                     )
-                        or ""
+                    or ""
                 );
                 if seen {
                     version = seen;

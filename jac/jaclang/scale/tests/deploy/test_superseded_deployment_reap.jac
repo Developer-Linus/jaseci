@@ -642,8 +642,7 @@ test "assess_workload settles only on active or intentionally inactive" {
     assert assess_workload(
         _rollout(generation=2, observed=2, replicas=1, updated=1, available=0),
         crashlooping=True
-    ).reason
-        == "CrashLoopBackOff";
+    ).reason == "CrashLoopBackOff";
 }
 
 
