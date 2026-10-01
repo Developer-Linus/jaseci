@@ -230,7 +230,9 @@ test "mount_claims separates a claimed prefix from a path nobody claims" {
     ];
     for (prefixes, request_path, expected) in cases {
         table = asset_root_table(
-            proj, dist, [{"url_prefix": p, "local_path": str(mount_dir)} for p in prefixes]
+            proj,
+            dist,
+            [{"url_prefix": p, "local_path": str(mount_dir)} for p in prefixes]
         );
         assert mount_claims(table, request_path) == expected , (
             f"mount_claims({prefixes}, {request_path}) must be {expected}"
