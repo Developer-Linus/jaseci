@@ -48,110 +48,87 @@ def _table(proj: Path) -> list[AssetRoot] {
 
 # ---- the DX fix: public/ at the web root ---------------------------------
 
-test "public/ asset resolves at the web root (the amplify bug)" {
+test "public/ files resolve at the web root with no extension allowlist (the amplify bug)" {
     proj = _project();
     _write(proj, "public/brand/logo.png", b"PNG_DATA");
-
-    result = resolve_asset(_table(proj), "/brand/logo.png");
-
-    assert result is not None , "public/brand/logo.png must be reachable at /brand/logo.png";
-    (path, _) = result;
-    assert path.read_bytes() == b"PNG_DATA";
-}
-
-
-test "public/ file with a no-allowlist extension resolves (.webmanifest, .wasm)" {
-    proj = _project();
     _write(proj, "public/manifest.webmanifest", b"{}");
     _write(proj, "public/app.wasm", b"\x00asm");
 
     tbl = _table(proj);
-    assert resolve_asset(tbl, "/manifest.webmanifest") is not None , ".webmanifest must resolve (no extension allowlist)";
-    assert resolve_asset(tbl, "/app.wasm") is not None , ".wasm must resolve (no extension allowlist)";
+    for (url, expected) in [
+        ("/brand/logo.png", b"PNG_DATA"),
+        ("/manifest.webmanifest", b"{}"),
+        ("/app.wasm", b"\x00asm")
+    ] {
+        result = resolve_asset(tbl, url);
+        assert result is not None , f"public/ file must be reachable at {url}";
+        (path, _) = result;
+        assert path.read_bytes() == expected;
+    }
 }
 
 
-# ---- containment: jail + no source-file leak (I4) ------------------------
+# ---- containment: jail, no source leak, honest miss (I4) ------------------
 
-test "bare project files never resolve (/package.json leak is closed)" {
+test "nothing outside the declared asset roots resolves" {
     proj = _project();
+    # positive control, so the table below cannot pass vacuously
+    _write(proj, "public/logo.png", b"OK");
     _write(proj, "package.json", b"{\"secrets\":true}");
     _write(proj, "src/app.js", b"console.log(1)");
+    _write(proj, "secret.txt", b"classified");
+    # `dist` is in the --scale bundle's _EXCLUDE_DIRS, so a project-root dist/
+    # is absent in k8s; it must be a miss in every mode, not just k8s.
+    _write(proj, "dist/legacy.png", b"LEGACY");
+    os.symlink(str(proj / "secret.txt"), str(proj / "public" / "link.txt"));
 
     tbl = _table(proj);
-    assert resolve_asset(tbl, "/package.json") is None , "project root is not an asset root — /package.json must not be servable";
-    assert resolve_asset(tbl, "/src/app.js") is None , "src/ is not an asset root — source files must not be servable";
-}
-
-
-test "..-traversal escapes are jailed" {
-    proj = _project();
-    _write(proj, "public/logo.png", b"OK");
-    _write(proj, "secret.txt", b"classified");
-
-    assert resolve_asset(_table(proj), "/../secret.txt") is None , ".. must not escape a declared asset root";
-}
-
-
-test "a URL with an embedded null byte is a miss, not an unhandled exception" {
-    proj = _project();
-    _write(proj, "public/logo.png", b"OK");
-
-    # Path.resolve() raises ValueError (not OSError) on an embedded NUL, so a
-    # request for /%00 must not escape resolve_asset as an exception - every
-    # host consuming this resolver would otherwise turn it into a 500.
-    assert resolve_asset(_table(proj), "/\x00") is None , "an embedded null byte must resolve to a miss, not raise";
-}
-
-
-test "symlink pointing outside a root is jailed" {
-    proj = _project();
-    (proj / "public").mkdir(parents=True, exist_ok=True);
-    outside = proj / "outside.txt";
-    outside.write_bytes(b"classified");
-    os.symlink(str(outside), str(proj / "public" / "link.txt"));
-
-    assert resolve_asset(_table(proj), "/link.txt") is None , "a symlink resolving outside its root must not be served";
+    assert resolve_asset(tbl, "/logo.png") is not None;
+    # Path.resolve() raises ValueError (not OSError) on an embedded NUL, so
+    # /%00 must be a miss rather than a 500 in every host.
+    for url in [
+        "/package.json",
+        "/src/app.js",
+        "/../secret.txt",
+        "/link.txt",
+        "/\x00",
+        "/legacy.png",
+        "/dist/legacy.png",
+        "/missing.png"
+    ] {
+        assert resolve_asset(tbl, url) is None , f"{url} must not resolve";
+    }
 }
 
 
 # ---- determinism: no basename flattening / no aliasing (I5) ---------------
 
-test "no basename flattening: a deep URL does not match a shallow file" {
-    proj = _project();
-    _write(proj, "assets/logo.png", b"LOGO");
-
-    assert resolve_asset(_table(proj), "/static/assets/x/deep/logo.png") is None , "must not alias assets/logo.png — exact path only";
-}
-
-
-test "one URL maps to at most one file (exact path within a root)" {
+test "exact path only: no basename flattening, one URL maps to one file" {
     proj = _project();
     _write(proj, "assets/img/icon.svg", b"SVG");
+    _write(proj, "assets/logo.png", b"LOGO");
 
-    # project assets are served under /static/assets/ at their real relative path
-    result = resolve_asset(_table(proj), "/static/assets/img/icon.svg");
-    assert result is not None , "assets/img/icon.svg resolves at /static/assets/img/icon.svg (the #6872 URL space)";
-    assert resolve_asset(_table(proj), "/static/assets/icon.svg") is None , "the same file must not also answer at /static/assets/icon.svg (no basename flattening)";
+    tbl = _table(proj);
+    # project assets/ are served under /static/assets/ at their real relative
+    # path (the #6872 URL space)
+    assert resolve_asset(tbl, "/static/assets/img/icon.svg") is not None;
+    for url in [
+        "/static/assets/icon.svg",
+        "/static/assets/x/deep/logo.png",
+        "/sub/logo.png",
+        "/static/sub/logo.png"
+    ] {
+        assert resolve_asset(tbl, url) is None , f"{url} must not alias a shallower file";
+    }
 }
 
 
 # ---- table ordering (first hit wins) -------------------------------------
 
-test "built client dist wins over public/ for the same URL" {
+test "table order: built dist beats public/, and a configured mount wins first" {
     proj = _project();
     _write(proj, ".jac/client/dist/index.html", b"DIST");
     _write(proj, "public/index.html", b"PUBLIC");
-
-    result = resolve_asset(_table(proj), "/index.html");
-    assert result is not None;
-    (path, _) = result;
-    assert path.read_bytes() == b"DIST" , "a built index.html must win over a stray public/index.html";
-}
-
-
-test "configured mounts win first and keep exclusive ownership" {
-    proj = _project();
     _write(proj, "public/data.json", b"FROM_PUBLIC");
     mount_dir = _project();
     _write(mount_dir, "data.json", b"FROM_MOUNT");
@@ -161,10 +138,15 @@ test "configured mounts win first and keep exclusive ownership" {
         proj / ".jac" / "client" / "dist",
         [{"url_prefix": "files", "local_path": str(mount_dir)}]
     );
-    result = resolve_asset(table, "/files/data.json");
-    assert result is not None;
-    (path, _) = result;
-    assert path.read_bytes() == b"FROM_MOUNT" , "a configured mount owns its url_prefix";
+    for (url, expected) in [
+        ("/index.html", b"DIST"),
+        ("/files/data.json", b"FROM_MOUNT")
+    ] {
+        result = resolve_asset(table, url);
+        assert result is not None;
+        (path, _) = result;
+        assert path.read_bytes() == expected , f"{url} resolved to the wrong root";
+    }
 }
 
 
@@ -229,66 +211,31 @@ test "a mount on the reserved static prefix still lets project /static assets re
 }
 
 
-test "mount_claims is False when nothing claims the path" {
+test "mount_claims separates a claimed prefix from a path nobody claims" {
     proj = _project();
     mount_dir = _project();
+    dist = proj / ".jac" / "client" / "dist";
 
-    table = asset_root_table(
-        proj,
-        proj / ".jac" / "client" / "dist",
-        [{"url_prefix": "files", "local_path": str(mount_dir)}]
-    );
-    assert not mount_claims(table, "/brand/logo.png") , (
-        "a path outside every mount's prefix is nobody's exclusive claim -- a "
-        "host may keep looking elsewhere (its own table, the SPA shell) for it"
-    );
-}
-
-
-test "mount_claims is True for the bare mount prefix itself, with or without a trailing slash" {
-    proj = _project();
-    mount_dir = _project();
-
-    table = asset_root_table(
-        proj,
-        proj / ".jac" / "client" / "dist",
-        [{"url_prefix": "docs", "local_path": str(mount_dir)}]
-    );
-    for request_path in ("/docs", "/docs/") {
-        assert mount_claims(table, request_path) , (
-            f"'{request_path}' is exactly the mount's own prefix, which is the "
-            "most obviously owned path there is -- resolve_asset never mistakes "
-            "the empty remainder here for a file, but mount_claims must not "
-            "mistake it for 'nobody claims this' either, or a client-page "
-            "fallback can serve the SPA at the mount's own root instead of a "
-            "mount-owned 404"
+    # (mounts, request path, expected claim)
+    cases = [
+        # outside every mount's prefix: a host may keep looking elsewhere
+        (["files"], "/brand/logo.png", False),
+        # the bare mount prefix itself is owned, with or without a trailing
+        # slash, or a client-page fallback could serve the SPA at the mount root
+        (["docs"], "/docs", True),
+        (["docs"], "/docs/", True),
+        # a broader additive "static" overlay listed first must not mask a
+        # nested exclusive mount's claim
+        (["static", "static/brand"], "/static/brand/logo.png", True)
+    ];
+    for (prefixes, request_path, expected) in cases {
+        table = asset_root_table(
+            proj, dist, [{"url_prefix": p, "local_path": str(mount_dir)} for p in prefixes]
+        );
+        assert mount_claims(table, request_path) == expected , (
+            f"mount_claims({prefixes}, {request_path}) must be {expected}"
         );
     }
-}
-
-
-test "a static overlay listed before a nested exclusive mount does not mask its claim" {
-    proj = _project();
-    overlay_dir = _project();
-    nested_dir = _project();
-
-    table = asset_root_table(
-        proj,
-        proj / ".jac" / "client" / "dist",
-        [
-            # the additive "static" overlay is listed first, on purpose --
-            # mount_claims must not stop at this first prefix match and
-            # report the path as unclaimed.
-            {"url_prefix": "static", "local_path": str(overlay_dir)},
-            {"url_prefix": "static/brand", "local_path": str(nested_dir)}
-        ]
-    );
-    path = "/static/brand/logo.png";
-    assert resolve_asset(table, path) is None , "no file was placed; expected a miss";
-    assert mount_claims(table, path) , (
-        "the nested 'static/brand' mount owns this path exclusively; the "
-        "broader 'static' overlay appearing first must not mask that claim"
-    );
 }
 
 
@@ -299,58 +246,20 @@ test "a static overlay listed before a nested exclusive mount does not mask its 
 # (runtimelib core -> scale/routing.jac). It is asserted at L2 against the real
 # gateway/monolith dispatch instead. The core resolver stays dependency-free.
 
-# ---- the --scale bundle parity trap: dist/ is excluded from the image -----
-
-test "project-root dist/ is not an asset root (bundle-exclusion parity)" {
-    proj = _project();
-    # `"dist"` is in the --scale bundle's _EXCLUDE_DIRS, so a project-root dist/
-    # is absent in k8s. It must therefore be a miss in EVERY mode, not just k8s —
-    # the table uses .jac/client/dist, never bare dist/.
-    _write(proj, "dist/legacy.png", b"LEGACY");
-
-    assert resolve_asset(_table(proj), "/legacy.png") is None , "bare dist/ must not be an asset root — 404s consistently across modes";
-    assert resolve_asset(_table(proj), "/dist/legacy.png") is None , "dist/ is not exposed at its own path either";
-}
-
-
-# ---- honest miss -----------------------------------------------------------
-
-test "a genuinely missing asset resolves to None" {
-    proj = _project();
-    _write(proj, "public/exists.png", b"OK");
-
-    assert resolve_asset(_table(proj), "/missing.png") is None , "a miss is None — resolve_asset never falls back to index.html";
-}
-
-
 # ---- asset_cache_policy: cache-control decision ----------------------------
 # Response construction (status, ETag, 304, Range) is shared with the rest of
 # the server through files.jac's file_response; asset_cache_policy only owns
 # the one decision specific to these roots -- whether a hit is cacheable.
 
-test "asset_cache_policy caches a static file for an hour, revalidating" {
+test "asset_cache_policy revalidates html shells and static files, never caches for a year" {
     proj = _project();
-    target = _write(proj, "public/logo.png", b"PNG_DATA");
+    png = _write(proj, "public/logo.png", b"PNG_DATA");
+    html = _write(proj, "public/index.html", b"<html></html>");
 
-    policy = asset_cache_policy(target);
+    assert asset_cache_policy(html) == "no-cache";
+    policy = asset_cache_policy(png);
     assert "max-age=3600" in policy;
     assert "must-revalidate" in policy;
-}
-
-
-test "asset_cache_policy never caches an html shell" {
-    proj = _project();
-    target = _write(proj, "public/index.html", b"<html></html>");
-
-    assert asset_cache_policy(target) == "no-cache";
-}
-
-
-test "asset_cache_policy does not blanket-cache mutable files for a year" {
-    proj = _project();
-    target = _write(proj, "public/logo.png", b"PNG_DATA");
-
-    policy = asset_cache_policy(target);
     # The monolith's blanket `max-age=31536000` on every file is the bug we are
     # removing. A hashed/immutable long-cache split is #8126; #8125 just must not
     # ship the blanket-immutable regression.

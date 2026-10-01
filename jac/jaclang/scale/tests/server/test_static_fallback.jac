@@ -1,6 +1,5 @@
 import os;
 import tempfile;
-import from pathlib { Path }
 import from jaclang.server.serving.datatypes { Request, Response }
 import from jaclang.server.serving.app { ServingApp }
 import from jaclang.server.serving.server { ServingServer }
@@ -10,7 +9,6 @@ import from jaclang.scale.runtime.gateway.service_registry {
     ServiceRegistry,
     ServiceStatus
 }
-import from jaclang.server.serving.static_assets { asset_root_table, resolve_asset }
 
 
 """A root stub that answers every request with a fixed marker body, so a test
@@ -26,16 +24,6 @@ def _spawn_root_stub(marker: bytes) -> tuple[any, int] {
     stop = server.serve_background();
     assert server.bound_port , "root stub did not bind a port";
     return (stop, server.bound_port);
-}
-
-
-"""The monolith (pages.jac's static_file/root_asset) builds its asset table
-the same way: asset_root_table(project_root, client_dist, []) -- no static
-mounts there, those are a gateway-only concept. Exercise the same primitive
-directly rather than booting a real server."""
-def _resolve(project_root: str, empty_dist: str, url_path: str) -> any {
-    table = asset_root_table(Path(project_root), Path(empty_dist), []);
-    return resolve_asset(table, url_path);
 }
 
 
@@ -189,106 +177,6 @@ test "public/ asset is served at the web root like vite and next serve it (#8124
         assert resp is not None , "public/brand/logo.png must be reachable at /brand/logo.png (the amplify bug #6876)";
         assert resp.status_code == 200;
         assert resp.body_bytes() == b"PNG_DATA";
-    } finally {
-        shutil.rmtree(project_root, ignore_errors=True);
-        shutil.rmtree(empty_dist, ignore_errors=True);
-    }
-}
-
-
-# --- Monolith serve_root_asset / serve_static_file (Step 4/5) ---
-
-test "monolith: a public/ asset resolves at the web root (wiring)" {
-    import shutil;
-    project_root = tempfile.mkdtemp();
-    empty_dist = tempfile.mkdtemp();
-    try {
-        brand_dir = os.path.join(project_root, "public", "brand");
-        os.makedirs(brand_dir, exist_ok=True);
-        with open(os.path.join(brand_dir, "logo.png"), "wb") as f {
-            f.write(b"PNG_DATA");
-        }
-
-        hit = _resolve(project_root, empty_dist, "/brand/logo.png");
-        assert hit is not None , "public/brand/logo.png must resolve at /brand/logo.png in the monolith";
-    } finally {
-        shutil.rmtree(project_root, ignore_errors=True);
-        shutil.rmtree(empty_dist, ignore_errors=True);
-    }
-}
-
-
-test "monolith: a bare project-root file is not exposed at the web root (#8125 security)" {
-    import shutil;
-    project_root = tempfile.mkdtemp();
-    empty_dist = tempfile.mkdtemp();
-    try {
-        with open(os.path.join(project_root, "package.json"), "w") as f {
-            f.write("{\"private\": true}");
-        }
-
-        hit = _resolve(project_root, empty_dist, "/package.json");
-        assert hit is None , "a bare project-root file (package.json) must not be served at /package.json";
-    } finally {
-        shutil.rmtree(project_root, ignore_errors=True);
-        shutil.rmtree(empty_dist, ignore_errors=True);
-    }
-}
-
-
-test "monolith: project src/ is not exposed at the web root (#8125 security)" {
-    import shutil;
-    project_root = tempfile.mkdtemp();
-    empty_dist = tempfile.mkdtemp();
-    try {
-        src_dir = os.path.join(project_root, "src");
-        os.makedirs(src_dir, exist_ok=True);
-        with open(os.path.join(src_dir, "app.js"), "w") as f {
-            f.write("export const KEY = 1;");
-        }
-
-        hit = _resolve(project_root, empty_dist, "/src/app.js");
-        assert hit is None , "project source under src/ must not be served at /src/app.js";
-    } finally {
-        shutil.rmtree(project_root, ignore_errors=True);
-        shutil.rmtree(empty_dist, ignore_errors=True);
-    }
-}
-
-
-test "monolith: no basename flattening at the web root (I5)" {
-    import shutil;
-    project_root = tempfile.mkdtemp();
-    empty_dist = tempfile.mkdtemp();
-    try {
-        assets_dir = os.path.join(project_root, "assets");
-        os.makedirs(assets_dir, exist_ok=True);
-        with open(os.path.join(assets_dir, "logo.png"), "wb") as f {
-            f.write(b"PNG");
-        }
-
-        hit = _resolve(project_root, empty_dist, "/sub/logo.png");
-        assert hit is None , "assets/logo.png must not be reachable at /sub/logo.png via basename flattening";
-    } finally {
-        shutil.rmtree(project_root, ignore_errors=True);
-        shutil.rmtree(empty_dist, ignore_errors=True);
-    }
-}
-
-
-test "monolith: no basename flattening under /static (I5)" {
-    import shutil;
-    project_root = tempfile.mkdtemp();
-    empty_dist = tempfile.mkdtemp();
-    try {
-        assets_dir = os.path.join(project_root, "assets");
-        os.makedirs(assets_dir, exist_ok=True);
-        with open(os.path.join(assets_dir, "logo.png"), "wb") as f {
-            f.write(b"PNG");
-        }
-
-        hit = _resolve(project_root, empty_dist, "/static/sub/logo.png");
-        assert hit is None , "assets/logo.png must not be reachable at /static/sub/logo.png via basename flattening";
     } finally {
         shutil.rmtree(project_root, ignore_errors=True);
         shutil.rmtree(empty_dist, ignore_errors=True);
