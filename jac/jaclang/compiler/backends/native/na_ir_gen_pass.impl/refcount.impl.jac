@@ -1,15 +1,15 @@
 glob _NOGC_OSP_ENGINE_STRUCTS: tuple[str, ...] = (
-         "Slot",
-         "Plan",
-         "WalkerDesc",
-         "NodeDesc",
-         "WalkScope",
+         "OspSlot",
+         "OspPlan",
+         "OspWalkerDesc",
+         "OspNodeDesc",
+         "OspWalkScope",
          "OspRuntime",
-         "Frame",
+         "OspFrame",
          "OspEngine",
          "OspGraph",
-         "Adj",
-         "EdgeRow"
+         "OspAdj",
+         "OspEdgeRow"
      ),
      _NOGC_CONTAINER_DROP_OPS: tuple[str, ...] = (
          "scope_exit",
@@ -313,7 +313,12 @@ impl NaIRGenPass._emit_rc_helpers -> None {
     );
 
     gc_dis_check_bb = retain_fn.append_basic_block("gc_dis_check");
-    b.cbranch(is_null, done_bb, gc_dis_check_bb);
+
+    if self._gc_mode() == "none" {
+        b.branch(done_bb);
+    } else {
+        b.cbranch(is_null, done_bb, gc_dis_check_bb);
+    }
 
     b = ir.IRBuilder(gc_dis_check_bb);
     gc_dis_flag_r = b.load(self.rc_gc_disabled_gv, name="gc.dis.r");
@@ -373,7 +378,11 @@ impl NaIRGenPass._emit_rc_helpers -> None {
         "==", release_fn.args[0], ir.Constant(i8_ptr, None), name="is.null"
     );
     gc_dis_check_bb_rel = release_fn.append_basic_block("gc_dis_check");
-    b.cbranch(is_null, done_bb, gc_dis_check_bb_rel);
+    if self._gc_mode() == "none" {
+        b.branch(done_bb);
+    } else {
+        b.cbranch(is_null, done_bb, gc_dis_check_bb_rel);
+    }
     b = ir.IRBuilder(gc_dis_check_bb_rel);
     gc_dis_flag_rel = b.load(self.rc_gc_disabled_gv, name="gc.dis.rel");
     magic_check_bb_rel = release_fn.append_basic_block("magic_check");
@@ -561,7 +570,19 @@ impl NaIRGenPass._emit_rc_helpers -> None {
     dtor_fnty = ir.FunctionType(ir.VoidType(), [i8_ptr]);
     dtor_fn_i8 = b.inttoptr(dtor_val, i8_ptr, name="dtor.i8");
     dtor_fn_ptr = b.bitcast(dtor_fn_i8, dtor_fnty.as_pointer(), name="dtor.fn");
+    _depth_gv = self.rc_release_depth_gv;
+    if _depth_gv is not None {
+        b.store(
+            b.add(b.load(_depth_gv, name="rel.depth"), ir.Constant(i64, 1)), _depth_gv
+        );
+    }
     b.call(dtor_fn_ptr, [release_fn.args[0]]);
+    if _depth_gv is not None {
+        b.store(
+            b.sub(b.load(_depth_gv, name="rel.depth.after"), ir.Constant(i64, 1)),
+            _depth_gv
+        );
+    }
     post_dtor_live_rm_bb = release_fn.append_basic_block("post_dtor_live_rm");
     b.branch(post_dtor_live_rm_bb);
 
@@ -581,6 +602,17 @@ impl NaIRGenPass._emit_rc_helpers -> None {
     _pub_b.call(release_fn, [_pub_fn.args[0], ir.Constant(ir.IntType(1), 1)]);
     _pub_b.ret_void();
     self.rc_release_simple_fn = _pub_fn;
+
+    for (_abi_name, _target) in (("jac_retain", retain_fn), ("jac_release", _pub_fn)) {
+        _shim = ir.Function(
+            self.llvm_module, _pub_fnty, name=self._symbol_for(_abi_name)
+        );
+        _shim.args[0].name = "ptr";
+        _shim_b = ir.IRBuilder(_shim.append_basic_block("entry"));
+        _shim_b.call(_target, [_shim.args[0]]);
+        _shim_b.ret_void();
+        self._record_export(_abi_name, _shim.name, "abi");
+    }
 }
 
 impl NaIRGenPass._rc_call_with_ctx(
@@ -598,8 +630,7 @@ impl NaIRGenPass._mark_owned(val: ir.Value) -> ir.Value {
 }
 
 impl NaIRGenPass._mark_reference_owned(result: ir.Value) -> ir.Value {
-    if self._elem_kind(result.type) != "raw"
-        or self._opt_ptr_payload_of(result.type) is not None {
+    if self._is_reference_type(result.type) {
         return self._mark_owned(result);
     }
     return result;
@@ -614,6 +645,14 @@ impl NaIRGenPass._finish_borrowed_read(
     self._emit_take_ref(value, op="read");
     self._release_owned_args([owner], op="read");
     return self._mark_reference_owned(value);
+}
+
+impl NaIRGenPass._is_null_ptr_const(val: ir.Value) -> bool {
+    return (
+        isinstance(val, ir.Constant)
+        and isinstance(val.type, ir.PointerType)
+        and val.constant is None
+    );
 }
 
 impl NaIRGenPass._is_owned(val: ir.Value) -> bool {
@@ -632,14 +671,20 @@ impl NaIRGenPass._opt_result_owned(val: ir.Value, expr: object) -> bool {
 }
 
 impl NaIRGenPass._can_native_move_lower(nd: object) -> bool {
-    if not isinstance(nd, uni.Assignment) or not nd.na_move_lowerable {
+    if not isinstance(nd, uni.Assignment) {
+        return False;
+    }
+    if self._nogc_consume_assigned_local(nd) {
+        return True;
+    }
+    if not nd.na_move_lowerable {
         return False;
     }
     rhs = nd.value;
     if not isinstance(rhs, uni.Name) {
         return False;
     }
-    if rhs.value in self.closure_cell_handles {
+    if rhs.value in self.closure_cell_handles or rhs.value in self.borrowed_vars {
         return False;
     }
     src_alloca = self.local_vars.get(rhs.value);
@@ -664,6 +709,51 @@ impl NaIRGenPass._can_native_move_lower(nd: object) -> bool {
     return True;
 }
 
+impl NaIRGenPass._nogc_consume_assigned_local(nd: uni.Assignment) -> bool {
+    import from jaclang.compiler.frontend.constant { OwnershipKind, is_borrow_kind }
+    if nd.aug_op is not None
+        or len(nd.target) != 1
+        or not isinstance(nd.target[0], uni.Name)
+        or self._nogc_borrow_local_assign(nd) {
+        return False;
+    }
+    if nd.type_tag is not None
+        and (
+            is_borrow_kind(nd.type_tag.ownership)
+            or nd.type_tag.ownership == OwnershipKind.IMM
+        ) {
+        return False;
+    }
+    rhs = nd.value;
+    if not isinstance(rhs, uni.Name)
+        or rhs.value in self.closure_cell_handles
+        or rhs.value in self.borrowed_vars {
+        return False;
+    }
+    if not self._nogc_consume_local(rhs) {
+        return False;
+    }
+    self.rc_ops_elided += 1;
+    return True;
+}
+
+impl NaIRGenPass._bind_borrowed(
+    nd: uni.Assignment, var_name: str, slot_ty: ir.Type
+) -> bool {
+    if id(nd) not in self.module.managed_borrow_binds
+        or self._gc_mode() == "none"
+        or var_name in self.region_handle_vars
+        or not (
+            self._elem_kind(slot_ty) == "rc_ptr"
+            or self._opt_ptr_payload_of(slot_ty) is not None
+        ) {
+        return False;
+    }
+    self.borrowed_vars.add(var_name);
+    self.rc_ops_elided += 2;
+    return True;
+}
+
 impl NaIRGenPass._nogc_borrow_local_assign(nd: object) -> bool {
     if not self._nogc_headerless() or not isinstance(nd, uni.Assignment) {
         return False;
@@ -683,6 +773,19 @@ impl NaIRGenPass._release_owned_operands(
     left_orig: ir.Value, right_orig: ir.Value, op: str = ""
 ) -> None {
     self._release_owned_args([left_orig, right_orig], op=op);
+}
+
+impl NaIRGenPass._compare_result(
+    result: ir.Value,
+    left_orig: ir.Value,
+    right_orig: ir.Value,
+    release_operands: bool,
+    op: str
+) -> ir.Value {
+    if release_operands {
+        self._release_owned_operands(left_orig, right_orig, op=op);
+    }
+    return result;
 }
 
 impl NaIRGenPass._release_owned_args(
@@ -927,9 +1030,9 @@ impl NaIRGenPass._emit_str_stamp_and_new -> None {
 
     memcpy_fn = self._get_or_declare_extern("memcpy", i8_ptr, [i8_ptr, i8_ptr, i64]);
     new_fn = self._define_function(
-        "__jac_str_new", ir.FunctionType(i8_ptr, [i8_ptr, i64])
+        self._symbol_for("__jac_str_new"), ir.FunctionType(i8_ptr, [i8_ptr, i64])
     );
-    new_fn.linkage = "weak_odr";
+    self._record_export("__jac_str_new", new_fn.name, "abi");
     new_fn.args[0].name = "data";
     new_fn.args[1].name = "n";
     _n_entry = new_fn.append_basic_block("entry");
@@ -1301,6 +1404,35 @@ impl NaIRGenPass._str_norm(val: ir.Value) -> ir.Value {
     return _normed;
 }
 
+impl NaIRGenPass._str_view(val: ir.Value) -> ir.Value {
+    if self._str_desc_ty is None or val.type != self._str_desc_ty {
+        return val;
+    }
+    if self._nogc_headerless() {
+        return self._str_norm(val);
+    }
+    if self.str_unwrap_fn is None {
+        self._emit_str_desc_helpers();
+    }
+    view = self.builder.call(self.str_unwrap_fn, [val], name="s.view");
+    fields = JACSTR_DESC_FIELDS[self._str_desc_kind()];
+    data = self.builder.extract_value(val, fields.index("data"), name="s.view.data");
+    copied = self.builder.icmp_unsigned("!=", view, data, name="s.view.copied");
+    name = f"str.view.{len(self.local_vars)}";
+    slot = self._entry_alloca(view.type, name);
+    self.local_vars[name] = slot;
+    previous = self.builder.load(slot, name="s.view.prev");
+    released = self.builder.select(
+        copied, previous, ir.Constant(view.type, None), name="s.view.drop"
+    );
+    self._mark_owned(released);
+    self._emit_rc_release_simple(released, op="str_view", loc="");
+    self.builder.store(
+        self.builder.select(copied, view, previous, name="s.view.hold"), slot
+    );
+    return view;
+}
+
 impl NaIRGenPass._str_materialize(val: ir.Value) -> ir.Value {
     if self._nogc_headerless() {
         return self._str_norm(val);
@@ -1368,6 +1500,10 @@ impl NaIRGenPass._emit_set_type_tag(
         return;
     }
     _i32 = ir.IntType(32);
+    if self._arch_display(type_name) != type_name {
+        b.call(self.rc_set_type_fn, [ptr_i8, self._emit_class_name_const(type_name)]);
+        return;
+    }
     _tag_gv = self._get_snprintf_fmt(type_name);
     _tag_gep = b.gep(
         _tag_gv, [ir.Constant(_i32, 0), ir.Constant(_i32, 0)], name="tag.gep"
@@ -1418,9 +1554,6 @@ impl NaIRGenPass._nogc_owned_world -> bool {
         return False;
     }
     _opts = self.prog.options;
-    if bool(getattr(_opts, "kernel_unit", False)) {
-        return False;
-    }
     try {
         return bool(_opts.nogc_enforced_for(self.module.name));
     } except Exception {
@@ -1688,25 +1821,40 @@ impl NaIRGenPass._drop_hook_for(type_name: str) -> (ir.Function | None) {
         return cached;
     }
     for owner in self._mro_of(type_name) {
+        member = self._drop_member_of(owner);
+        if member is not None and not member.is_def {
+            return None;
+        }
         hook = self.func_symtab.get(f"{owner}.drop");
-        if hook is None {
-            arch = self.arch_ast_map.get(owner);
-            if arch is not None and arch.body is not None {
-                for ability in arch.get_all_sub_nodes(uni.Ability) {
-                    if ability.find_parent_of_type(uni.Archetype) is not arch
-                        or ability.name_ref is None
-                        or ability.name_ref.sym_name != "drop" {
-                        continue;
-                    }
-                    self._forward_declare_method(owner, ability);
-                    hook = self.func_symtab.get(f"{owner}.drop");
-                    break;
-                }
-            }
+        if hook is None and member is not None {
+            self._forward_declare_method(owner, member);
+            hook = self.func_symtab.get(f"{owner}.drop");
         }
         if hook is not None {
             self.struct_drop_hooks[type_name] = hook;
             return hook;
+        }
+    }
+    return None;
+}
+
+impl NaIRGenPass._drop_member_of(owner: str) -> (uni.Ability | None) {
+    arch = self.arch_ast_map.get(owner);
+    if arch is None or arch.body is None {
+        return None;
+    }
+    for ability in arch.get_all_sub_nodes(uni.Ability) {
+        if ability.find_parent_of_type(uni.Archetype) is arch
+            and ability.name_ref is not None
+            and ability.name_ref.sym_name == "drop" {
+            return ability;
+        }
+    }
+    for stmt in arch._get_impl_resolved_body() {
+        if isinstance(stmt, uni.Ability)
+            and stmt.name_ref is not None
+            and stmt.name_ref.sym_name == "drop" {
+            return stmt;
         }
     }
     return None;
@@ -1883,7 +2031,8 @@ impl NaIRGenPass._nogc_type_arg_mangles(expr: uni.UniNode | None) -> list[str] {
     if not isinstance(expr, uni.Expr) or expr.type is None {
         return [];
     }
-    return self._nogc_type_arg_mangles_of_str(expr.type.mangle());
+    import from jaclang.compiler.passes.layout_pass { native_type_key }
+    return self._nogc_type_arg_mangles_of_str(native_type_key(expr.type));
 }
 
 impl NaIRGenPass._drop_spec_for_mangle(mangle: str) -> (tuple[str, ir.Type] | None) {
@@ -2186,7 +2335,7 @@ impl NaIRGenPass._nogc_elem_prep(
             and expr.sym_name in self.local_vars
             and expr.sym_name not in self.param_vars
             and not self._nogc_consume_local(expr) {
-            self.nogc_no_free_vars.add(expr.sym_name);
+            self.borrowed_vars.add(expr.sym_name);
         }
         return val;
     }
@@ -2282,6 +2431,57 @@ impl NaIRGenPass._nogc_opt_slots_owned -> bool {
     return not self._nogc_headerless() or self._nogc_owned_world();
 }
 
+impl NaIRGenPass._is_raw_int_ptr(value: ir.Value) -> bool {
+    if not isinstance(value, ir.CastInstr) or value.opname != "inttoptr" {
+        return False;
+    }
+    source = value.operands[0];
+    return not (
+        isinstance(source, ir.ExtractValue)
+        and self.jacval_type is not None
+        and source.aggregate.type == self.jacval_type
+    );
+}
+
+impl NaIRGenPass._emit_slot_release(value: ir.Value, op: str, loc: str = "") -> None {
+    if self._gc_mode() == "none" {
+        return;
+    }
+    if self.jacval_type is not None and value.type == self.jacval_type {
+        self.builder.call(self._emit_jacval_release_fn(), [value]);
+        return;
+    }
+    self._emit_rc_release_simple(self._rc_unwrap_optional(value), op=op, loc=loc);
+}
+
+impl NaIRGenPass._emit_slot_rebind(
+    slot: ir.Value, value: ir.Value, owned: bool, op: str, loc: str = ""
+) -> None {
+    if self._gc_mode() == "none" {
+        return;
+    }
+    if owned {
+        self.rc_ops_elided += 1;
+    } else {
+        self._emit_take_ref(value, op=op, loc=loc);
+    }
+    self._emit_slot_release(self.builder.load(slot, name=f"{op}.old"), op=op, loc=loc);
+}
+
+impl NaIRGenPass._emit_slot_clear(slot: ir.Value, op: str, loc: str = "") -> None {
+    if self._gc_mode() == "none" {
+        return;
+    }
+    self._emit_slot_release(self.builder.load(slot, name=f"{op}.old"), op=op, loc=loc);
+    self.builder.store(ir.Constant(slot.pointee_type, None), slot);
+}
+
+impl NaIRGenPass._release_after_store(value: ir.Value, op: str) -> None {
+    if self._is_reference_type(value.type) {
+        self._release_owned_args([value], op=op);
+    }
+}
+
 impl NaIRGenPass._emit_scope_cleanup(
     skip_var: (str | None) = None, ret_val: object = None, loc: str = ""
 ) -> None {
@@ -2298,13 +2498,31 @@ impl NaIRGenPass._emit_scope_cleanup(
         if var_name in self.param_vars {
             continue;
         }
-        if var_name in self.nogc_no_free_vars {
+        if var_name in self.borrowed_vars {
             continue;
         }
         if var_name in self.closure_cell_handles {
             continue;
         }
+        if var_name in self.owned_tuple_vars {
+            if var_name == skip_var {
+                self.builder.store(ir.Constant(alloca.pointee_type, None), alloca);
+            } else {
+                self._release_tuple_slot(alloca, op="scope_exit");
+            }
+            continue;
+        }
 
+        if self.jacval_type is not None
+            and isinstance(alloca.type, ir.PointerType)
+            and alloca.pointee_type == self.jacval_type {
+            if var_name == skip_var {
+                self.builder.store(ir.Constant(alloca.pointee_type, None), alloca);
+            } else {
+                self._emit_slot_clear(alloca, op="scope_exit", loc=loc);
+            }
+            continue;
+        }
         if self._str_desc_ty is not None
             and isinstance(alloca.type, ir.PointerType)
             and alloca.pointee_type == self._str_desc_ty {
@@ -2380,7 +2598,7 @@ impl NaIRGenPass._emit_loop_iter_cleanup(
         if var_name == "self" or var_name in self.param_vars {
             continue;
         }
-        if var_name in self.nogc_no_free_vars {
+        if var_name in self.borrowed_vars {
             continue;
         }
         if var_name in self.closure_cell_handles {
@@ -2388,6 +2606,16 @@ impl NaIRGenPass._emit_loop_iter_cleanup(
         }
         alloca = self.local_vars.get(var_name);
         if alloca is None {
+            continue;
+        }
+        if var_name in self.owned_tuple_vars {
+            self._release_tuple_slot(alloca, op="iter_end");
+            continue;
+        }
+        if self.jacval_type is not None
+            and isinstance(alloca.type, ir.PointerType)
+            and alloca.pointee_type == self.jacval_type {
+            self._emit_slot_clear(alloca, op="iter_end", loc=loc);
             continue;
         }
         if self._str_desc_ty is not None
@@ -2523,6 +2751,16 @@ impl NaIRGenPass._emit_struct_release_fn(arch_name: str) -> None {
     _hook = self._drop_hook_for(arch_name);
     if _hook is not None {
         b.call(_hook, [b.bitcast(release_fn.args[0], _hook.args[0].type)]);
+    }
+
+    _node_lay = self._arch_layout(arch_name);
+    if self._osp_pins_refs()
+        and _node_lay is not None
+        and _node_lay.arch_type == "node" {
+        b.call(
+            self._osp_reclaim_hook(),
+            [b.ptrtoint(release_fn.args[0], i64, name="osp.forget.h")]
+        );
     }
 
     if self._pyb_base_of(arch_name) is not None {

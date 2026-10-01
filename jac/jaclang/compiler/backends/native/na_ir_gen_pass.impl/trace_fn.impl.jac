@@ -8,7 +8,7 @@ impl NaIRGenPass._require_trace_fn(
         return;
     }
     if participates and not has_trace {
-        self.ctx.emit(
+        self.emit(
             E9002,
             node_override=self.module,
             details=(
@@ -26,10 +26,7 @@ impl NaIRGenPass._struct_has_ref_fields(arch_name: str) -> bool {
     field_indices = self.struct_field_indices.get(arch_name, {});
     foreign_fields = self.struct_field_foreign.get(arch_name, set());
     for (fname, ftype) in field_types.items() {
-        if (
-            self._elem_kind(ftype) != "raw"
-            or self._opt_ptr_payload_of(ftype) is not None
-        )
+        if self._is_reference_type(ftype)
             and fname not in foreign_fields
             and field_indices.get(fname, -1) >= 0 {
             return True;
@@ -136,6 +133,8 @@ impl NaIRGenPass._register_trace_pair(dtor_fn: object, trace_fn: ir.Function) ->
 impl NaIRGenPass._finalize_trace_lookup -> None {
     lookup_fn = self.rc_trace_lookup_fn;
     if lookup_fn is None or lookup_fn.blocks {
+        self.rc_treg_final = True;
+        self._fill_rc_treg_register();
         return;
     }
     i64 = ir.IntType(64);
@@ -155,5 +154,11 @@ impl NaIRGenPass._finalize_trace_lookup -> None {
         hb.ret(hb.ptrtoint(_trace_fn, i64, name=f"t.{_key}"));
         b = ir.IRBuilder(_next_bb);
     }
-    b.ret(ir.Constant(i64, 0));
+
+    if self.rc_treg_find_fn is None {
+        self._emit_rc_trace_registry();
+    }
+    b.ret(b.call(self.rc_treg_find_fn, [lookup_fn.args[0]], name="t.shared"));
+    self.rc_treg_final = True;
+    self._fill_rc_treg_register();
 }

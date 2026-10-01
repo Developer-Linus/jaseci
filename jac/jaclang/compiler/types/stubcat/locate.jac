@@ -4,6 +4,12 @@ import os;
 import sys;
 import from jaclang.compiler.types.stubcat.format { FORMAT_VERSION }
 
+obj CatalogOrigin {
+    has path: str,
+        offset: int = 0,
+        length: int = 0;
+}
+
 glob ENV_FILE: str = "JAC_STUBCAT_FILE",
      ENV_OFF: str = "JAC_STUBCAT_OFF",
      ENV_LEN: str = "JAC_STUBCAT_LEN",
@@ -21,7 +27,18 @@ glob ENV_FILE: str = "JAC_STUBCAT_FILE",
      ),
      DIGEST_SUFFIXES: tuple[str, ...] = (".jac", ".pyi", ".py", "PIN"),
      _DIGEST_CACHE: list[str] = [],
-     _CATALOG_CACHE: list[StubCatalog] = [];
+     _CATALOG_CACHE: list[StubCatalog] = [],
+     _OPENED_FROM: list[CatalogOrigin] = [],
+     _ORIGIN: list[CatalogOrigin] = [];
+
+def catalog_origin -> (CatalogOrigin | None) {
+    return _ORIGIN[0] if _ORIGIN else None;
+}
+
+def _opened(path: str, offset: int, length: int) {
+    _OPENED_FROM.clear();
+    _OPENED_FROM.append(CatalogOrigin(path=path, offset=offset, length=length));
+}
 
 def jaclang_pkg_dir -> str {
     import jaclang;
@@ -101,16 +118,18 @@ def bundled_catalog_path(pkg_dir: str) -> str {
 }
 
 def dev_catalog_path(pkg_dir: str) -> str {
-    import from jaclang.jac0core.cache_paths { get_jir_cache_dir }
-    return os.path.join(
-        str(get_jir_cache_dir()), "stubcat", catalog_key(pkg_dir) + ".bin"
-    );
+    import from jaclang.cache.registry { bucket }
+    return str(bucket("jir-stubcat").path() / (catalog_key(pkg_dir) + ".bin"));
 }
 
 def _open_file(path: str, pkg_dir: str) -> StubCatalog | None {
     import from jaclang.compiler.types.stubcat.reader { open_catalog_file }
     try {
-        return open_catalog_file(path, pkg_dir);
+        found = open_catalog_file(path, pkg_dir);
+        if found is not None {
+            _opened(path, 0, len(found.buf));
+        }
+        return found;
     } except Exception as e {
         sys.stderr.write(f"jac: ignoring unreadable stub catalog {path}: {e}\n");
         return None;
@@ -122,7 +141,11 @@ def _open_region(
 ) -> StubCatalog | None {
     import from jaclang.compiler.types.stubcat.reader { open_catalog_region }
     try {
-        return open_catalog_region(exe, offset, length, pkg_dir);
+        found = open_catalog_region(exe, offset, length, pkg_dir);
+        if found is not None {
+            _opened(exe, offset, length);
+        }
+        return found;
     } except Exception as e {
         sys.stderr.write(f"jac: ignoring unreadable embedded stub catalog: {e}\n");
         return None;
@@ -180,6 +203,9 @@ def _find_catalog -> StubCatalog | None {
     }
     dev = dev_catalog_path(pkg);
     if os.path.isfile(dev) {
+        import from pathlib { Path }
+        import from jaclang.cache.registry { bucket }
+        bucket("jir-stubcat").note_hit(Path(dev));
         return _open_file(dev, pkg);
     }
     return None;
@@ -190,6 +216,8 @@ def _publish(cat: StubCatalog | None) -> StubCatalog | None {
     if cat is not None and not _CATALOG_CACHE {
         _CATALOG_CACHE.append(cat);
         set_active(cat);
+        _ORIGIN.clear();
+        _ORIGIN.extend(_OPENED_FROM);
     }
     return cat;
 }
@@ -220,6 +248,8 @@ def ensure_catalog -> StubCatalog | None {
     }
     dev = dev_catalog_path(pkg);
     _build_dev_catalog(dev, pkg);
+    import from jaclang.cache.registry { maybe_sweep }
+    maybe_sweep("jir-stubcat");
     cat = _publish(_open_file(dev, pkg));
     if cat is None {
         raise StubCatalogUnavailable(
@@ -233,5 +263,6 @@ def reset_catalog_cache {
     import from jaclang.jac0core.stubcat_hook { set_active }
     _CATALOG_CACHE.clear();
     _DIGEST_CACHE.clear();
+    _ORIGIN.clear();
     set_active(None);
 }

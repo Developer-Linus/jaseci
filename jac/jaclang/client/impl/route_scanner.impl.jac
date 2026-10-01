@@ -18,6 +18,7 @@ impl RouteScanner.scan -> list[RouteEntry] {
     self._routes = [];
     self._layouts = {};
     self._page_files = [];
+    self._unrouted_files = [];
     self._routes = self._scan_directory(self.pages_dir);
     self._detect_collisions(self._routes);
     return self._routes;
@@ -29,6 +30,10 @@ impl RouteScanner.get_layouts -> dict[(str, RouteEntry)] {
 
 impl RouteScanner.get_page_files -> list[Path] {
     return self._page_files;
+}
+
+impl RouteScanner.get_unrouted_files -> list[Path] {
+    return self._unrouted_files;
 }
 
 impl RouteScanner._scan_directory(
@@ -83,6 +88,7 @@ impl RouteScanner._scan_directory(
                 continue;
             }
             if page_export is None {
+                self._unrouted_files.append(`entry);
                 continue;
             }
             route_segment = self._file_to_route_path(stem);
@@ -180,7 +186,7 @@ impl RouteScanner._detect_collisions(routes: list[RouteEntry]) -> None {
 
 impl resolve_route_exports(module_path: Path) -> tuple[((str | None), (str | None))] {
     import from jaclang.runtime.runtime { JacRuntime as Jac }
-    import from jaclang.compiler.driver.pipeline { route_exports }
+    import from jaclang.compiler.driver.pipeline_runner { route_exports }
     return route_exports(Jac.get_program(), str(module_path));
 }
 

@@ -169,12 +169,18 @@ def apply_dev_source_override() -> None:
     note and the bundled compiler serves. A baked link is never refused: a
     linked binary has no bundled compiler to fall back on.
 
-    Caches: sets ``JAC_NO_PRECOMPILE=1`` so the shipped, version-keyed
-    ``_precompiled`` JIR bundle is skipped. The per-module ``.jir`` cache is
-    content-keyed (``compute_module_key`` folds the source sha256), so source
-    edits self-invalidate on their own -- no forced full rebuild needed. Exports
-    ``JAC_DEV_SOURCE`` as a marker for tooling (also consumed by
-    ``_ext_registry`` to locate the registry inside the linked tree).
+    Caches: exports ``JAC_DEV_SOURCE``, which is both a marker for tooling
+    (``_ext_registry`` locates the registry inside the linked tree with it) and
+    the scope of the ``_precompiled`` bundle lookup. The shipped, version-keyed
+    bundle inside the binary's payload belongs to another jaclang and must never
+    serve a source run; a bundle sitting INSIDE this tree was built from this
+    tree and may. ``jir.bundle_dir_allowed`` draws that line, which is why this
+    no longer sets ``JAC_NO_PRECOMPILE=1`` -- that flag refused both, so every
+    dev run recompiled the whole compiler even when the checkout held a bundle
+    matching it exactly. Correctness does not rest on the location rule anyway:
+    both the per-module ``.jir`` cache and the bundle are content-keyed
+    (``compute_module_key`` folds the source sha256, and the bundle key folds
+    the compiler digest on top), so a stale unit can only miss.
 
     Plain Python, dev-only, never fatal.
     """
@@ -208,7 +214,6 @@ def apply_dev_source_override() -> None:
             sys.path.remove(src_dir)
         sys.path.insert(0, src_dir)
         os.environ["JAC_DEV_SOURCE"] = src_dir
-        os.environ.setdefault("JAC_NO_PRECOMPILE", "1")
     except Exception:
         # Dev convenience only; fall back to the bundled jaclang.
         pass
@@ -233,6 +238,12 @@ def add_project_venv_to_path() -> None:
         toml = _find_project_toml()
         if toml is None:
             return
+        # Jac packages (`jac install`) are mounted under .jac/packages as
+        # <org>/<name>; the directory is a search root ahead of the venv so a
+        # package's .py modules import as org.name.* like its .jac ones.
+        mounts = os.path.join(os.path.dirname(toml), ".jac", "packages")
+        if os.path.isdir(mounts) and mounts not in sys.path:
+            sys.path.insert(0, mounts)
         venv = os.path.join(os.path.dirname(toml), ".jac", "venv")
         if os.name == "nt":
             site_packages = os.path.join(venv, "Lib", "site-packages")

@@ -7,12 +7,14 @@ import shutil;
 import subprocess;
 import tempfile;
 import from pathlib { Path }
+import from jaclang.jac0core.cache_paths { FileLock }
 import from jaclang.toolchains.store {
     Artifact,
-    cache_root,
+    build_slot,
     fetch,
     file_digest,
-    InstallLock
+    publish_build_slot,
+    slot_ready
 }
 import from jaclang.toolchains.host { host_platform, run_step, shared_library_name }
 import from jaclang.toolchains.system { ensure_desktop_host, webkit_module }
@@ -40,22 +42,19 @@ def source_workspace(source: Path, name: str) -> Path {
         digest.update(path.name.encode());
         digest.update(path.read_bytes());
     }
-    destination = cache_root()
-        / "build"
-        / name
-        / host_platform()
-        / digest.hexdigest()[:20];
-    with InstallLock(destination.with_suffix(".lock")) {
-        if not (destination / ".ready").exists() {
+    destination = build_slot(name, host_platform(), digest.hexdigest()[:20]);
+    with FileLock(destination.with_suffix(".lock")) {
+        if not slot_ready(destination) {
             destination.parent.mkdir(parents=True, exist_ok=True);
-            with tempfile.TemporaryDirectory(dir=destination.parent) as tmp {
+            with tempfile.TemporaryDirectory(
+                prefix=f".tmp.{os.getpid()}.", dir=destination.parent
+            ) as tmp {
                 staged = Path(tmp) / "source";
                 staged.mkdir();
                 for path in files {
                     shutil.copy2(path, staged / path.name);
                 }
-                (staged / ".ready").touch();
-                staged.replace(destination);
+                publish_build_slot(staged, destination);
             }
         }
     }
@@ -153,7 +152,7 @@ def ensure_webview(directory: Path) -> Path {
 def build_webview(directory: Path, build: WebviewBuild) -> Path {
     output = directory / build.library;
     stamp = directory / ".webview-build";
-    with InstallLock(directory / ".build.lock") {
+    with FileLock(directory / ".build.lock") {
         if output.is_file()
             and stamp.is_file()
             and stamp.read_text() == build.identity {

@@ -68,6 +68,7 @@ import from jaclang.compiler.backends.py.jacpython.compiler_ir {
     stmt_cont,
 }
 import from jaclang.compiler.backends.py.jacpython.flowgraph { optimize_swap_range }
+import from jaclang.compiler.frontend.python.compiler_symtable { scope_kind }
 import from jaclang.compiler.backends.py.jacpython.compiler_emit {
     codegen_busy,
     codegen_fail,
@@ -104,7 +105,6 @@ obj match_pat_ctx {
         allow_irrefutable: bool;
 }
 
-
 def match_subject_use_load_fast(g: cfg_builder, m: Match) -> bool {
     has_default = 0;
     if len(m.cases) > 1 {
@@ -132,7 +132,6 @@ def match_subject_use_load_fast(g: cfg_builder, m: Match) -> bool {
     return False;
 }
 
-
 def match_emit_subject(g: cfg_builder, m: Match) {
     subj = m.subject;
     if isinstance(subj, Name) {
@@ -152,12 +151,10 @@ def match_emit_subject(g: cfg_builder, m: Match) {
     visit_expr(g, subj);
 }
 
-
 obj match_case_start {
     has ctx: match_pat_ctx,
         next_arm: basicblock;
 }
-
 
 # Failure cleanup blocks are allocated on demand and placed after the arm.
 # Each block pops one item, then falls through to the next smaller cleanup.
@@ -178,7 +175,6 @@ def match_begin_case(g: cfg_builder) -> match_case_start {
     return match_case_start(ctx=ctx, next_arm=next_arm);
 }
 
-
 def match_ensure_cleanup_blocks(g: cfg_builder, ctx: match_pat_ctx, n: int) {
     while len(ctx.cleanup_blocks) < n {
         blk = g.new_deferred_block();
@@ -186,7 +182,6 @@ def match_ensure_cleanup_blocks(g: cfg_builder, ctx: match_pat_ctx, n: int) {
         ctx.cleanup_blocks.append(blk);
     }
 }
-
 
 def match_jump_to_fail(
     g: cfg_builder, ctx: match_pat_ctx, next_arm: basicblock, jump_op: int, loc: cloc
@@ -203,7 +198,6 @@ def match_jump_to_fail(
     g.emit_jump(jump_op, ctx.cleanup_blocks[pops - 1].id, loc);
 }
 
-
 def match_emit_reset_fail_pop(
     g: cfg_builder, ctx: match_pat_ctx, next_arm: basicblock, loc: cloc
 ) {
@@ -217,14 +211,12 @@ def match_emit_reset_fail_pop(
     ctx.max_cleanup = 0;
 }
 
-
 def match_pattern_rotate(g: cfg_builder, loc: cloc, count: int) {
     while count > 1 {
         g.emit_op(OP_SWAP, count, loc);
         count = count - 1;
     }
 }
-
 
 def match_pattern_helper_store_name(
     g: cfg_builder, name: str | None, ctx: match_pat_ctx, loc: cloc
@@ -247,7 +239,6 @@ def match_pattern_helper_store_name(
     return True;
 }
 
-
 def match_emit_case_stores(g: cfg_builder, ctx: match_pat_ctx, loc: cloc) {
     # Emit separate stores in capture order; optimize_swap_range folds adjacent
     # STORE_FAST pairs into STORE_FAST_STORE_FAST (and reorders via static swaps)
@@ -260,7 +251,6 @@ def match_emit_case_stores(g: cfg_builder, ctx: match_pat_ctx, loc: cloc) {
     }
 }
 
-
 def emit_match_pattern_sub(
     g: cfg_builder, p: pattern, ctx: match_pat_ctx, next_arm: basicblock, ploc: cloc
 ) -> bool {
@@ -270,7 +260,6 @@ def emit_match_pattern_sub(
     ctx.allow_irrefutable = allow;
     return ok;
 }
-
 
 def emit_match_pattern_value(
     g: cfg_builder, mv: MatchValue, ctx: match_pat_ctx, next_arm: basicblock, ploc: cloc
@@ -291,7 +280,6 @@ def emit_match_pattern_value(
     return True;
 }
 
-
 def emit_match_pattern_singleton(
     g: cfg_builder,
     ms: MatchSingleton,
@@ -309,7 +297,6 @@ def emit_match_pattern_singleton(
     match_jump_to_fail(g, ctx, next_arm, OP_POP_JUMP_IF_FALSE, ploc);
     return True;
 }
-
 
 def emit_match_pattern_as(
     g: cfg_builder, ma: MatchAs, ctx: match_pat_ctx, next_arm: basicblock, ploc: cloc
@@ -339,7 +326,6 @@ def emit_match_pattern_as(
     ctx.on_top = ctx.on_top - 1;
     return match_pattern_helper_store_name(g, ma.name, ctx, ploc);
 }
-
 
 # CPython pattern_helper_sequence_subscr: used when the star element is a bare
 # wildcard (`*_`). The tail is dropped, so the fixed elements are read off the
@@ -395,7 +381,6 @@ def emit_match_sequence_subscr(
     g.emit_op(OP_POP_TOP, 0, ploc);
     return True;
 }
-
 
 def emit_match_pattern_sequence(
     g: cfg_builder,
@@ -514,7 +499,6 @@ def emit_match_pattern_sequence(
     return True;
 }
 
-
 # CPython codegen_pattern_class. Emits the class-check, then unpacks the
 # attribute tuple and matches sub-patterns. Positional patterns first, then
 # keyword patterns (attr names carried in a const tuple for MATCH_CLASS).
@@ -584,7 +568,6 @@ def emit_match_pattern_class(
     }
     return True;
 }
-
 
 # CPython codegen_pattern_mapping. MATCH_MAPPING + length check, MATCH_KEYS
 # against a key tuple, then sub-patterns on the values; **rest binds remaining
@@ -708,7 +691,6 @@ def emit_match_pattern_mapping(
     return True;
 }
 
-
 # Lower a multi-alternative MatchOr (CPython codegen_pattern_or). Each alternative
 # copies the subject, tests it, and on success jumps to a shared `end`. On failure
 # it falls to the next alternative (subject preserved underneath); the last
@@ -795,7 +777,6 @@ def emit_match_pattern_or(
     return True;
 }
 
-
 def emit_match_pattern(
     g: cfg_builder, p: pattern, ctx: match_pat_ctx, next_arm: basicblock, ploc: cloc
 ) -> bool {
@@ -830,7 +811,6 @@ def emit_match_pattern(
     return False;
 }
 
-
 # Lower match (CPython codegen_match_inner shape; slice 1–3 patterns + guards).
 def match_is_irrefutable(pat: pattern) -> bool {
     if isinstance(pat, MatchAs) {
@@ -853,7 +833,7 @@ def visit_match(
 ) -> stmt_cont {
     mloc = nloc(m.lineno, m.end_lineno, m.col_offset, m.end_col_offset);
     # Class bodies still need their annotation and __classcell__ epilogue.
-    if g.sym_top is not None and g.sym_top.block_type == "class" {
+    if g.sym_top is not None and g.sym_top.kind == scope_kind.CLASS {
         more_code_follows = True;
     }
     if len(m.cases) == 0 {

@@ -1,11 +1,15 @@
 """Native BOM and coding-cookie detection for Python source input."""
+
+import from jaclang.runtime.python.cpython_api {
+    PyObject,
+    jacpy_codec_valid,
+    jacpy_error_is,
+    jacpy_fd_line
+}
 import from jaclang.compiler.frontend.python.syntax_error { syntax_failure }
 
-import from jaclang.runtime.python.native_services { runtime_failure, take_error_text }
-import from c {
-    def jacpy_codec_valid(name: str) -> i64;  def jacpy_error_is(name: str) -> i64;
-}
-
+import from jaclang.runtime.python.native_services { take_error_text }
+import from jaclang.runtime.python.capi { boundary_failure }
 def normal_encoding(name: str) -> str {
     prefix = name[:12].lower().replace("_", "-");
     if prefix == "utf-8" or prefix.startswith("utf-8-") {
@@ -76,7 +80,7 @@ def source_encoding(source: bytes) -> str {
                     take_error_text();
                     raise syntax_failure("unknown encoding: " + encoding);
                 }
-                raise runtime_failure();
+                raise boundary_failure();
             }
             if bom and encoding != "utf-8" {
                 raise syntax_failure("encoding problem: utf-8");
@@ -96,9 +100,8 @@ def source_encoding(source: bytes) -> str {
 }
 
 import from jaclang.runtime.python.native_services { take_buffer }
-import from c { def jacpy_fd_line(fd: i64) -> u64;  }
 def source_fd_encoding(fd: int) -> str {
-    first = bytes(take_buffer(jacpy_fd_line(i64(fd))));
+    first = take_buffer(jacpy_fd_line(i64(fd)));
     if not first {
         return "utf-8";
     }
@@ -113,6 +116,6 @@ def source_fd_encoding(fd: int) -> str {
     if pos < len(line) and line[pos] not in (35, 10, 13) {
         return source_encoding(first);
     }
-    second = bytes(take_buffer(jacpy_fd_line(i64(fd))));
+    second = take_buffer(jacpy_fd_line(i64(fd)));
     return source_encoding(first + second);
 }

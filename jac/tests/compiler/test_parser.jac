@@ -5,6 +5,7 @@ coverage, syntax error handling, JSX, client keyword, anonymous abilities,
 and micro suite.
 """
 
+import from jaclang.compiler.frontend.roles { Kid }
 import inspect;
 import from jaclang.compiler.tools.treeprinter { print_ast_tree }
 import io;
@@ -18,7 +19,7 @@ import jaclang.compiler.frontend.unitree as uni;
 import from jaclang.compiler.frontend.constant { CodeContext }
 import from jaclang.compiler.frontend.parser { parse as rd_parse }
 import from jaclang.compiler.driver.program { JacProgram }
-import from jaclang.project.source { read_file_with_encoding }
+import from jaclang.project.textio { read_file_with_encoding }
 import from jaclang.testing.test { parametrize }
 import from tests.fixtures_list { MICRO_JAC_FILES }
 
@@ -625,8 +626,8 @@ test "bracket filter trailer produces FilterCompr AST" {
         if isinstance(nd, uni.FilterCompr) {
             return nd;
         }
-        if hasattr(nd, "kid") {
-            for k in nd.kid {
+        if isinstance(nd, uni.UniNode) {
+            for k in [nd->:Kid:->] {
                 if k is not None {
                     result = find_fc(k);
                     if result is not None {
@@ -723,8 +724,8 @@ test "typed edge ref produces FilterCompr with compares" {
         if isinstance(nd, uni.FilterCompr) and nd.compares {
             return nd;
         }
-        if hasattr(nd, "kid") {
-            for k in nd.kid {
+        if isinstance(nd, uni.UniNode) {
+            for k in [nd->:Kid:->] {
                 if k is not None {
                     result = find_filter_compr_with_compares(k);
                     if result is not None {
@@ -753,7 +754,7 @@ test "decorated class in code block parses as archetype" {
         if isinstance(nd, uni.Archetype) {
             results.append(nd);
         }
-        for k in (nd.kid) {
+        for k in ([nd->:Kid:->]) {
             results.extend(collect(k));
         }
         return results;
@@ -785,7 +786,7 @@ test "docstring attaches to all member types inside archetype body" {
             and nd.doc is not None {
             results.append(nd);
         }
-        for k in nd.kid {
+        for k in [nd->:Kid:->] {
             results.extend(collect_doc_nodes(k));
         }
         return results;

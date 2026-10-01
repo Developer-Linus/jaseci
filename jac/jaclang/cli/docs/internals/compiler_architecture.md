@@ -157,14 +157,14 @@ positions, flags); each child slot the parser fills (`condition`, `body`,
 `target`, ...) is a role-typed edge from
 [`compiler/frontend/roles.jac`](https://github.com/Jaseci-Labs/jaseci/blob/main/jac/jaclang/compiler/frontend/roles.jac)
 (`ConditionRole`, `BodyRole`, ... all subclasses of `Role`), and the ordered
-token stream is a separate `Kid` edge per child. The spelling passes use is
-unchanged: `nd.condition`, `nd.body`, `nd.kid` and `nd.parent` are accessors
-over those edges (`unitree.impl/roles.impl.jac`: each `{ getter; }` slot
-declared in `unitree.jac` reads its edge type there, and the `init` for each
-class links its children through `_link`). `kid` is the Kid edges in
-connection order, so the formatter and `unparse` see the same token stream as
-before; `parent` is the source of the newest incoming Kid edge (or Role edge,
-for a node reachable only through a slot).
+token stream is a separate `Kid` edge per child. Passes read that stream
+directly with `[nd->:Kid:->]`, which returns children in connection order,
+so the formatter and `unparse` see the same token stream as before.
+`nd.condition`, `nd.body` and `nd.parent` are accessors over edges
+(`unitree.impl/roles.impl.jac` implements the role getters declared in
+`unitree.jac`, and the `init` for each class links its children through
+`_link`). `parent` is the source of the newest incoming Kid edge (or Role
+edge, for a node reachable only through a slot).
 
 Construction connects: a class's generated `init` assigns its scalars and calls
 `_link(kid, roles)`, which records each child in the node's adjacency. After
@@ -201,9 +201,11 @@ light edge works on a view (`light_edge_view`).
 
 Every module parses through the staged front end: the lexer and parser in
 `compiler/frontend/parser/`, then the ir-gen schedule pass by pass. The
-native scope (`compiler/native_scope.jac`) names the compiler modules
-served from `libjac_compiler`; it is empty until a native pass can share
-the tree with a bytecode pass.
+native scope (`compiler/native_scope.jac`) names the compiler modules the
+kernel links; each is a native unit whose interface (`SEC_NIFACE`) and
+object (`SEC_NOBJ`, materialized on demand) live in its module JIR, and `libjac_compiler` is the
+link plan's artifact over them (`compiler/backends/native/link_plan.jac`),
+resolved at parse time by `kernel_resolve.jac`.
 
 ---
 
@@ -682,12 +684,26 @@ recompile. It is a developer knob that trusts codegen did not change; leave it
 unset for anything that must be correct.
 
 The compiler keeps two on-disk caches so the front end and back end can be
-skipped when nothing has changed.
+skipped when nothing has changed. Both are buckets of the machine-wide jac
+cache (`~/.cache/jac` on Linux; `jac cache status` prints the root and every
+bucket), whose root, per-bucket `CACHEDIR.TAG` markers and retention policies are owned
+by `jaclang.cache`. The pre-bootstrap Python module
+`jaclang/jac0core/cache_paths.py` holds the root rule itself, because the
+bootstrap tier imports it before any `.jac` module can be compiled.
 
-| Cache | Location | Invalidated when |
-|-------|----------|------------------|
-| **Bootstrap** | `~/.cache/jac/jir/bootstrap/` | A `compiler/driver/` file or `jac0.py` changes |
-| **Module** | `~/.cache/jac/jir/modules/` | The full compiler's output format changes, or the source / its imports change |
+| Cache | Bucket | Invalidated when | Reclaimed when |
+|-------|--------|------------------|----------------|
+| **Bootstrap** | `jir-bootstrap` (`<cache>/jir/bootstrap/`) | A `compiler/driver/` file or `jac0.py` changes | An entry goes unused for 14 days |
+| **Module** | `jir-modules` (`<cache>/jir/modules/<generation>/`) | The full compiler's output format changes, or the source / its imports change | A generation goes unused for 14 days (`JAC_CACHE_GENERATION_TTL_DAYS`) |
+
+Every compiler digest (one per checkout) names a **generation** directory, so
+several checkouts sharing one binary keep disjoint slots; the live generation
+is held by identity, never by age. The stub catalog (`jir-stubcat`), the
+native kernel units (`jir-kernel-units`) and the per-checkout compiler digests
+(`jir-digests`) are further buckets under `jir/` with the same 14-day
+last-use policy. Sweeps run opportunistically from each bucket's write path,
+at most once per process and once per day; `jac cache gc` runs them on
+demand.
 
 Each cache entry is a **JIR file** (Jac IR) with named sections defined in
 [`compiler/driver/jir.jac`](https://github.com/Jaseci-Labs/jaseci/blob/main/jac/jaclang/compiler/driver/jir.jac):
@@ -696,8 +712,10 @@ Each cache entry is a **JIR file** (Jac IR) with named sections defined in
 |---------|----------|
 | `SEC_BYTECODE` | Marshalled Python `CodeType` (server backend) |
 | `SEC_MTIR` | Meaning-Typed IR for `by llm` calls |
-| `SEC_LLVM_IR` | LLVM IR text (native backend) |
-| `SEC_NATIVE_OBJ` | Compiled bitcode with target triple (native backend) |
+| `SEC_NBITCODE` | The unit's LLVM bitcode under its native stamp (whole-program and JIT link modes) |
+| `SEC_NIFACE` | The unit's native interface: link symbols, class layouts, initializer, demoted symbols, C library needs; digest-prefixed |
+| `SEC_NOBJ` | The unit's relocatable object, materialized on demand from bitcode under its native stamp (incremental link mode) |
+| `SEC_NCTDEPS` | Native compile-time inputs, using the shared CTDEPS codec under a native stamp |
 | `SEC_INTEROP` | Serialised `InteropManifest` |
 | `SEC_MODKEY` / `SEC_ENVKEY` | Content key and environment fingerprint that gate every read |
 | `SEC_DEBUG_SRC` | Compressed source for traceback rendering |
@@ -719,14 +737,17 @@ Hydration is always on; `JAC_REBUILD` recomputes and rewrites the cache, and
 `JAC_IFACE_VERIFY=1` recomputes everything served from cache and fails on
 any divergence. See [The analysis cache](analysis-cache.md) for the design.
 
-When debugging compiler changes, clear the relevant cache:
+When debugging compiler changes, clear the relevant bucket:
 
 ```bash
-# Bootstrap or core compiler change
-rm -rf ~/.cache/jac/jir/
+# Just the compiled modules
+jac cache purge --bucket jir-modules
 
-# Or just user modules
-rm -rf ~/.cache/jac/jir/modules/
+# The bootstrap tier too
+jac cache purge --bucket jir-bootstrap
+
+# Everything jac manages (fused runtimes, app images, toolchains included)
+jac cache purge
 ```
 
 ---

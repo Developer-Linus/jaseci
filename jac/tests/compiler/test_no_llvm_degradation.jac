@@ -12,6 +12,7 @@ import os;
 import subprocess;
 import sys;
 import tempfile;
+import from tests.support { cache_env }
 import from tests.support { JAC_ROOT }
 
 glob PROG = (
@@ -38,7 +39,7 @@ except SystemExit as exc:
     env: dict[str, str] = dict(os.environ);
     env["JAC_LLVM_SHIM"] = "none";
     env["HOME"] = work;
-    env["XDG_CACHE_HOME"] = os.path.join(work, "cache");
+    env.update(cache_env(os.path.join(work, "cache")));
     proc = subprocess.run(
         [sys.executable, "-c", script],
         cwd=JAC_ROOT,
@@ -70,7 +71,7 @@ test "native availability probes do not load code generators or LLVM bindings" {
     script = """
 import os, sys, tempfile
 from pathlib import Path
-from jaclang.compiler.driver.pipeline import native_pipeline_available, _native_env_memo
+from jaclang.compiler.driver.toolchain import native_pipeline_available, _native_env_memo
 heavy = ('jaclang.compiler.backends.native.na_ir_gen_pass',
          'jaclang.compiler.backends.native.na_compile_pass',
          'jaclang.compiler.backends.native.llvm.binding')

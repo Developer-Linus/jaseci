@@ -1,6 +1,5 @@
 import io;
 import os;
-import gzip;
 import hashlib;
 import logging;
 import shutil;
@@ -11,6 +10,8 @@ import time;
 import tomllib;
 import from pathlib { Path }
 import from jaclang.scale.runtime.fleet { FleetSpec }
+import from jaclang.dist.archive { det_tar_member, open_det_tar }
+import from jaclang.dist.sanitize { sanitized_jac_toml }
 
 glob logger = logging.getLogger(__name__);
 
@@ -64,6 +65,7 @@ glob _EXCLUDE_ENV: set[str] = {
          "JAC_LLVM_SHIM",
          "JAC_DEV_SOURCE",
          "JAC_NO_PRECOMPILE",
+         "JAC_PRECOMPILE_REQUIRED",
          "JAC_EXECUTABLE"
      };
 
@@ -166,7 +168,7 @@ obj BundleSourceFilter {
 
 
 def source_filter_for(base: Path) -> BundleSourceFilter {
-    import from jaclang.project.source { read_jacignore_patterns }
+    import from jaclang.project.textio { read_jacignore_patterns }
 
     return BundleSourceFilter(ignore_patterns=read_jacignore_patterns(str(base)));
 }
@@ -389,103 +391,22 @@ def check_fleet_entries(
 }
 
 
-def _is_secret_path(name: str) -> bool {
-    return name == "plugins.scale.secrets"
-        or name.startswith("plugins.scale.secrets.")
-        or name == "scale.secrets"
-        or name.startswith("scale.secrets.");
-}
-
-
-def _is_dev_section(name: str) -> bool {
-    return name == "dev" or name.startswith("dev.");
-}
-
-
-def sanitized_jac_toml(base: Path) -> (str | None) {
-    src = base / "jac.toml";
-    if not src.is_file() {
-        return None;
-    }
-    out: list[str] = [];
-    pending: list[str] = [];
-    in_stripped_section = False;
-    current_section = "";
-    for line in src.read_text().splitlines() {
-        stripped = line.lstrip();
-        if stripped.startswith("[") {
-            header = stripped.lstrip("[").split("]")[0].strip();
-            in_stripped_section = _is_secret_path(header) or _is_dev_section(header);
-            current_section = header;
-            if in_stripped_section {
-                pending = [];
-                continue;
-            }
-            out.extend(pending);
-            pending = [];
-            out.append(line);
-            continue;
-        }
-        if in_stripped_section {
-            continue;
-        }
-        if stripped == "" or stripped.startswith("#") {
-            pending.append(line);
-            continue;
-        }
-        key = stripped.split("=")[0].strip();
-        full_key = key if current_section == "" else f"{current_section}.{key}";
-        if _is_secret_path(full_key) {
-            pending = [];
-            continue;
-        }
-        out.extend(pending);
-        pending = [];
-        out.append(line);
-    }
-    out.extend(pending);
-    return "\n".join(out) + "\n";
-}
-
-
 def unresolved_toml_references(text: str, environ: dict[str, str]) -> list[str] {
-    import from jaclang.project.config { interpolate_env_vars }
-    found: list[str] = [];
-    def collect(item: any, path: str) {
-        if isinstance(item, dict) {
-            for (key, value) in item.items() {
-                collect(value, f"{path}.{key}" if path else str(key));
-            }
-        } elif isinstance(item, list) {
-            for (i, element) in enumerate(item) {
-                collect(element, f"{path}[{i}]");
-            }
-        } elif isinstance(item, str) {
-            try {
-                interpolate_env_vars(item, environ);
-            } except ValueError as e {
-                found.append(f"{path}: {e}");
-            }
-        }
-    }
-    collect(tomllib.loads(text), "");
-    return found;
+    import from jaclang.project.config { resolve_env_refs }
+    (_, refs) = resolve_env_refs(tomllib.loads(text), environ);
+    return [
+        f"{ref.path}: {ref.describe()}"
+        for ref in refs
+        if not _is_shell_script_ref(ref)
+    ];
 }
 
 
-def det_tar_member(info: tarfile.TarInfo) -> tarfile.TarInfo {
-    info.mtime = 0;
-    info.uid = 0;
-    info.gid = 0;
-    info.uname = "";
-    info.gname = "";
-    return info;
-}
-
-
-def open_det_tar(buf: io.BytesIO) -> tuple[tarfile.TarFile, any] {
-    gz = gzip.GzipFile(fileobj=buf, mode="wb", mtime=0);
-    return (tarfile.open(fileobj=gz, mode="w"), gz);
+def _is_shell_script_ref(ref: any) -> bool {
+    parts = ref.path.split(".");
+    in_scripts = parts[0] == "scripts"
+        or (parts[0] == "environments" and parts[2:3] == ["scripts"]);
+    return ref.unsupported and in_scripts;
 }
 
 
@@ -719,11 +640,28 @@ def _legacy_sealer_script_for(
 }
 
 
+def sealed_app_name(project_dir: str, fleet: (FleetSpec | None)) -> str {
+    if fleet is None or not fleet.root_app {
+        return "";
+    }
+    config = _project_config(project_dir);
+    if config is None or not config.is_workspace {
+        return "";
+    }
+    return fleet.root_app;
+}
+
+
 def _precompile_app(
-    base: Path, seal_binary: bytes, sanitized_toml: (str | None), timeout_s: int
+    base: Path,
+    seal_binary: bytes,
+    sanitized_toml: (str | None),
+    timeout_s: int,
+    app: str = ""
 ) -> Path {
     stage_root = _stage_app(base, sanitized_toml);
     stage = stage_root / "app";
+    seal_flags: list[str] = ["--seal"] + ([f"--app={app}"] if app else []);
     try {
         jac_path = stage_root / ".seal-jac";
         jac_path.write_bytes(seal_binary);
@@ -737,7 +675,9 @@ def _precompile_app(
                 + "with entry {\n"
                 + "    project = Path('app').resolve();\n"
                 + "    config = get_config_for_path(project);\n"
-                + "    if not bake_serve_payloads(config, project, bake_client=False) {\n"
+                + "    if not bake_serve_payloads(\n"
+                + f"        config, project, app={repr(app)}, bake_client=False\n"
+                + "    ) {\n"
                 + "        raise RuntimeError('Serving metadata preparation failed');\n"
                 + "    }\n}\n"
         );
@@ -758,7 +698,7 @@ def _precompile_app(
         }
 
         result = subprocess.run(
-            [str(jac_path), "precompile", str(stage_root), "--seal"],
+            [str(jac_path), "precompile", str(stage_root)] + seal_flags,
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -775,7 +715,7 @@ def _precompile_app(
             );
             script = _legacy_sealer_script_for(jac_path, stage_root, timeout_s);
             result = subprocess.run(
-                [str(jac_path), "run", str(script), str(stage_root), "--seal"],
+                [str(jac_path), "run", str(script), str(stage_root)] + seal_flags,
                 capture_output=True,
                 text=True,
                 timeout=timeout_s,
@@ -865,15 +805,7 @@ def seal_timeout_setting(project_dir: str) -> int {
 }
 
 
-def _pod_wheel_platform(pod_arch: str) -> str {
-    if not pod_arch {
-        return "";
-    }
-    return f"manylinux_2_36_{pod_arch}";
-}
-
-
-def _vendor_stage(stage: Path, seal_binary: bytes, platform_tag: str = "") {
+def _vendor_stage(stage: Path, seal_binary: bytes, pod_arch: str = "") {
     jac_path = stage.parent / ".seal-jac";
     jac_path.write_bytes(seal_binary);
     jac_path.chmod(0o755);
@@ -885,8 +817,12 @@ def _vendor_stage(stage: Path, seal_binary: bytes, platform_tag: str = "") {
         Path(str(__file__)).parent.parent / "utils" / "vendor_wheels.jac"
     );
     cmd = [str(jac_path), "run", str(script), str(stage)];
-    if platform_tag {
-        cmd.append(platform_tag);
+    if pod_arch {
+        import from jaclang.scale.utils.vendor_wheels { pod_wheel_target }
+        target = pod_wheel_target(pod_arch);
+        if target is not None {
+            cmd.append(target.platform_tag());
+        }
     }
     try {
         result = subprocess.run(
@@ -1051,14 +987,18 @@ def pack_jab(
     }
     sanitized = sanitized_jac_toml(base);
     staged = _precompile_app(
-        base, seal_binary, sanitized, seal_timeout_setting(project_dir)
+        base,
+        seal_binary,
+        sanitized,
+        seal_timeout_setting(project_dir),
+        sealed_app_name(project_dir, fleet)
     );
 
     try {
         (fat, fat_explicit) = fat_bundle_setting(project_dir);
         if fat {
             try {
-                _vendor_stage(staged, seal_binary, _pod_wheel_platform(pod_arch));
+                _vendor_stage(staged, seal_binary, pod_arch);
             } except Exception as exc {
                 if fat_explicit {
                     raise;

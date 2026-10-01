@@ -9,8 +9,10 @@ comptime import from jaclang.cli.commands.analysis {
     SPEC_PRECOMMIT,
     SPEC_TEST
 }
+comptime import from jaclang.cli.commands.arch { SPEC_ARCH }
 comptime import from jaclang.cli.commands.browse { SPEC_BROWSE }
 comptime import from jaclang.cli.commands.build { SPEC_BUILD }
+comptime import from jaclang.cli.commands.cache { SPEC_CACHE }
 comptime import from jaclang.cli.commands.code { SPEC_CODE }
 comptime import from jaclang.cli.commands.config { SPEC_CONFIG }
 comptime import from jaclang.cli.commands.db { SPEC_DB }
@@ -23,6 +25,7 @@ comptime import from jaclang.cli.commands.project {
     SPEC_CLEAN,
     SPEC_CREATE,
     SPEC_INSTALL,
+    SPEC_PUBLISH,
     SPEC_REMOVE,
     SPEC_UPDATE
 }
@@ -37,14 +40,14 @@ comptime import from jaclang.cli.shadcn.cli { SPEC_RETHEME }
 comptime import from jaclang.client.cli { SPEC_SETUP }
 comptime import from jaclang.scale.plugin { SPEC_SCALE_CMD }
 
-comptime VERB_BUDGET: int = 26,
+comptime VERB_BUDGET: int = 27,
      TOMBSTONED_VERBS: dict[str, str] = {
          "add": "jac install <pkg>",
          "format": "jac fmt",
          "lint": "jac check --lint",
          "deps": "jac install --plan",
          "script": "jac x <name>",
-         "jacpack": "jac create --pack <dir>",
+         "jacpack": "jac build --as jab (a project with a [jacpack] table builds a template package)",
          "enter": "jac run --entry <name> <file>",
          "debug": "jac run --debug <file>",
          "start": "jac run --serve [--port N] <file>",
@@ -57,6 +60,7 @@ comptime VERB_BUDGET: int = 26,
          "py2jac": "jac tool py2jac <file>",
          "jac2js": "jac tool jac2js <file>",
          "grammar": "jac tool grammar",
+         "purge": "jac cache purge",
          "destroy": "jac scale destroy <file.jac>",
          "status": "jac scale status <file.jac>"
      },
@@ -97,7 +101,9 @@ comptime def _route(spec: CommandSpec) -> CommandSpec {
 
 comptime ROUTES: list[CommandSpec] = [
          _route(SPEC_BROWSE),
+         _route(SPEC_ARCH),
          _route(SPEC_BUILD),
+         _route(SPEC_CACHE),
          _route(SPEC_CHECK),
          _route(SPEC_CLEAN),
          _route(SPEC_CODE),
@@ -117,6 +123,7 @@ comptime ROUTES: list[CommandSpec] = [
          _route(SPEC_MODEL),
          _route(SPEC_PRECOMMIT),
          _route(SPEC_PRECOMPILE),
+         _route(SPEC_PUBLISH),
          _route(SPEC_REMOVE),
          _route(SPEC_RETHEME),
          _route(SPEC_RUN),

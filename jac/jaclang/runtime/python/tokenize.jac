@@ -1,5 +1,14 @@
 """Python's streaming token iterator backed by the shared Jac scanner."""
 
+import from jaclang.runtime.python.cpython_api {
+    NULL,
+    PyLong_FromLongLong,
+    PyObject,
+    PyTuple_New,
+    jacpy_readline,
+    jacpy_release,
+    jacpy_tuple_set_owned
+}
 import type from typing { Never }
 import from jaclang.compiler.frontend.python.compiler_diagnostics {
     report_token_warnings
@@ -23,14 +32,18 @@ import from jaclang.compiler.frontend.python.token_model {
     tok_diag
 }
 
+import from jaclang.runtime.python.capi {
+    boundary_failure,
+    checked,
+    required,
+    text_object
+}
 import from jaclang.runtime.python.native_services {
     take_buffer,
-    runtime_failure,
     parse_integer,
     parse_float
 }
 import from jaclang.compiler.frontend.python.syntax_error { syntax_failure }
-import from c { def jacpy_readline(reader: u64, encoding: str, decode: i64) -> u64;  }
 obj native_token {
     has kind: int,
         spelling: str,
@@ -45,6 +58,11 @@ def _character_column(line: str, column: int) -> int {
     if column < 0 {
         return column;
     }
+    # Token columns are byte offsets and tokenize reports characters. On an
+    # ASCII line the two agree, so only a line with other text is counted.
+    if line.isascii() {
+        return min(column, len(line));
+    }
     data = line.encode("utf-8");
     result = 0;
     for index in range(min(column, len(data))) {
@@ -56,7 +74,7 @@ def _character_column(line: str, column: int) -> int {
 }
 
 obj token_iterator_state(token_source) {
-    has reader: u64,
+    has reader: ptr[PyObject],
         encoding: str | None,
         scanner: tok_state,
         lines: list[str] = [],
@@ -76,7 +94,7 @@ obj token_iterator_state(token_source) {
         handle = jacpy_readline(
             self.reader, self.encoding or "", i64(0 if self.encoding is None else 1)
         );
-        line = bytes(take_buffer(handle)).decode("utf-8", "surrogatepass");
+        line = take_buffer(handle).decode("utf-8", "surrogatepass");
         if not line {
             self.input_finished = True;
             return False;
@@ -90,8 +108,7 @@ obj token_iterator_state(token_source) {
         if not decoded.endswith("\n") {
             decoded += "\n";
         }
-        self.scanner.source += decoded;
-        self.scanner.data = self.scanner.source.encode("utf-8");
+        self.scanner.data += decoded.encode("utf-8");
         return True;
     }
 
@@ -118,6 +135,7 @@ obj token_iterator_state(token_source) {
         if self.finished {
             return None;
         }
+        self.scanner.discard_consumed();
         item = tokenizer_next(self.scanner);
         report_token_warnings(self.scanner);
         if isinstance(item, tok_diag) {
@@ -240,9 +258,9 @@ obj token_iterator_state(token_source) {
 }
 
 def:pub token_iterator(
-    reader: u64, encoding: str, decode: bool, extra: bool
+    reader: ptr[PyObject], encoding: str, decode: bool, extra: bool
 ) -> token_iterator_state {
-    scanner = tok_state(source="", filename="<string>", extra_tokens=extra);
+    scanner = tok_state(data=b"", filename="<string>", extra_tokens=extra);
     result = token_iterator_state(
         reader=reader, encoding=encoding if decode else None, scanner=scanner
     );
@@ -250,41 +268,47 @@ def:pub token_iterator(
     return result;
 }
 
-import from jaclang.compiler.backends.py.jacpython.request_result {
-    native_result,
-    error_packet
-}
-import from jaclang.compiler.backends.py.jacpython.marshal_writer { marshal_constant }
-import from jaclang.runtime.python.objects { PyObj, PyInt, PyStr, PyTuple }
-def:pub jacpy_token_next(iterator: token_iterator_state) -> native_result {
-    try {
-        value = iterator.next_token();
-        if value is None {
-            return native_result(eof=True);
-        }
-        start: list[PyObj] = [
-            PyInt(t="int", val=value.start_line),
-            PyInt(t="int", val=value.start)
-        ];
-        end: list[PyObj] = [
-            PyInt(t="int", val=value.end_line),
-            PyInt(t="int", val=value.end)
-        ];
-        parts: list[PyObj] = [
-            PyInt(t="int", val=value.kind),
-            PyStr(t="str", val=value.spelling),
-            PyTuple(t="tuple", items=start),
-            PyTuple(t="tuple", items=end),
-            PyStr(t="str", val=value.line)
-        ];
-        return native_result(packet=marshal_constant(PyTuple(t="tuple", items=parts)));
-    } except syntax_failure as error {
-        return error_packet(error);
-    } except runtime_failure {
-        return native_result(runtime_error=True);
-    } except Exception as error {
-        return error_packet(syntax_failure(str(error), kind="SystemError"));
+# (type, string, (start line, column), (end line, column), line); zero with no
+# exception set once the stream is exhausted.
+def token_object(iterator: token_iterator_state) -> ptr[PyObject] {
+    value = iterator.next_token();
+    if value is None {
+        return NULL;
     }
+    result = required(PyTuple_New(5));
+    try {
+        checked(
+            jacpy_tuple_set_owned(
+                result, 0, required(PyLong_FromLongLong(i64(value.kind)))
+            )
+        );
+        checked(jacpy_tuple_set_owned(result, 1, text_object(value.spelling)));
+        checked(
+            jacpy_tuple_set_owned(result, 2, position(value.start_line, value.start))
+        );
+        checked(jacpy_tuple_set_owned(result, 3, position(value.end_line, value.end)));
+        checked(jacpy_tuple_set_owned(result, 4, text_object(value.line)));
+    } except Exception {
+        jacpy_release(result);
+        raise;
+    }
+    return result;
+}
+
+def position(line: int, column: int) -> ptr[PyObject] {
+    result = required(PyTuple_New(2));
+    try {
+        checked(
+            jacpy_tuple_set_owned(result, 0, required(PyLong_FromLongLong(i64(line))))
+        );
+        checked(
+            jacpy_tuple_set_owned(result, 1, required(PyLong_FromLongLong(i64(column))))
+        );
+    } except Exception {
+        jacpy_release(result);
+        raise;
+    }
+    return result;
 }
 
 def:pub jacpy_token_close(iterator: token_iterator_state) {

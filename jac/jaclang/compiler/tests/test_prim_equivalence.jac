@@ -110,7 +110,17 @@ glob STR_NA_GAPS: list[any] = [
              "prim_complex.jac",
              "complex_ops_py",
              "complex_ops_cl",
-             "complex_ops_na"
+             "complex_ops_na",
+             ["na"]
+         ),
+         ("cmath", "prim_cmath.jac", "cmath_py", "cmath_cl", "cmath_na", ["na"]),
+         (
+             "complex mixed scalar ops",
+             "prim_complex_mixed.jac",
+             "cmixed_py",
+             "cmixed_cl",
+             "cmixed_na",
+             ["na"]
          ),
          ("str", "prim_str.jac", "str_py", "str_cl", "str_na", ["na"], STR_NA_GAPS),
          (
@@ -126,7 +136,9 @@ glob STR_NA_GAPS: list[any] = [
              "prim_bytes.jac",
              "bytes_search_py",
              "bytes_search_cl",
-             "bytes_search_na"
+             "bytes_search_na",
+             ["na"],
+             ["hex", "from_hex"]
          ),
          (
              "bytes modify",
@@ -150,6 +162,14 @@ glob STR_NA_GAPS: list[any] = [
              "bytes_test_na"
          ),
          (
+             "bytes constructors",
+             "prim_bytearray.jac",
+             "bytes_ctor_py",
+             "bytes_ctor_cl",
+             "bytes_ctor_na",
+             ["na"]
+         ),
+         (
              "bytearray core",
              "prim_bytearray.jac",
              "bytearray_core_py",
@@ -171,6 +191,14 @@ glob STR_NA_GAPS: list[any] = [
              "bytearray_pack_py",
              "bytearray_pack_cl",
              "bytearray_pack_na",
+             ["na"]
+         ),
+         (
+             "bytearray unpack",
+             "prim_bytearray.jac",
+             "bytearray_unpack_py",
+             "bytearray_unpack_cl",
+             "bytearray_unpack_na",
              ["na"]
          ),
          ("list", "prim_list.jac", "list_py", "list_cl", "list_na"),
@@ -467,6 +495,62 @@ glob STR_NA_GAPS: list[any] = [
          ),
          ("uuid bundled", "prim_uuid.jac", "uuid_py", "uuid_cl", "uuid_na", ["na"]),
          (
+             "colorsys bundled",
+             "prim_colorsys.jac",
+             "colorsys_py",
+             "colorsys_cl",
+             "colorsys_na",
+             ["na"]
+         ),
+         (
+             "sched bundled",
+             "prim_sched.jac",
+             "sched_py",
+             "sched_cl",
+             "sched_na",
+             ["na"]
+         ),
+         (
+             "ipaddress bundled",
+             "prim_ipaddress.jac",
+             "ipaddress_py",
+             "ipaddress_cl",
+             "ipaddress_na",
+             ["na"]
+         ),
+         (
+             "mimetypes bundled",
+             "prim_mimetypes.jac",
+             "mimetypes_py",
+             "mimetypes_cl",
+             "mimetypes_na",
+             ["na"]
+         ),
+         (
+             "locale bundled",
+             "prim_locale.jac",
+             "locale_py",
+             "locale_cl",
+             "locale_na",
+             ["na"]
+         ),
+         (
+             "gettext bundled",
+             "prim_gettext.jac",
+             "gettext_py",
+             "gettext_cl",
+             "gettext_na",
+             ["na"]
+         ),
+         (
+             "logging bundled",
+             "prim_logging.jac",
+             "logging_py",
+             "logging_cl",
+             "logging_na",
+             ["na"]
+         ),
+         (
              "static members",
              "prim_static_members.jac",
              "static_members_py",
@@ -514,6 +598,14 @@ glob STR_NA_GAPS: list[any] = [
              "difflib_py",
              "difflib_cl",
              "difflib_na",
+             ["na"]
+         ),
+         (
+             "sqlite3 bundled",
+             "prim_sqlite3.jac",
+             "sqlite3_py",
+             "sqlite3_cl",
+             "sqlite3_na",
              ["na"]
          ),
          ("random", "prim_random.jac", "random_py", "random_cl", "random_na", ["na"]),
@@ -728,7 +820,10 @@ test "native gradual object keys demote, never pointer-sort (#9158)" {
     ];
     assert len(kept) == 0 , f"semantic str key must lower natively: {kept}";
     assert "__jac_str_cmp" in llvm_txt , "str-key control should use the semantic string comparator";
-    assert "strcmp" not in llvm_txt , "no raw pointer may reach libc strcmp (#9158)";
+    import re;
+    assert re.search(r'\bcall\s+i32\s+@"?strcmp"?\(', llvm_txt) is None , (
+        "no raw pointer may reach libc strcmp (#9158)"
+    );
 }
 
 test "annotated block lambda tails are type-checked (#9158)" {

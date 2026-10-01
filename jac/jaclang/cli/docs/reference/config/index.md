@@ -174,28 +174,38 @@ The effective config an app sees is: base `jac.toml` → its `[apps.<name>.*]` o
 
 ### [dependencies]
 
-Python/PyPI packages:
+`[dependencies]` lists Jac packages; Python (PyPI), npm and system packages live in subtables:
 
 ```toml
 [dependencies]
+"jaseci/vecdb" = "^2.1"
+"acme/util" = { path = "../util" }
+"acme/fork" = { git = "https://github.com/acme/fork", rev = "v1.2.0" }
+
+[dependencies.pypi]
 requests = ">=2.28.0"
 numpy = "1.24.0"
-byllm = ">=0.4.8"
-
-[dev-dependencies]
-pytest = ">=8.0.0"
-
-[dependencies.git]
 my-lib = { git = "https://github.com/user/repo.git", branch = "main" }
+
+[dependencies.npm]
+d3 = "^7"
 
 [dependencies.system]
 git = "*"
 ffmpeg = "*"
+
+[dev-dependencies]
+"acme/testkit" = "^0.3"
+
+[dev-dependencies.pypi]
+pytest = ">=8.0.0"
 ```
+
+Jac package names are scoped (`org/name`) and take a semantic-version requirement (`"^2.1"`, `"~1.4"`, `">=1.2, <2"`, `"=1.4.2"`) or a table with `version`, `path`, `git` + `rev`, or `registry`. See [Packages](../packages.md) for resolution, `jac.lock` and publishing.
 
 `[dependencies.system]` declares OS (apt) packages your app needs at runtime. On a `jac-scale` Kubernetes deploy they are installed into the service container at startup (Debian only; keys are apt package names). See [System Dependencies](../plugins/jac-scale-kubernetes.md#system-dependencies).
 
-**Version specifiers:**
+**PyPI version specifiers:**
 
 | Format | Example | Meaning |
 |--------|---------|---------|
@@ -204,7 +214,21 @@ ffmpeg = "*"
 | Range | `">=1.0,<2.0"` | 1.x only |
 | Compatible | `"~=1.4.2"` | 1.4.x |
 
-> **Default behavior:** When you run `jac install requests` without a version, the package is installed unconstrained and then the actual installed version is queried. A compatible-release spec (`~=X.Y`) is recorded -- e.g., if pip installs `2.32.5`, `jac.toml` gets `requests = "~=2.32"`. The `jac update` command also uses this format when writing updated versions back.
+> **Default behavior:** When you run `jac install --pypi requests` without a version, the package is installed unconstrained and then the actual installed version is queried. A compatible-release spec (`~=X.Y`) is recorded -- e.g., if pip installs `2.32.5`, `jac.toml` gets `requests = "~=2.32"`. The `jac update` command also uses this format when writing updated versions back. `jac install jaseci/vecdb` without a range records `^X.Y.Z` of the version it resolved.
+
+!!! note "Upgrading an older project"
+    Older manifests listed PyPI packages directly under `[dependencies]`, which is now an error. Run `jac fix dependencies` to move them (and the old `[dependencies.git]` table) into `[dependencies.pypi]`.
+
+### [registries]
+
+Named package registries, in addition to the default public index:
+
+```toml
+[registries]
+internal = "https://raw.githubusercontent.com/acme/jac-index/main/"
+```
+
+A dependency picks one with `{ version = "^1", registry = "internal" }`.
 
 ---
 
@@ -468,6 +492,19 @@ without executing it. The policy is included in analysis and code-generation
 cache identities.
 
 A built binary reads two environment variables at run time and no others: `JAC_GC=off` disables collection for leak debugging (collection is on by default under `managed`), and `JAC_THREADS` overrides the `flow for` width. Nothing at compile time reads the environment; `jac explain memory|placement|ir` replaces the old diagnostic variables.
+
+---
+
+### [arch]
+
+The default for modules that `arch.jac` does not name. See [Project Wiring](../wiring.md).
+
+```toml
+[arch]
+closed = []               # Module-name patterns sealed even when arch.jac never names them
+```
+
+A module `arch.jac` names is sealed in both directions: its project-module imports must be wires, and it flows only where a rule admits. `closed` extends that to modules the file never mentions, including packages not yet written, and applies even before `arch.jac` exists. `["*"]` closes the whole project; a pattern list such as `["core.*"]` closes it one package at a time. The policy is part of every module's cache identity, so changing it rebuilds the affected modules.
 
 ---
 
@@ -1019,11 +1056,11 @@ version = "1.0.0"
 description = "An AI-powered application"
 entry-point = "main"
 
-[dependencies]
+[dependencies.pypi]
 byllm = ">=0.4.8"
 requests = ">=2.28.0"
 
-[dev-dependencies]
+[dev-dependencies.pypi]
 pytest = ">=8.0.0"
 
 [run]
@@ -1108,7 +1145,8 @@ A `jac scale deploy` reads the same file when it stages the app bundle, so a par
 | Variable | Description |
 |----------|-------------|
 | `JAC_DB_URL` | Postgres connection URL for **this process** (overrides `[scale.database].url` at runtime). A deploy ignores it: what database the deployed app gets is decided by `[scale.kubernetes]` `database_mode` / `database_url`, then `[scale.database]` `url`, then provisioning |
-| `JAC_CACHE_HOME` | Root of the machine-wide jac cache; the shared embedded Postgres cluster lives in `<JAC_CACHE_HOME>/pg/main` (default `~/.cache/jac`) |
+| `JAC_CACHE_HOME` | Root of the machine-wide jac cache, every bucket included (`jac cache status`); the shared embedded Postgres cluster lives in `<JAC_CACHE_HOME>/pg/main`. Unset, the root is `XDG_CACHE_HOME/jac` when that is set, else `~/.cache/jac` (Linux), `~/Library/Caches/jac` (macOS) or `%LOCALAPPDATA%\jac\cache` (Windows) |
+| `JAC_CACHE_TTL_DAYS` | Overrides every cache bucket's "unused for N days" retention at once (`0` turns the age sweep off); `JAC_CACHE_GENERATION_TTL_DAYS` still wins for the compiled-module generations |
 | `JAC_DB_RETENTION_DAYS` | Drop databases unused for this many days when the embedded cluster starts; overrides `[database] retention_days`, unset means never |
 | `JAC_DB_ORPHAN_GRACE_HOURS` | How long a project database's directory must have been missing before a cluster start drops it (default `24`; the first start to notice marks it, a later start past the grace drops it; `0` means the next start after the mark) |
 | `JAC_DB_SCRATCH` | `1` makes this process open one throwaway database that is dropped when it exits, instead of a per-project one (used by the test runner for its per-file bases and by deploy staging) |

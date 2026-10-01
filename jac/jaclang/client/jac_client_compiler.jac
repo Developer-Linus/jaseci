@@ -62,6 +62,7 @@ class JacClientCompiler {
         self: JacClientCompiler, runtime_filename: str
     ) -> tuple[str, list[str]];
 
+    def emit_prelude(self: JacClientCompiler) -> Path;
     def compile_pwa_runtime(self: JacClientCompiler) -> tuple[str, list[str]];
     def compile_mobui_utils(self: JacClientCompiler) -> tuple[str, list[str]];
     def emit_dependencies(
@@ -109,6 +110,7 @@ class JacClientCompiler {
         self: JacClientCompiler, scanner: RouteScanner
     ) -> None;
 
+    def _warn_unrouted_pages(self: JacClientCompiler, scanner: RouteScanner) -> None;
     def _generate_routes_manifest(self: JacClientCompiler) -> bool;
     def _write_source_map(
         self: JacClientCompiler,

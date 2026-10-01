@@ -20,7 +20,8 @@ A task-first index into the commands below. The full alphabetical list follows i
 | Build a client (web, desktop, mobile) | `jac build [app]` (`--as client` builds only the client bundle; a mobile app's Expo scaffold is provisioned on first use) · `jac setup [app]` provisions ahead of time |
 | Compile a native binary or C-ABI shared library | `jac build <file> --native` (`--lib`, `--memory`, `--target-triple`, `--debug`) |
 | Build one distributable artifact (.jab, wheel, npm, source) | `jac build --as {jab,wheel,npm,source,…}` |
-| Add, remove, or update dependencies | `jac install <pkg>` · `jac remove` · `jac update` |
+| Add, remove, or update dependencies | `jac install <org/name>` · `jac install --pypi <pkg>` · `jac remove` · `jac update` |
+| Publish a Jac package or template | `jac publish` |
 | Install project dependencies (preview with `--plan`) | `jac install` · `jac install --plan` |
 | Run an installed CLI tool under Jac | `jac x` |
 | Type-check, format, or lint | `jac check` · `jac fmt` · `jac check --lint` · `jac precommit` |
@@ -32,7 +33,7 @@ A task-first index into the commands below. The full alphabetical list follows i
 | Manage byLLM local models | `jac model` |
 | Use Jac from an AI assistant | `jac guide` · `jac mcp` |
 | Convert between Python, Jac, and JS | `jac tool py2jac` · `jac tool jac2py` · `jac tool jac2js` |
-| Clean caches / artifacts | `jac clean` |
+| Clean caches / artifacts | `jac clean` (project) · `jac cache` (machine-wide) |
 
 ---
 
@@ -47,6 +48,7 @@ A task-first index into the commands below. The full alphabetical list follows i
 | `jac test` | Run tests (`jac test <app>` uses that app's `[test]` config) |
 | `jac fmt` | Format code |
 | `jac precommit` | Run format + check using `jac.toml` lint settings (installable as a git hook) |
+| `jac arch` | Declare the project's module wiring in `arch.jac` (`init`, `sync`, `graph`) |
 | `jac clean` | Clean project build artifacts |
 | `jac dot` | Generate graph visualization |
 | `jac browse` | Automate a headless browser over CDP (navigate, click, snapshot, screenshot) |
@@ -57,7 +59,8 @@ A task-first index into the commands below. The full alphabetical list follows i
 | `jac config` | Manage project configuration |
 | `jac explain` | Explain what the compiler inferred: memory, placement, or the optimized IR |
 | `jac scale` | Deploy to a platform (`jac scale deploy`), and manage the local service fleet (status/stop/restart/logs) and platform deployments (status/destroy) |
-| `jac install` | Install project dependencies from `jac.toml` (`--plan` to preview the resolved plan), or `jac install <pkg>` to add packages to `jac.toml` and install them (`--no-save` to skip recording) |
+| `jac install` | Resolve, lock (`jac.lock`) and install project dependencies from `jac.toml` (`--plan` to preview the resolved plan, `--frozen` for CI), or `jac install <org/name>` / `jac install --pypi <pkg>` to add packages |
+| `jac publish` | Publish a Jac package or template to the package index (`--dry-run` to run the gates only) |
 | `jac x` | Run an installed CLI tool (Python console-script or npm tool) under the `jac` runtime |
 | `jac remove` | Remove packages from project |
 | `jac update` | Update dependencies to latest compatible versions |
@@ -66,6 +69,7 @@ A task-first index into the commands below. The full alphabetical list follows i
 | `jac lsp` | Language server |
 | `jac setup` | Provision an app's client ahead of time (`jac setup [app]`); run and build do it on first use |
 | `jac db` | Manage the project's Postgres store (embedded or external): status, inspect, sql, serve, stop, fetch |
+| `jac cache` | Inspect and reclaim the machine-wide jac cache: `status`, `gc` (`--dry-run`), `purge` (`--bucket <name>`) |
 
 ---
 
@@ -88,6 +92,7 @@ The CLI cleanup in #7255 folded these former top-level commands into their homes
 | `jac start` | [`jac run --serve`](#jac-run) (`--port`, `--faux`, `--takeover` ride along) |
 | `jac dev` | [`jac run --dev`](#jac-run) |
 | `jac start --scale` | [`jac scale deploy`](#jac-scale-deploy) (with `--target`, `--enable-tls`, `--dry-run`, `--show-yaml`) |
+| `jac purge` | [`jac cache purge`](#jac-cache) (`jac cache status` first to see what is there; `jac cache gc` to reclaim only what has expired) |
 
 ## Version Info
 
@@ -348,11 +353,9 @@ jac create [-h] [-f] [-k KIND] [--app APP] [--path PATH] [-u USE] [--awesome] [-
 | `--app` | Scaffold an app of `--kind` inside the current project and register `[apps.<app>]` in its `jac.toml` | None |
 | `--path` | With `--app`: directory for the app, relative to the project root | the app name |
 | `--awesome` | Scaffold the full jaclang.org workspace (landing, docs, leaderboard, socialize, wasm game, mobile, cli) as your project | `False` |
-| `-u, --use` | Custom template: file path or URL to a `.jacpack`, or a named variant (e.g. `jac-shadcn`) | `default` |
+| `-u, --use` | Template: a published template (`org/name` or `org/name@range`), a template directory or `.jab`, or a named variant (e.g. `jac-shadcn`) | `default` |
 | `-l, --list` | List available project kinds and named variants | `False` |
 | `--skip` | Skip dependency installation (Python + npm); run `jac install` later | `False` |
-| `--pack DIR` | Bundle a template directory into a distributable `.jacpack` file (absorbs `jac jacpack pack`) | None |
-| `--pack_output F` | Output path for the bundled `.jacpack` (with `--pack`) | `<name>.jacpack` |
 
 `--kind` and `--use` are mutually exclusive.
 
@@ -383,10 +386,11 @@ jac create --app admin --kind web-app --path tools/admin
 # The flagship workspace (jaclang.org: web + mobile + cli + two service apps over core/)
 jac create mysite --awesome
 
-# Create from a local .jacpack file / directory / URL
-jac create myapp --use ./my-template.jacpack
+# Create from a published template, a local directory, or a template .jab
+jac create myapp --use acme/starter
+jac create myapp --use "acme/starter@^2"
 jac create myapp --use ./my-template/
-jac create myapp --use https://example.com/template.jacpack
+jac create myapp --use ./acme-starter-1.2.0.jab
 
 # List available project kinds and named variants
 jac create --list
@@ -642,6 +646,42 @@ jac precommit --install
 ```
 
 > **Git hooks**: `jac precommit --install` writes two executable hooks. `.git/hooks/pre-commit` runs `jac precommit --staged --verify` and blocks a commit when staged `.jac` files are unformatted or fail `jac check`; run `jac precommit` (without `--verify`) to apply the fixes, then re-stage. `.git/hooks/commit-msg` rejects commit messages carrying AI co-author attribution trailers. Re-running the installer over its own hooks is a no-op refresh; a foreign hook is left untouched and reported (a hook generated by the python pre-commit framework is migrated automatically, and `--force` replaces anything, keeping a `.bak` backup).
+
+---
+
+### jac arch
+
+Declare the project's module wiring in an `arch.jac` beside `jac.toml` and keep it in sync with the modules. A wire `provider --> consumer { names }` generates that import into the consumer at compile time; an `edge Name: pattern --> pattern` rule says what may flow where; a module the file names is sealed in both directions, and `[arch] closed` in `jac.toml` seals the rest. See [Project Wiring](../wiring.md).
+
+```bash
+jac arch [-h] [action] [scope] [-s] [-f] [--format {mermaid,json}] [-o OUTPUT]
+```
+
+| Argument / Option | Description | Default |
+|--------|-------------|---------|
+| `action` | `init` (write `arch.jac` from the current imports, with the layering rules they already follow), `sync` (add the wires and rules sealed modules are missing) or `graph` (render the wiring) | `graph` |
+| `scope` | With `init`: a dotted package; wire only its modules and the modules they import from, transitively, merging into an existing `arch.jac` | whole project |
+| `-s, --strip` | With `init` or `sync`: remove the imports `arch.jac` now provides from every covered module (the same fix `jac fmt --lintfix` applies) | `False` |
+| `-f, --force` | With `init`: overwrite an existing `arch.jac` | `False` |
+| `--format` | With `graph`: `mermaid` or `json` | `mermaid` |
+| `-o, --output` | With `graph`: write to this file instead of stdout | stdout |
+
+**Examples:**
+
+```bash
+# Adopt: write arch.jac from every project-module import and strip them from the modules
+jac arch init --strip
+
+# Wire one package and everything it imports from, adding to an existing arch.jac
+jac arch init core.docs
+
+# Add the wires and rules that sealed modules are missing
+jac arch sync
+
+# Print the wiring as a mermaid diagram, or dump wires and rules as JSON
+jac arch graph
+jac arch graph --format json -o wiring.json
+```
 
 ---
 
@@ -1274,15 +1314,17 @@ jac scale destroy app.jac
 
 `jac install` has two modes depending on whether package names are passed. Pass `--plan` (optionally with `--json`) to preview the resolved dependency plan without installing anything -- this absorbs the former `jac deps`.
 
-**No-argument mode** - sync the project environment to `jac.toml`. Installs all Python (pip), git, and npm dependencies in one command. Creates or validates the project virtual environment at `.jac/venv/`. Requires a `jac.toml` in the current (or a parent) directory.
+**No-argument mode** - sync the project to `jac.toml`. Resolves the Jac package graph and pins it in `jac.lock`, fetches each package into the machine-wide store and mounts it under `.jac/packages`, then installs every Python dependency (the project's `[dependencies.pypi]` plus those of every package) with one pip run into `.jac/venv/`, and the npm dependencies for the client build. `jac.lock` also records the exact Python distributions pip chose, and a later install with the same inputs replays them. `--frozen` installs exactly what `jac.lock` pins and fails if it is missing or stale, which is what CI should run. Requires a `jac.toml` in the current (or a parent) directory.
 
-**Package mode** - `jac install <pkg> [pkg ...]` adds one or more packages to `jac.toml` and installs them into the project's virtual environment at `.jac/venv/` -- this absorbs the former `jac add`. When no version is specified, the package is installed unconstrained and the installed version is queried to record a `~=X.Y` compatible-release spec in `jac.toml`. Pass `--no-save` to install without reading or modifying `jac.toml` (the Jac-native equivalent of `pip install <pkg>`), or `--global` to install into the binary's own jac-owned site instead -- a location that is on `sys.path` from **any** project, for a tool you install once and use everywhere (`--global` never records to `jac.toml` and works outside a project). Either target is fully self-contained: the bundled pip and the binary's own site, never the host Python or its `site-packages`.
+**Package mode** - `jac install <org/name> [...]` adds Jac packages to `[dependencies]` and installs them. A name without a range records `^X.Y.Z` of the version it resolved; `org/name@^1.2` records the range you give. `--path DIR` adds a local package and `--git URL [--rev REF]` a package from git (the package's own `jac.toml` supplies its name). See [Packages](../packages.md).
 
-Ecosystem flags select what kind of dependency is recorded: `--dev` records under `[dev-dependencies]`, `--git <url>` installs from a git repository and records under `[dependencies.git]`, `--npm` adds a client-side npm package (with no names, installs all npm deps from `jac.toml`), and `--shadcn` installs shadcn UI components from the bundled offline registry.
+**Python packages** take `--pypi`: `jac install --pypi <pkg> [pkg ...]` adds them to `[dependencies.pypi]` and installs them into `.jac/venv/`. When no version is specified, the package is installed unconstrained and the installed version is queried to record a `~=X.Y` compatible-release spec in `jac.toml`. A bare name without `--pypi` (and without a slash) is an error, since Jac package names are always `org/name`. Pass `--no-save` to install without reading or modifying `jac.toml` (the Jac-native equivalent of `pip install <pkg>`), or `--global` to install into the binary's own jac-owned site instead -- a location that is on `sys.path` from **any** project, for a tool you install once and use everywhere (`--global` never records to `jac.toml` and works outside a project). Either target is fully self-contained: the bundled pip and the binary's own site, never the host Python or its `site-packages`.
 
-> **Recorded vs ad-hoc installs**
+Other ecosystem flags: `--dev` records under `[dev-dependencies]` (or `[dev-dependencies.pypi]`), `--npm` adds a client-side npm package (with no names, installs all npm deps from `jac.toml`), and `--shadcn` installs shadcn UI components from the bundled offline registry.
+
+> **Recorded vs ad-hoc Python installs**
 >
-> | | `jac install <pkg>` | `jac install <pkg> --no-save` | `jac install <pkg> --global` |
+> | | `jac install --pypi <pkg>` | `jac install --pypi <pkg> --no-save` | `jac install --pypi <pkg> --global` |
 > |---|---|---|---|
 > | Target | Project `.jac/venv/` | Project `.jac/venv/` | Binary's global site |
 > | Updates `jac.toml` | Yes | No | No |
@@ -1292,51 +1334,69 @@ Ecosystem flags select what kind of dependency is recorded: `--dev` records unde
 > The default records the dependency in `jac.toml` for reproducible installs. Use `--no-save` for an ad-hoc package scoped to this project, and `--global` for a tool you want available everywhere.
 
 ```bash
-jac install [-h] [packages ...] [-e PATH] [-d] [-x group [group ...]] [--no-save]
+jac install [-h] [packages ...] [--pypi] [--path DIR] [--rev REF] [--frozen]
+            [-e PATH] [-d] [-x group [group ...]] [--no-save]
             [-g GIT] [--npm] [--shadcn] [-v] [--force-reinstall] [--no-cache-dir]
             [--pre] [--dry-run] [--no-deps] [--quiet] [--prefer-binary]
-            [--global] [--plan] [--json]
+            [--global] [--scale] [--plan] [--json]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `packages` | Package(s) to add to `jac.toml` and install into the project's `.jac/venv` (recording is skipped with `--no-save`, `--global`, or `--dry-run`). | `[]` |
-| `-e, --editable PATH` | Install the Jac package at `PATH` in editable mode (analogous to `pip install -e`). The target package's own `jac.toml` (read from `PATH`) supplies its dependencies; the package and those deps are linked/installed into the **current** project's `.jac/venv` (or the global site with `--global`). Cannot be combined with `packages`. Repeatable. | `None` |
-| `-d, --dev` | Include dev dependencies (no-arg mode), or record named package(s) under `[dev-dependencies]` | `False` |
+| `packages` | Jac package(s) to add (`org/name` or `org/name@range`); with `--pypi`, Python package(s) | `[]` |
+| `--pypi` | The named packages (or the `--git` repository) are Python packages for `[dependencies.pypi]` and `.jac/venv` | `False` |
+| `--path DIR` | Add the Jac package in `DIR` as a path dependency | None |
+| `-g, --git URL` | Add the Jac package in this git repository (with `--pypi`, a Python package, recorded in `[dependencies.pypi]`) | None |
+| `--rev REF` | With `--git`: the branch, tag or commit | None |
+| `--frozen` | Install exactly what `jac.lock` pins; fail if it is missing or out of date | `False` |
+| `-e, --editable PATH` | Install the Jac project at `PATH` in editable mode (analogous to `pip install -e`). The target's own `jac.toml` supplies its Python dependencies; the project and those deps are linked/installed into the **current** project's `.jac/venv` (or the global site with `--global`). Cannot be combined with `packages`. Repeatable. | `None` |
+| `-d, --dev` | Include dev dependencies (no-arg mode), or record named package(s) as dev dependencies | `False` |
 | `-x, --extras` | Install one or more `[optional-dependencies]` groups (no-arg mode only) | `[]` |
-| `--no-save` | Install named package(s) without recording them in `jac.toml` | `False` |
-| `-g, --git URL` | Git repository URL to install and record under `[dependencies.git]` | None |
+| `--no-save` | With `--pypi`: install without recording in `jac.toml` | `False` |
 | `--npm` | Install npm (client-side) package(s); with no names, install all npm deps from `jac.toml` | `False` |
 | `--shadcn` | Install shadcn UI component(s) from the bundled registry | `False` |
 | `-v, --verbose` | Show detailed output | `False` |
-| `--force-reinstall` | Reinstall all packages even if they are already up-to-date | `False` |
+| `--force-reinstall` | Reinstall all Python packages even if they are already up-to-date | `False` |
 | `--no-cache-dir` | Disable the pip download cache | `False` |
-| `--pre` | Include pre-release and development versions | `False` |
-| `--dry-run` | Show what would be installed without actually installing anything | `False` |
-| `--no-deps` | Don't install package dependencies | `False` |
+| `--pre` | Include pre-release and development Python versions | `False` |
+| `--dry-run` | Show what pip would install without installing anything | `False` |
+| `--no-deps` | Don't install Python package dependencies | `False` |
 | `--quiet` | Suppress pip output | `False` |
 | `--prefer-binary` | Prefer pre-built wheels over source distributions | `False` |
-| `--global` | Install into the binary's own jac-owned site (importable from any project), not the project's `.jac/venv`. Works outside a project. | `False` |
+| `--global` | Install Python package(s) into the binary's own jac-owned site (importable from any project), not the project's `.jac/venv`. Works outside a project. | `False` |
+| `--scale` | Also install the deploy-time capability closure | `False` |
 | `--plan` | Resolve and print the dependency plan without installing anything (absorbs the former `jac deps`) | `False` |
 | `--json` | With `--plan`, emit the plan as machine-readable JSON | `False` |
 
 **Examples:**
 
 ```bash
-# Add a package to jac.toml and install it (records ~=2.32 based on installed version)
-jac install requests
+# Resolve, lock and install everything jac.toml declares
+jac install
 
-# Add multiple packages, with version constraints
-jac install "numpy>=1.24" pandas scipy
+# Install exactly what jac.lock pins (CI)
+jac install --frozen
 
-# Add as a dev dependency
-jac install pytest --dev
+# Add a Jac package (records ^X.Y.Z of the version it resolves)
+jac install jaseci/vecdb
 
-# Install without recording in jac.toml (ad-hoc, like pip install)
-jac install numpy --no-save
+# Add a Jac package with a range, a local package, a git package
+jac install "jaseci/vecdb@^2.1"
+jac install --path ../util
+jac install --git https://github.com/acme/kit --rev v1.2.0
 
-# Install and record a git dependency
-jac install --git https://github.com/user/package.git
+# Add a Python package (records ~=2.32 based on the installed version)
+jac install --pypi requests
+
+# Add Python packages with version constraints, or as dev dependencies
+jac install --pypi "numpy>=1.24" pandas scipy
+jac install --pypi pytest --dev
+
+# Install a Python package without recording it (ad-hoc, like pip install)
+jac install --pypi numpy --no-save
+
+# Add a Python package from git
+jac install --pypi --git https://github.com/user/package.git
 
 # Add npm (client-side) packages
 jac install --npm react
@@ -1344,40 +1404,18 @@ jac install --npm react
 # Add shadcn UI components (offline, bundled registry)
 jac install --shadcn button card
 
-# Install all dependencies from jac.toml (no-arg mode)
-jac install
-
-# Install including dev dependencies (no-arg mode)
+# Install including dev dependencies, or optional groups
 jac install --dev
-
-# Install optional dependency groups defined in jac.toml (no-arg mode)
 jac install --extras data monitoring
 
-# Editable install of the current package (no-arg mode)
+# Editable install of the current project, or one living elsewhere
 jac install -e .
-
-# Editable install of a package living elsewhere into the current project's venv
 jac install -e /path/to/lib
-
-# Editable install with all optional dependency groups
-jac install -e . --extras all
 
 # Install a tool into the global site, importable from any project
 jac install -e ./jac-byllm --global
 
-# Install with verbose output
-jac install -v
-
-# Reinstall all packages from scratch (ignores cached state)
-jac install --force-reinstall
-
-# Preview what would be installed without doing it
-jac install --dry-run
-
-# Install without using pip's download cache
-jac install --no-cache-dir
-
-# Preview the resolved dependency plan without installing (formerly `jac deps`)
+# Preview the resolved dependency plan without installing
 jac install --plan
 jac install --plan --json
 ```
@@ -1447,36 +1485,33 @@ jac x --list
 
 ### jac remove
 
-Remove packages from your project's dependencies.
+Remove packages from your project's dependencies. Jac packages are named `org/name` and `jac.lock` and `.jac/packages` are updated to match; Python packages take `--pypi`.
 
 ```bash
-jac remove [-h] [-d] [packages ...]
+jac remove [-h] [--pypi] [-d] [--npm] [--shadcn] [packages ...]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
 | `packages` | Package names to remove | None |
+| `--pypi` | Remove Python package(s) from `[dependencies.pypi]` | `False` |
 | `-d, --dev` | Remove from dev dependencies | `False` |
-
-**With the built-in client framework:**
-
-| Option | Description | Default |
-|--------|-------------|---------|
 | `--npm` | Remove client-side (npm) package | `False` |
+| `--shadcn` | Remove shadcn UI component(s) | `False` |
 
 **Examples:**
 
 ```bash
-# Remove a package
-jac remove requests
+# Remove a Jac package
+jac remove jaseci/vecdb
 
-# Remove multiple packages
-jac remove numpy pandas
+# Remove Python packages
+jac remove --pypi numpy pandas
 
-# Remove dev dependency
-jac remove pytest --dev
+# Remove a Python dev dependency
+jac remove --pypi pytest --dev
 
-# Remove npm package (client framework built into jaclang core)
+# Remove an npm package
 jac remove react --npm
 ```
 
@@ -1484,29 +1519,62 @@ jac remove react --npm
 
 ### jac update
 
-Update dependencies to their latest compatible versions. For each updated package, the installed version is queried and a `~=X.Y` compatible-release spec is written back to `jac.toml`.
+Re-resolve dependencies to their newest compatible versions. With no names, every Jac package is re-resolved within its range, the Python dependencies are re-installed and re-pinned in `jac.lock`, and each Python package declared with a compatible-release spec gets the installed version written back as `~=X.Y`. With `org/name` arguments only those Jac packages are unlocked. `--pypi` updates named Python packages only.
 
 ```bash
-jac update [-h] [-d] [-v] [packages ...]
+jac update [-h] [--pypi] [-d] [-v] [packages ...]
 ```
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `packages` | Specific packages to update (all if empty) | None |
-| `-d, --dev` | Include dev dependencies | `False` |
+| `packages` | Jac packages to re-resolve (all if empty); with `--pypi`, Python packages | None |
+| `--pypi` | Update Python packages only | `False` |
+| `-d, --dev` | Include Python dev dependencies | `False` |
 | `-v, --verbose` | Show detailed output | `False` |
 
 **Examples:**
 
 ```bash
-# Update all dependencies to latest compatible versions
+# Re-resolve everything
 jac update
 
-# Update a specific package
-jac update requests
+# Re-resolve one Jac package
+jac update jaseci/vecdb
 
-# Update all including dev dependencies
-jac update --dev
+# Update one Python package
+jac update --pypi requests
+```
+
+---
+
+### jac publish
+
+Publish the current package -- a library (a scoped `[project] name` with `exports`) or a template (a `[jacpack]` table with a scoped name and version) -- to the package index. `jac publish` builds the package `.jab`, runs the publish gates, uploads the artifact as a release asset on your fork of the index repository, and opens the pull request that adds the version. See [Packages](../packages.md#publishing).
+
+```bash
+jac publish [-h] [--dry-run] [--yank VERSION] [--registry NAME] [-o DIR]
+            [--verify-index DIR] [--base REF] [--author LOGIN] [--mirror-out FILE]
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--dry-run` | Build and run every gate (API diff, semver, `jac check`) without uploading | `False` |
+| `--yank VERSION` | Open an index pull request that marks `VERSION` yanked | None |
+| `--registry NAME` | Publish to a registry named under `[registries]` | the default index |
+| `-o, --output DIR` | Also write the built `.jab` into `DIR` | None |
+| `--verify-index DIR` | Index CI: verify the index checkout at `DIR` against `--base` | None |
+| `--base REF` | With `--verify-index`: the git ref the pull request is based on | None |
+| `--author LOGIN` | With `--verify-index`: the GitHub login that opened the pull request | None |
+| `--mirror-out FILE` | With `--verify-index`: write the verified blobs to mirror as JSON | None |
+
+The gates: a scoped name and a new semantic version; `jac check` clean under the package's own configuration; dependencies only from registries; `[project] jac-version` and a public `[project.urls] repository`; and the semver check, which compares the exported API with the previous release and refuses a bump smaller than the change requires. Publishing authenticates with `GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`.
+
+**Examples:**
+
+```bash
+jac publish --dry-run          # check everything, upload nothing
+jac publish                    # open the index pull request
+jac publish --yank 1.2.0       # yank a published version
 ```
 
 ---
@@ -1548,7 +1616,65 @@ jac clean --data --cache
 jac clean --all --force
 ```
 
-> **💡 Troubleshooting Tip:** If you encounter unexpected syntax errors, "NodeAnchor is not a valid reference" errors, or other strange behavior after modifying your code, try clearing the project cache with `jac clean --cache` (removes `.jac/cache/`). If that doesn't help -- for example after upgrading Jaseci packages -- also remove the global per-user cache with `rm -rf ~/.cache/jac`. Stale bytecode can cause issues when source files change.
+> **💡 Troubleshooting Tip:** If you encounter unexpected syntax errors, "NodeAnchor is not a valid reference" errors, or other strange behavior after modifying your code, try clearing the project cache with `jac clean --cache` (removes `.jac/cache/`). If that doesn't help -- for example after upgrading Jaseci packages -- also clear the machine-wide cache with [`jac cache purge`](#jac-cache). Stale bytecode can cause issues when source files change.
+
+---
+
+### jac cache
+
+Inspect and reclaim the **machine-wide** jac cache: the compiled modules and bootstrap bytecode every project shares, the extracted runtimes of fused `jac` binaries, materialized app images, downloaded toolchains, byLLM model weights, and the embedded Postgres cluster. (`jac clean` is the project-local `.jac/` directory; this is everything else.)
+
+```bash
+jac cache [-h] [action] [-b BUCKET] [-n]
+```
+
+| Argument / Option | Description | Default |
+|--------|-------------|---------|
+| `action` | `status`, `gc` or `purge` | `status` |
+| `-b, --bucket` | With `purge`: only this bucket (`status` lists the names) | all managed buckets |
+| `-n, --dry-run` | With `gc` or `purge`: report what would be removed without removing it | `False` |
+
+The cache root is `~/.cache/jac` on Linux, `~/Library/Caches/jac` on macOS and `%LOCALAPPDATA%\jac\cache` on Windows; `JAC_CACHE_HOME` relocates it, and a set `XDG_CACHE_HOME` is honored on every platform. Disposable managed buckets carry a standard `CACHEDIR.TAG`, so backup tools that respect the marker can skip those buckets. The shared root and external buckets are not tagged: `pg/main` contains persistent database data. Jac removes its own former root-level tag when preparing the cache; it preserves user-authored tags.
+
+Every bucket has a **retention policy**:
+
+| Bucket | Holds | Policy |
+|---|---|---|
+| `rt` | fused-binary runtimes, one per payload hash | unused 30 days |
+| `jir-modules` | compiled modules, one generation per compiler digest | unused 14 days (`JAC_CACHE_GENERATION_TTL_DAYS`) |
+| `jir-bootstrap` | bootstrap-tier bytecode | unused 14 days, at most 4000 entries |
+| `jir-stubcat`, `jir-kernel-units`, `jir-digests` | stub catalogs, native kernel units, per-checkout compiler digests | unused 14 days |
+| `apps` | materialized `.jab` images | unused 30 days |
+| `scale-binaries` | pinned release binaries for deploys | unused 30 days |
+| `toolchains-downloads` | verified toolchain archives | unused 14 days |
+| `toolchains-installed`, `toolchains-build` | installed toolchains and builds | unused 90 days |
+| `models` | byLLM model weights | pinned: never collected, `purge` removes it |
+| `pg`, `toolchains-gradle`, `toolchains-android-sdk` | the Postgres cluster, Gradle's home, the Android SDK | external: reported only (`jac db prune` manages the cluster) |
+
+"Unused" is measured from the last time jac touched the entry, not from when it was written. `JAC_CACHE_TTL_DAYS` overrides every age above at once (`0` turns the age sweep off). Abandoned temporary files and staging directories, including nested toolchain staging, are eligible after one hour. PID-bearing staging entries are retained while their writer is alive. Legacy toolchain staging is reclaimed only while its existing installation locks can be held; temporary entries with unknown ownership are preserved. Lock files remain in place so concurrent writers keep sharing the same lock. Status includes temporary entries and lists unrecognized content separately; unrecognized content is never deleted automatically. Each bucket also sweeps itself opportunistically when jac writes to it, at most once per process and once per day, so the cache stays bounded without anyone running `gc`.
+
+**Examples:**
+
+```bash
+# Every bucket with its path, entry count, size and policy
+jac cache status
+
+# Run every retention policy now and report the bytes reclaimed
+jac cache gc
+
+# Show what gc would remove
+jac cache gc --dry-run
+
+# Remove every managed bucket (keeps the runtime this jac is running on; never touches pg/)
+jac cache purge
+
+# Remove one bucket
+jac cache purge --bucket jir-modules
+```
+
+`purge` also clears inactive temporary entries regardless of age. It preserves live runtime/compiler entries, staging owned by a running writer, and temporary entries whose ownership cannot be established. Retired toolchain directories are reclaimed under both the default root and `JAC_TOOLCHAIN_DIR`, unless a current bucket uses that location.
+
+`purge` refuses external buckets: the Postgres cluster is `jac db`'s (`jac db prune`), and Gradle and the Android SDK are their own tools'.
 
 ---
 
@@ -1601,7 +1727,8 @@ jac build --as binary --fat     # fully offline-capable executable
 
 - **Offline materialize.** When [`jac run app.jab`](#jac-run) (or a `--fat` binary) materializes the bundle, the vendored wheels install offline into a cache-scoped site directory that goes on `sys.path`, so the app imports its dependencies with **no PyPI access**. The install runs once per bundle and is skipped on subsequent runs.
 - **Content-addressed for free.** The wheels ride inside the tarball as a sibling of the sealed image, so the jab's existing sha256 content addressing covers them: bump a dependency, get a new digest, get a fresh cache directory, with no stale-dependency aliasing.
-- **What is vendored.** The closure is exactly what [`jac install`](#jac-install) would install: your declared dependencies plus the capability dependencies derived from `jac.toml` intents. Wheels are resolved for the build host by default (like a `.jir`, the bundle is version-locked to the building runtime). Vendoring honors pip's environment (`PIP_INDEX_URL`, `PIP_FIND_LINKS`, `PIP_NO_INDEX`), and fails the build if a dependency has no installable wheel rather than shipping a bundle that cannot materialize. Git dependencies are not vendored and still install normally. The build summary prints the vendored wheel count and total size.
+- **What is vendored.** The closure is exactly what [`jac install`](#jac-install) would install: your declared dependencies plus the capability dependencies derived from `jac.toml` intents. Wheels are resolved for the build host by default (like a `.jir`, the bundle is version-locked to the building runtime). Vendoring honors pip's environment (`PIP_INDEX_URL`, `PIP_FIND_LINKS`, `PIP_NO_INDEX`). Git dependencies are not vendored and still install normally. The build summary prints the vendored wheel count and total size.
+- **Source-only dependencies.** A dependency that publishes no wheel (an sdist-only package such as `http-ece`) is built on the build host with `pip wheel` and the closure is resolved again through the result. The build fails, naming the package, if no wheel can be produced, rather than shipping a bundle that cannot materialize. A Kubernetes deploy resolves the same closure for the pod platform instead of the build host; see [fat bundles](../plugins/jac-scale-kubernetes.md#app-artifact-jab).
 
 **Building a wheel (publish to PyPI):**
 
@@ -1819,15 +1946,16 @@ jac build filename.jac --native [-o OUTPUT] [--memory managed|rc|nogc] [--lib] [
 | `--lib` | Build a C-ABI shared library (`.so`/`.dylib`/`.dll`) exporting `:pub` symbols instead of an executable | inferred from the absence of `with entry` |
 | `--target-triple` | `host`, `wasm32` for a browser `.wasm` module, or an LLVM triple | `[native] target`, else host |
 | `--debug` | DWARF debug info, symbol table, and the RC trace machinery, together | `[native] debug`, else off |
+| `--link-mode` | Reuse optimized objects (`objects`) or optimize whole-program bitcode (`bitcode`) | `[native] link_mode`, else `objects` |
 
 A stale IR cache is cleared with `jac clean --cache`. Nothing at compile time reads the environment; a built binary reads only `JAC_GC=off` (disable collection for leak debugging) and `JAC_THREADS` (`flow for` width). `jac explain memory|placement|ir` shows what the compiler inferred; `jac explain memory <file> --memory rc|nogc|managed` explains the module under a profile other than the project's, and prints the per-module RC coverage line (`rc-stats ... promoted=N`) on stderr.
 
 **What happens under the hood:**
 
-1. Compiles the `.jac` file through the Jac pipeline (native codespace forced) to get LLVM IR
-2. Injects `main()` and `_start` as pure LLVM IR (zero inline assembly)
-3. Emits native object code via llvmlite's `emit_object()`
-4. Links into an ELF executable via the built-in pure-Python ELF linker
+1. Compiles the `.jac` file and every native unit it reaches through the Jac pipeline (native codespace forced); each unit's native interface, relocatable object and bitcode land in its module cache
+2. Builds one link plan over the units: dependency order, an agreement check on every recorded interface digest, and one synthesized glue object holding `jac_entry`, `main()` / `_start` as pure LLVM IR (zero inline assembly)
+3. In `objects` mode links the cached objects; in `bitcode` mode links every unit's bitcode into one LLVM module and optimizes it whole-program before a single codegen
+4. Links into an ELF, Mach-O or PE executable (or a wasm module) via the built-in pure-Python linkers, and writes the plan digest beside the artifact
 
 The resulting binary dynamically links against `libc.so.6`. Memory management is the profile's runtime: reference counting with the cycle collector under `managed`, reference counting under `rc`, and static drops with no runtime under `nogc`.
 

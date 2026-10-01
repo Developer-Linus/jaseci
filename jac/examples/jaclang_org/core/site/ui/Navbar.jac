@@ -1,8 +1,5 @@
-import from core.brand.theme { useTheme }
-import from .button { buttonVariants }
-import from core.utils { cn }
 import from "@jac/runtime" { Link }
-import from core.install { ensure_install }
+
 import from "@hugeicons/react" { HugeiconsIcon }
 import from "@hugeicons/core-free-icons" { GithubIcon, Moon01Icon, Sun01Icon }
 
@@ -51,6 +48,12 @@ def:pub Navbar -> JsxElement {
                         className="rounded-md pl-3 pr-3 pt-1.5 pb-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                     >
                         Docs
+                    </Link>
+                    <Link
+                        to="/packages"
+                        className="rounded-md pl-3 pr-3 pt-1.5 pb-1.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    >
+                        Packages
                     </Link>
                     <button
                         onClick={lambda { theme.toggle(); }}

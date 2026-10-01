@@ -1,4 +1,4 @@
-import from jaclang.compiler.backends.common.kernel_units { REGION_KERNEL_ABI }
+import from jaclang.compiler.backends.native.region_abi { REGION_KERNEL_ABI }
 
 glob REGION_TLS_GLOBAL: str = "__jac_region_tls",
      REGION_TLS_GET: str = "__jac_region_tls_get",
@@ -10,10 +10,12 @@ impl NaIRGenPass._register_region_kernel -> None {
         return;
     }
     self._region_kernel_registered = True;
-    _manifest = self.module.gen.interop_manifest if (self.module?.gen) else None;
-    if (_manifest is not None)
-        and ("region_kernel" not in _manifest.native_transitive_sources) {
-        _manifest.native_transitive_sources.append("region_kernel");
+    import from jaclang.compiler.frontend.codeinfo {
+        REGION_KERNEL_REL,
+        kernel_unit_path
+    }
+    if not self._is_kernel_unit() {
+        self._note_native_dep(kernel_unit_path(REGION_KERNEL_REL));
     }
     self._emit_region_tls_slot();
 }
@@ -208,7 +210,7 @@ impl NaIRGenPass._register_region_handle_var(
 }
 
 impl NaIRGenPass._lower_partition_unpack(nd: uni.Assignment) -> bool {
-    import from jaclang.compiler.expr_keys { is_builtin_region_type }
+    import from jaclang.compiler.types.type_utils { is_builtin_region_type }
     if len(nd.target) != 1 or not isinstance(nd.target[0], uni.TupleVal) {
         return False;
     }
@@ -263,10 +265,7 @@ impl NaIRGenPass._emit_struct_drop_fields_fn(type_name: str) -> (ir.Function | N
         (fname, ftype)
         for (fname, ftype) in field_types.items()
         if fname not in foreign_fields
-            and (
-                self._elem_kind(ftype) != "raw"
-                or self._opt_ptr_payload_of(ftype) is not None
-            )
+            and self._is_reference_type(ftype)
             and field_indices.get(fname, -1) >= 0
     ];
     if _hook is None and not _ptr_fields {

@@ -9,11 +9,15 @@ import from jaclang.scale.config.config_loader {
 }
 import from jaclang.scale.runtime.fleet { FleetSpec, fleet_from_config, solo_fleet }
 import from jaclang.scale.models.deploy_context { DATABASE_URL_ENV, DeployContext }
+import from jaclang.scale.models.resource_status { REPLICA_FLOOR_ANNOTATION }
 import from jaclang.scale.deploy.target.kubernetes.kubernetes_config {
     KubernetesConfig
 }
 import from jaclang.scale.deploy.autoscale.http_activation_config {
     build_http_activation_spec
+}
+import from jaclang.scale.runtime.context.service_routing {
+    resolve_http_activation_config
 }
 import from enum { StrEnum }
 
@@ -378,9 +382,9 @@ obj ManifestBuilder {
             _stage_app,
             release_binary_env,
             remove_stage_root,
-            sanitized_jac_toml,
             source_filter_for
         }
+        import from jaclang.dist.sanitize { sanitized_jac_toml }
         import from jaclang.scale.runtime.context.util { jac_executable }
         client_entry = self._client_entry();
         if client_entry
@@ -626,6 +630,9 @@ obj ManifestBuilder {
             scaling[svc_name] = self._resolve_scaling(
                 svc_name, deployments[svc_name], services[svc_name]
             );
+            deployments[svc_name]["metadata"].setdefault("annotations", {})[
+                REPLICA_FLOOR_ANNOTATION
+            ] = str(scaling[svc_name]["replica_floor"]);
             pdb = self._build_pdb_manifest(svc_name, scaling[svc_name].get("mode"));
             if pdb is not None {
                 pdbs[svc_name] = pdb;
@@ -705,17 +712,49 @@ obj ManifestBuilder {
         );
     }
 
+    def _check_deploy_settings_resolve {
+        import from pathlib { Path }
+        import from jaclang.project.config { get_config_for_path, report_env_findings }
+        config = get_config_for_path(Path(self.project_dir));
+        if config is None {
+            return;
+        }
+        shipped: set = set();
+        for value in self.secrets.values() {
+            if isinstance(value, str) {
+                shipped.add(value);
+            }
+        }
+        for value in self.k8s_config.to_dict().values() {
+            if isinstance(value, str) {
+                shipped.add(value);
+            }
+        }
+        report_env_findings(
+            [
+                ref
+                for ref in config.unresolved
+                if ref.raw in shipped
+            ],
+            "jac.toml reads environment variables this machine does not have, so the "
+            "deploy would ship these settings as literal ${...} text:",
+            hint="Export each one or put it in the project .env, "
+            "or give it a ${VAR:-default}."
+        );
+    }
+
     def _check_pod_config_resolves(
         deployments: dict[str, dict[str, any]], user_secret: dict[str, any] | None
     ) {
         import from pathlib { Path }
         import from jaclang.scale.injector.bundle {
             nested_sanitized_tomls,
-            sanitized_jac_toml,
             source_filter_for,
             unresolved_toml_references
         }
+        import from jaclang.dist.sanitize { sanitized_jac_toml }
         base = Path(self.project_dir);
+        self._check_deploy_settings_resolve();
         base_toml = sanitized_jac_toml(base);
         if base_toml is None {
             return;
@@ -1192,6 +1231,9 @@ obj ManifestBuilder {
             if peer_name == svc_name or peer_name == GATEWAY_NAME {
                 continue;
             }
+            if self._get_http_activation_config(peer_name) is not None {
+                continue;
+            }
             key = sv_client.peer_url_env_key(peer_name);
             if key in seen_peer_keys {
                 continue;
@@ -1439,17 +1481,36 @@ obj ManifestBuilder {
                 "scale_target_name": scale_target,
                 "service_name": service_name,
                 "autoscaler": {},
-                "http_activation": http
+                "http_activation": http,
+                "replica_floor": int(http.get("min_replicas", 0))
             };
         }
         metric: dict[str, any] | None = self._get_autoscaler_config(svc_name);
         if metric is not None {
+            idle = self.k8s_config.idle_replicas;
+            if idle is not None and int(idle) == 0 and svc_name == GATEWAY_NAME {
+                if self.logger {
+                    self.logger.warn(
+                        "Ignoring idle_replicas=0 for the gateway: it is the "
+                        "ingress entry point and must stay warm, and nothing "
+                        "wakes it once it is idle. Set idle_replicas per "
+                        "service, or use http_activation on the services that "
+                        "should sleep."
+                    );
+                }
+                idle = None;
+            }
+            keda = self.k8s_config.autoscaler_engine == "keda";
             return {
                 "mode": ScalingMode.METRIC,
                 "scale_target_name": scale_target,
                 "service_name": service_name,
                 "autoscaler": metric,
-                "http_activation": {}
+                "http_activation": {},
+                "idle_replicas": idle if keda else None,
+                "replica_floor": int(idle)
+                    if idle is not None and keda
+                    else int(metric["min"])
             };
         }
         return {
@@ -1457,7 +1518,8 @@ obj ManifestBuilder {
             "scale_target_name": scale_target,
             "service_name": service_name,
             "autoscaler": {},
-            "http_activation": {}
+            "http_activation": {},
+            "replica_floor": int(deployment["spec"].get("replicas", 1))
         };
     }
 
@@ -1562,14 +1624,9 @@ obj ManifestBuilder {
     }
 
     def _get_http_activation_config(svc_name: str) -> dict[str, any] | None {
-        svc: dict[str, any] = self._service_config(svc_name);
-        per_service: dict[str, any] = svc.get("http_activation", {});
-        merged: dict[str, any] = dict(self.k8s_config.http_activation);
-        merged.update(per_service);
-        if not merged.get("enabled", False) {
-            return None;
-        }
-        return merged;
+        return resolve_http_activation_config(
+            dict(self.k8s_config.http_activation), self._service_config(svc_name)
+        );
     }
 
     def _build_ingress_manifest(ingress_cfg: dict[str, any]) -> dict[str, any] | None {

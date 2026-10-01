@@ -90,7 +90,7 @@ test_jobs = "auto"   # "auto" = one worker per core; "0" = serial; or a fixed co
 **Build something awesome, or fix something that's broken**
 
 See Rules below.
-Formatting and linting are enforced by `jac precommit` (configured via `[check.lint]` in [`jac.toml`](https://github.com/Jaseci-Labs/jaseci/blob/main/jac.toml)); markdown lint and the em-dash ban run on every PR via pre-commit.ci ([`.pre-commit-config.yaml`](https://github.com/Jaseci-Labs/jaseci/blob/main/.pre-commit-config.yaml)).
+Formatting and linting are enforced by `jac precommit` (staged `.jac` files by default; use `jac precommit --all` for the whole project), configured via `[check.lint]` in [`jac.toml`](https://github.com/Jaseci-Labs/jaseci/blob/main/jac.toml); markdown lint and the em-dash ban run on every PR via pre-commit.ci ([`.pre-commit-config.yaml`](https://github.com/Jaseci-Labs/jaseci/blob/main/.pre-commit-config.yaml)).
 
 **This is how the docs work.**
 
@@ -214,7 +214,7 @@ Verify the active compiler and exercise Python source and AST compilation:
 ```bash
 JAC_NO_DEV_SOURCE=1 "$JACPYTHON_BIN" -c '
 import ast, ctypes, sys
-assert ctypes.pythonapi._PyJac_CompilerBridgeVersion() == 3
+assert ctypes.pythonapi._PyJac_CompilerBridgeVersion() == 4
 assert not hasattr(sys, "_jacpython_compile")
 assert not hasattr(sys, "_jacpython_image")
 print("Python compiler: native JacPython")

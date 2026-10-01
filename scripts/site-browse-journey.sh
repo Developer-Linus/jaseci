@@ -87,7 +87,31 @@ for i in 1 2 3; do
     sleep 5
     [ "$i" = 3 ] && fail "browser failed to launch after 3 attempts"
 done
-jac browse wait '#top' || fail "landing #top never appeared"
+# Cold 4-vCPU runners transform the whole client graph on demand the first
+# time the dev server is hit, and vite re-runs dep optimization every time a
+# lazily imported package is discovered: each round bumps the dep hash,
+# serves 504s for stale generations, and forces a full page reload, so the
+# landing can be knocked down and restarted several times before anything
+# mounts (observed: 7+ distinct dep generations, >2 minutes on a cold cache;
+# later stops and the fleet pass reuse the warm cache). Poll patiently past
+# the churn instead of a fixed handful of waits, and re-open periodically so
+# a page wedged mid-boot on a stale dep generation gets a clean navigation.
+mount_ok=false
+landing_deadline=$(( $(date +%s) + 360 ))
+next_reopen=$(( $(date +%s) + 90 ))
+while [ "$(date +%s)" -lt "$landing_deadline" ]; do
+    if jac browse wait '#top'; then
+        mount_ok=true
+        break
+    fi
+    echo "landing not mounted yet; waiting out vite's cold dep optimization"
+    if [ "$(date +%s)" -ge "$next_reopen" ]; then
+        echo "re-opening the landing for a clean load"
+        jac browse open "$BASE_URL" || true
+        next_reopen=$(( $(date +%s) + 90 ))
+    fi
+done
+[ "$mount_ok" = true ] || fail "landing #top never appeared"
 # The headless profile persists localStorage between runs; start from a clean
 # slate so the JacYac journey always begins at the auth form.
 jac browse eval 'localStorage.clear(); sessionStorage.clear(); "storage cleared"' \
@@ -383,6 +407,36 @@ else
     })()'
 fi
 
+# --------------------------------------------------------------- packages ---
+step "packages: the index page settles into a list, an empty state or an error"
+open_page "$BASE_URL/packages"
+wait_for_text "published to the jac-index" 30
+package_state=""
+for _ in $(seq 1 30); do
+    package_state="$(jac browse eval '(() => {
+      const card = document.querySelector("main a[href^=\"/packages/\"], ul a[href^=\"/packages/\"]");
+      if (card) return "list:" + card.getAttribute("href");
+      const text = document.body.innerText;
+      if (text.includes("No packages have been published yet.")) return "empty";
+      if (text.includes("The package index is unavailable")) return "error";
+      return "";
+    })()' 2>/dev/null || true)"
+    [ -n "$package_state" ] && [ "$package_state" != '""' ] && break
+    sleep 2
+done
+echo "packages index: ${package_state:-<none>}"
+case "$package_state" in
+    *list:*)
+        package_href="$(printf '%s' "$package_state" | sed -E 's/.*list:([^"]*).*/\1/')"
+        step "packages: a package page renders its header and tabs"
+        open_page "$BASE_URL$package_href"
+        wait_for_text "All packages" 30
+        wait_for_text "Versions" 30
+        ;;
+    *empty*|*error*) ;;
+    *) fail "the packages page never settled" ;;
+esac
+
 # --------------------------------------------------------------- not found ---
 step "404: unmatched routes render the catch-all page"
 open_page "$BASE_URL/definitely-not-a-page-${RUN_TAG}"
@@ -402,4 +456,4 @@ fi
 
 step "done"
 echo "journey complete: landing, wait-wuuut, public Ninja Scores, JacYac"
-echo "(signup/repository validation/post/trend/like/comment/channels/reload), legacy routes, docs, 404, console"
+echo "(signup/repository validation/post/trend/like/comment/channels/reload), legacy routes, docs, packages, 404, console"

@@ -75,11 +75,124 @@ compact holes once; insertion also compacts when the order allocation fills.
 Rehashing rebuilds both indices. This makes deletion amortized constant time,
 preserves insertion order, and bounds order storage during repeated mutations.
 
+Dictionary lookup exposes a borrowed value slot: a null slot means the key is
+absent, while a present slot can contain zero or `None`. Native `dict.get()`
+uses this shared lookup to search once and then apply its default-value rules.
+
 `jc_materialize` decodes this private order storage when copying native
 dictionaries. Keep its decoder synchronized with changes to this allocation;
 the container field offsets still come from the backend's ABI metadata.
 The native dictionary scaling, mutation, and materialization tests cover these
 contracts.
+
+## Native edge type values
+
+Graph operations accept edge classes passed as `type[Edge]` or a narrower
+bound. `backends/native/na_ir_gen_pass.impl/edge_types.impl.jac` resolves these
+values using the existing native class-name identity. The shared graph runtime
+in `runtime/osp_graph.jac` registers each edge's tag and default-constructor
+callback. Literal edge classes retain constant-tag lookup; dynamic filters use
+the same subtype matching as literal filters.
+Dynamic connections resolve one descriptor and reuse its tag and constructor;
+the registry lookup also validates that the class is a registered edge type.
+An unbounded class value uses `Edge` as its layout bound; its runtime class
+identity still determines the registered descriptor.
+
+Constructor callbacks use ordinary object construction, including inherited
+defaults, initialization, and region allocation. Types that require arguments
+remain usable for filtering; connecting through their bare class raises an
+error. A factory result of zero signals that construction without arguments
+is unavailable, rather than representing a graph handle. Generated calls
+propagate pending errors even when there is no source declaration for the callee. Predicate fields and edge-ref element types come from the declared class
+bound. Keep these semantics in the type evaluator, native lowering, and graph
+runtime so callers such as `UniNode` can use ordinary graph operations without
+maintaining lists of concrete edge classes.
+
+Factory callbacks use the ordinary Jac closure representation, including when
+stored in object fields. Callable parameters, fields, and calls must agree on
+that representation; raw function pointers belong to the explicit C interop
+path. Graph references restore their inferred list element type at the native
+runtime boundary, so indexing, iteration, and spreads share normal list lowering.
+
+`Kid` declares `UniNode` endpoints in `frontend/roles.jac`. This keeps direct
+child traversals typed without a wrapper property. Its endpoint annotations
+use a type-only import; the seed compiler erases these
+annotations, so they introduce no runtime import cycle.
+
+## Native construction from class values
+
+Calling a class value, `kind(args)` where `kind: type[B]`, or `new(kind, ...)`
+lowers natively for obj, node, edge, and walker archetypes. The arguments bind
+against `B`'s constructor signature, the contract the type checker enforces:
+`B`'s initializer parameters when an initializer is found through its MRO,
+otherwise its initializing `has` fields. `**` may unpack one str-keyed mapping;
+its keys must name parameters of that signature. The implementation lives in
+`backends/native/na_ir_gen_pass.impl/class_ctors.impl.jac`.
+
+Each module emits a construct entry for every archetype it declares. The entry
+takes a presence mask followed by the class's own constructor parameters.
+Omitted parameters use the class's own defaults, including overridden field
+defaults; an omitted required parameter raises `TypeError`. The entry then
+performs ordinary construction, including allocation, vtable, OSP tags,
+initializer, and postinit. For each ancestor, the module also emits a bridge
+from the ancestor's signature to the class's entry. When both signatures match,
+the entry is used directly. A class cannot bridge from an ancestor when its
+extra parameters are required or it lacks one of the ancestor's required
+parameters. Parameter types must also agree. Such a class is not registered
+for that ancestor, so construction through `type[ancestor]` raises `TypeError`,
+as it does in the Python tier. An ancestor parameter that the class does not
+accept raises only when the call supplies it.
+
+Entries are published in a class record keyed by native class-name identity: the
+same FNV name hash and address-then-`strcmp` name comparison used by
+`isinstance`. Each record lists `(ancestor, entry)` pairs. Its module
+initializer adds the record to the weak, program-wide `__jac_class_ctors` bucket
+table, similar to edge-descriptor registration. This works across separately
+compiled units and in closed-world kernel links: a subclass declared in another
+module registers itself. A call site hashes the runtime class name, finds the
+record, selects the entry for the static bound, and calls it. Arguments are
+borrowed; the entry retains what it stores, and the call site releases its
+owned temporaries after the call, like an ordinary constructor call. An entry
+whose construction cannot lower is discarded and its diagnostics are rolled
+back; the class is simply not constructible through a class value.
+
+Construction binds arguments by name. A subclass initializer that renames a
+positional parameter is therefore incompatible, although Python would accept
+the positional call. Initializers that take `*args` or `**kwargs`, generic
+archetypes, and Python-side bases are not supported; calls through those bounds
+report E5092. Classes with the same name in different modules share one
+identity, as they already do for `isinstance`. Zero-argument edge factories
+still use the separate edge-descriptor registry.
+
+Class records are built by walking each ancestor's recorded MRO in turn. A
+subclass of an imported class can have a recorded MRO that stops at its
+immediate base. Walking each recorded MRO still gives the subclass a bridge for
+every ancestor.
+
+Because a class value is its class-name identity, `kind.__name__` lowers to the
+class value itself. `Name.__name__` lowers to the name constant, and
+`type(x).__name__` still reads the object's class id. A walker built from a
+class value spawns through the existing OSP path: `mod spawn kind(module=mod,
+ctx=ctx)` takes the static bound's type-tag slot, which subclasses share by
+layout prefix. The runtime tag then selects the runtime class's descriptor,
+including inherited abilities and node abilities triggered by marker bases such
+as `TreeWalker`. A walker typed only as `Walker` has no statically known
+tag slot. For OSP archetypes, the class record also stores the stable OSP tag.
+Spawn reads the object's runtime class name from its allocation header, finds
+the record, and dispatches on that tag. An unregistered class raises
+`TypeError`.
+
+## Delete-target validation
+
+`DeleteStmt.invalid_target` classifies one target's invalid syntax using
+`DeleteTargetError`: literals, empty target lists, null-safe access, and
+unpacking. It unwraps parentheses; callers recurse into nonempty target lists.
+AST validation owns the corresponding diagnostic messages. Type checking uses
+the same classification to skip the graph-destruction check on invalid syntax,
+while continuing to check valid value targets. For example, `del *ints()` gets
+an unpacking error, while `del ints()` gets a graph-type error when `ints()`
+returns `list[int]`. Improving expression inference must not introduce a second,
+dependent diagnostic for an already-invalid delete target.
 
 ## Packaged interfaces and compilation lifetimes
 
@@ -175,6 +288,7 @@ import a non-seed module only inside a function body, because a hoisted
 import deadlocks bootstrap. That is why many imports in this tree are local
 to the function that uses them; `scripts/check_seed_manifest.py` enforces it.
 
-**Type checking.** `jac check .` runs in CI over the whole repository with
-the exclusions in the root `.jacignore`. Every entry there is a debt with a
-stated reason; the target is an empty file.
+**Type checking.** `jac check .` runs in CI over the whole repository. It
+reads its exclusions from `[check] exclude` in the root `jac.toml`, so CI, the
+precommit hook and a local run apply the same policy. Every path entry there is
+a debt with a stated reason; the target is a list holding only the test trees.

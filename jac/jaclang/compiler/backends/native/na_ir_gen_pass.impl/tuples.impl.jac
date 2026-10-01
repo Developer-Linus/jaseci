@@ -28,19 +28,21 @@ impl NaIRGenPass._codegen_tuple_val(nd: uni.TupleVal) -> (ir.Value | None) {
         if v is None {
             return None;
         }
-        v = self._str_norm(v);
+        v = self._str_materialize(v)
+            if _in_return and self._elem_kind(v.type) == "str"
+            else self._str_norm(v);
 
         if declared_fields {
             v = self._coerce_container_element(v, declared_fields[len(elem_vals)]);
         }
 
         _owns = self._is_owned(v);
-        if _in_return and isinstance(v.type, ir.PointerType) and not _owns {
+        if _in_return and self._is_reference_type(v.type) and not _owns {
             is_named_local = isinstance(val, uni.Name)
                 and val.sym_name in self.local_vars
                 and val.sym_name not in self.param_vars;
             if not is_named_local {
-                self._emit_rc_retain(v, op="return_tuple_elem");
+                self._emit_take_ref(v, op="return_tuple_elem");
                 self._mark_owned(v);
                 _owns = True;
             } elif _ret_direct {
@@ -133,49 +135,33 @@ impl NaIRGenPass._codegen_tuple_unpack(
             and _elem_owned[i];
         if var_name in self.local_vars {
             alloca = self.local_vars[var_name];
-            _slot_ty = alloca.type;
-            if not isinstance(_slot_ty, ir.PointerType) {
+            if not isinstance(alloca.type, ir.PointerType) {
                 return False;
             }
-            stored = self._coerce_type(elem_val, _slot_ty.pointee);
-            new_ref = self._rc_slot_ref(stored) if rc_ok else None;
-            if new_ref is not None {
-                if not moved {
-                    self._emit_rc_retain(new_ref, op="unpack", loc="");
-                }
-                old_ref = self._rc_slot_ref(
-                    self.builder.load(alloca, name=f"unpack.{i}.old")
-                );
-                if old_ref is not None {
-                    pending_old.append(old_ref);
-                }
-            }
-            self.builder.store(stored, alloca);
+            slot_type = alloca.pointee_type;
+            stored = self._coerce_container_element(elem_val, slot_type)
+                if slot_type == self.jacval_type
+                else self._coerce_type(elem_val, slot_type);
         } else {
             alloca = self._entry_alloca(elem_val.type, var_name);
-            new_ref = self._rc_slot_ref(elem_val) if rc_ok else None;
-            if new_ref is not None {
-                _saved_block = self.builder.block;
-                self.builder.position_after(alloca);
-                self.builder.store(ir.Constant(elem_val.type, None), alloca);
-                self.builder.position_at_end(_saved_block);
-                if not moved {
-                    self._emit_rc_retain(new_ref, op="unpack", loc="");
-                }
-                old_ref = self._rc_slot_ref(
-                    self.builder.load(alloca, name=f"unpack.{i}.old")
-                );
-                if old_ref is not None {
-                    pending_old.append(old_ref);
-                }
-            }
-            self.builder.store(elem_val, alloca);
             self.local_vars[var_name] = alloca;
+            stored = elem_val;
         }
+        if rc_ok
+            and self._is_reference_type(alloca.pointee_type)
+            and self._gc_mode() != "none" {
+            if moved or self._is_owned(stored) {
+                self.rc_ops_elided += 1;
+            } else {
+                self._emit_take_ref(stored, op="unpack");
+            }
+            pending_old.append(self.builder.load(alloca, name=f"unpack.{i}.old"));
+        }
+        self.builder.store(stored, alloca);
     }
 
     for old_val in pending_old {
-        self._emit_rc_release_simple(old_val, op="unpack_old", loc="");
+        self._emit_slot_release(old_val, op="unpack_old");
     }
     if (not is_value) and self._is_owned(_orig_tv) {
         self._emit_rc_release_simple(_orig_tv, op="unpack_box", loc="");
@@ -207,39 +193,88 @@ impl NaIRGenPass._sizeof_llvm(ty: ir.Type) -> ir.Value {
     return self.builder.ptrtoint(size_gep, i64, name="sizeof");
 }
 
-impl NaIRGenPass._rc_slot_ref(val: ir.Value) -> (ir.Value | None) {
-    if self?.jacval_type and val.type == self.jacval_type {
-        return None;
-    }
-    if isinstance(val.type, ir.PointerType) {
-        if isinstance(val.type.pointee, ir.FunctionType) {
-            return None;
-        }
-        return val;
-    }
-    if self._opt_ptr_payload_of(val.type) is not None {
-        return self.builder.extract_value(val, 1, name="rc.opt.pv");
-    }
-    return None;
+impl NaIRGenPass._tuple_managed_fields(struct_type: ir.LiteralStructType) -> list[int] {
+    return [
+        index
+        for (index, element) in enumerate(struct_type.elements)
+        if self._is_reference_type(element)
+    ];
 }
 
-impl NaIRGenPass._tuple_managed_fields(
-    struct_type: ir.LiteralStructType
-) -> list[tuple[int, bool]] {
-    out: list[tuple[int, bool]] = [];
-    for (i, ety) in enumerate(struct_type.elements) {
-        if self?.jacval_type and ety == self.jacval_type {
-            continue;
-        }
-        if isinstance(ety, ir.PointerType) {
-            if not isinstance(ety.pointee, ir.FunctionType) {
-                out.append((i, False));
-            }
-        } elif self._opt_ptr_payload_of(ety) is not None {
-            out.append((i, True));
+impl NaIRGenPass._tuple_slot_owns(
+    nd: uni.Assignment, var_name: str, slot_ty: ir.Type
+) -> bool {
+    if not isinstance(slot_ty, ir.LiteralStructType)
+        or not self._tuple_managed_fields(slot_ty)
+        or self._nogc_headerless()
+        or self._gc_mode() == "none"
+        or var_name in self.param_vars
+        or var_name in self.borrowed_vars
+        or var_name in self.closure_cell_vars
+        or var_name in self.closure_cell_handles
+        or var_name in self.region_handle_vars
+        or (
+            self._gen_ctx is not None
+            and self.builder.function is self._gen_ctx.resume_fn
+        )
+        or len(nd.target) != 1 {
+        return False;
+    }
+    target = nd.target[0];
+    if not isinstance(target, uni.Name) or target.sym is None {
+        return False;
+    }
+    for site in target.sym.defn {
+        binder = site.parent;
+        if not isinstance(binder, uni.Assignment)
+            or binder.aug_op is not None
+            or len(binder.target) != 1
+            or binder.target[0] is not site {
+            return False;
         }
     }
-    return out;
+    return True;
+}
+
+impl NaIRGenPass._bind_owned_tuple_slot(
+    var_name: str, slot: ir.Value, value: ir.Value, loc: str = ""
+) -> None {
+    slot_ty = value.type;
+    if not isinstance(slot_ty, ir.LiteralStructType) {
+        return;
+    }
+    owned = value?.na_tuple_owned;
+    for index in self._tuple_managed_fields(slot_ty) {
+        if owned is not None and index < len(owned) and owned[index] {
+            continue;
+        }
+        self._emit_take_ref(
+            self.builder.extract_value(value, index, name=f"{var_name}.tslot.f{index}"),
+            op="assign_tuple",
+            loc=loc
+        );
+    }
+    self._release_tuple_slot(slot, op="overwrite");
+    self.owned_tuple_vars.add(var_name);
+}
+
+impl NaIRGenPass._release_tuple_slot(slot: ir.Value, op: str) -> None {
+    held = self.builder.load(slot, name="tslot.held");
+    held_ty = held.type;
+    if not isinstance(held_ty, ir.LiteralStructType) {
+        return;
+    }
+    for index in self._tuple_managed_fields(held_ty) {
+        self._release_owned_args(
+            [
+                self._mark_owned(
+                    self.builder.extract_value(held, index, name=f"tslot.held.f{index}")
+                )
+            ],
+            op=op
+        );
+    }
+    self.builder.store(ir.Constant(held_ty, None), slot);
 }
 
 impl NaIRGenPass._box_value_tuple(val: ir.Value, loc: str = "") -> ir.Value {
@@ -253,15 +288,15 @@ impl NaIRGenPass._box_value_tuple(val: ir.Value, loc: str = "") -> ir.Value {
     );
     if _rc_box {
         _owned = val?.na_tuple_owned;
-        for (_bi, _b_opt) in _managed {
+        for _bi in _managed {
             if _owned is not None and _bi < len(_owned) and _owned[_bi] {
                 continue;
             }
-            _bfv = self.builder.extract_value(val, _bi, name=f"box.f{_bi}");
-            if _b_opt {
-                _bfv = self.builder.extract_value(_bfv, 1, name=f"box.f{_bi}.pv");
-            }
-            self._emit_rc_retain(_bfv, op="box_field", loc=loc);
+            self._emit_take_ref(
+                self.builder.extract_value(val, _bi, name=f"box.f{_bi}"),
+                op="box_field",
+                loc=loc
+            );
         }
     }
 
@@ -391,9 +426,10 @@ impl NaIRGenPass._tuple_seq_coerce(
 ) -> (ir.Value | None) {
     """Materialize a tuple value into the sequence a variadic tuple lowers to.
 
-    Only fires when the target is exactly the sequence type the value's own
-    element flavor would build, so the conversion never silently reinterprets
-    one element flavor as another.
+    Fires when the target is exactly the sequence type the value's own element
+    flavor would build, or when it is the boxed `jacval` sequence an erased
+    `tuple[Any, ...]` lowers to, which holds any element flavor by boxing each
+    one. It never reinterprets one unboxed element flavor as another.
     """;
     if not isinstance(target_type, ir.PointerType) {
         return None;
@@ -410,11 +446,43 @@ impl NaIRGenPass._tuple_seq_coerce(
         return None;
     }
     flavor = self._tuple_seq_flavor([e for e in st.elements]);
-    if flavor is None or flavor[0] != spec {
+    if flavor is None {
         return None;
     }
-    seq = self._tuple_iter_seq(None, val);
-    return seq[0] if seq is not None else None;
+    if flavor[0] == spec {
+        seq = self._tuple_iter_seq(None, val);
+        return seq[0] if seq is not None else None;
+    }
+    if spec != "jacval" {
+        return None;
+    }
+    boxed = self._tuple_iter_seq(None, val, element_type=self.jacval_type);
+    return boxed[0] if boxed is not None else None;
+}
+
+impl NaIRGenPass._variadic_elem_coerce(
+    val: ir.Value, container: (uni.UniNode | None)
+) -> ir.Value {
+    """Give a fixed-arity tuple the shape a `list[tuple[T, ...]]` slot holds.
+
+    A variadic tuple lowers to the sequence `list[T]` does (see
+    `_variadic_tuple_seq_type`), and every read out of such a list views its
+    erased slot through that sequence type. A tuple display stored into the
+    list is built with its own fixed arity, though, and the erased `i8*` slot
+    took the tuple box as it was, so the next read walked a tuple struct as a
+    list header. Every element store into a list whose checked element type
+    is variadic comes through here and is materialized as that sequence; any
+    other value, or a list of anything else, passes through untouched.
+    """;
+    if self._tuple_struct_of_value(val) is None {
+        return val;
+    }
+    decl = self._list_elem_llvm_of(container);
+    if decl is None or self._spec_from_list_slot_type(decl) is None {
+        return val;
+    }
+    seq = self._tuple_seq_coerce(val, decl);
+    return seq if seq is not None else val;
 }
 
 impl NaIRGenPass._tuple_struct_of_value(
