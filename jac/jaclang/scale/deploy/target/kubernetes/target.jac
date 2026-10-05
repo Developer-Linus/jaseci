@@ -1841,7 +1841,7 @@ obj KubernetesTarget(KubernetesTargetBase) {
 
         try {
             policy_v1.delete_collection_namespaced_pod_disruption_budget(
-                namespace=namespace, label_selector=ms_selector
+                namespace=namespace, label_selector=FLEET_SELECTOR
             );
         } except ApiException as e {
             if e.status != 404 {
@@ -1851,7 +1851,7 @@ obj KubernetesTarget(KubernetesTargetBase) {
 
         try {
             networking_v1.delete_collection_namespaced_ingress(
-                namespace=namespace, label_selector=ms_selector
+                namespace=namespace, label_selector=FLEET_SELECTOR
             );
         } except ApiException as e {
             if e.status != 404 {
@@ -1861,7 +1861,7 @@ obj KubernetesTarget(KubernetesTargetBase) {
 
         try {
             services = core_v1.list_namespaced_service(
-                namespace=namespace, label_selector=ms_selector
+                namespace=namespace, label_selector=FLEET_SELECTOR
             );
             service_items: list[any] = services.items;
             for svc in service_items {

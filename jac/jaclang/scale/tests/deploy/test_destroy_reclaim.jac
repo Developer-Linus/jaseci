@@ -4,6 +4,7 @@ What destroy reclaims and what it spares is decided by an API server, so those
 properties are asserted in destroy_reclaim_real_e2e.sh against real objects.
 Only the branches that need a cluster to misbehave live here.
 """
+import re;
 import unittest.mock;
 import from types { SimpleNamespace }
 import from kubernetes.client.exceptions { ApiException }
@@ -11,6 +12,8 @@ import from jaclang.scale.deploy.target.kubernetes.kubernetes_config {
     KubernetesConfig
 }
 import from jaclang.scale.deploy.target.kubernetes { target as target_mod }
+import from jaclang.scale.deploy.target.kubernetes.manifest_builder { ManifestBuilder }
+import from jaclang.scale.runtime.context.util { GATEWAY_NAME }
 import from jaclang.scale.deploy.target.kubernetes.utils { kubernetes_utils as utils }
 import from jaclang.scale.injector.pvc_injector { bundle_pvc_name }
 
@@ -35,7 +38,9 @@ def _run_destroy(
     component: str = "",
     monitoring: any = None,
     owned: bool = True,
-    logger: any = None
+    logger: any = None,
+    policy_v1: any = None,
+    networking_v1: any = None
 ) {
     monitoring_deployer = unittest.mock.MagicMock();
     if monitoring is not None {
@@ -44,8 +49,8 @@ def _run_destroy(
     fake_client = SimpleNamespace(
         AppsV1Api=lambda { apps_v1; },
         CoreV1Api=lambda { core_v1; },
-        PolicyV1Api=lambda { unittest.mock.MagicMock(); },
-        NetworkingV1Api=lambda { unittest.mock.MagicMock(); },
+        PolicyV1Api=lambda { policy_v1 or unittest.mock.MagicMock(); },
+        NetworkingV1Api=lambda { networking_v1 or unittest.mock.MagicMock(); },
         RbacAuthorizationV1Api=lambda { unittest.mock.MagicMock(); }
     );
     with unittest.mock.patch.multiple(
@@ -289,6 +294,108 @@ test "removing the application names the co-tenant whose workloads went too" {
         "budgets to the namespace-wide sweep without a word, so nobody knows "
         "to redeploy it"
     );
+}
+
+
+# The API server evaluates a label selector; this is the subset jac-scale uses
+# ("k=v" and "k in (a,b)", comma-joined), so a sweep is judged by what it matches.
+def _selector_matches(labels: dict[str, str], selector: str) -> bool {
+    for clause in re.split(r",(?![^()]*\))", selector) {
+        found = re.fullmatch(r"([\w./-]+) in \(([^)]*)\)", clause.strip());
+        if found {
+            allowed = [v.strip() for v in found.group(2).split(",")];
+            if labels.get(found.group(1)) not in allowed {
+                return False;
+            }
+        } else {
+            assert re.fullmatch(r"[\w./-]+=[^=!()]*", clause.strip()) , (
+                f"selector clause '{clause}' is outside the grammar this matcher judges"
+            );
+            (key, value) = clause.strip().split("=", 1);
+            if labels.get(key) != value {
+                return False;
+            }
+        }
+    }
+    return True;
+}
+
+
+test "removing the application spares the database and monitoring beside it" {
+    builder = ManifestBuilder(
+        k8s_config=KubernetesConfig(app_name=APP, namespace=NS),
+        app_overrides={"orders_app": {"replicas": 3, "hpa": {"enabled": False}}}
+    );
+    fleet_labels: dict[str, dict[str, str]] = {
+        "orders-app-service": builder._build_service_manifest("orders_app")["metadata"][
+            "labels"
+        ],
+        "gateway-service": builder._build_service_manifest(GATEWAY_NAME)["metadata"][
+            "labels"
+        ]
+    };
+    pdb_labels: dict[str, str] = builder._build_pdb_manifest("orders_app")["metadata"][
+        "labels"
+    ];
+    infra_labels: dict[str, dict[str, str]] = {
+        f"{APP}-postgres-service": {"managed": "jac-scale"},
+        "prometheus-service": {"managed": "jac-scale"},
+        "grafana-service": {"managed": "jac-scale"}
+    };
+    all_services = {** fleet_labels, ** infra_labels};
+
+    (apps_v1, core_v1) = _co_tenant_apis();
+    def list_services(**kwargs: any) -> any {
+        selector: str = kwargs.get("label_selector") or "";
+        return SimpleNamespace(
+            items=[
+                SimpleNamespace(metadata=SimpleNamespace(name=n, labels=lbl))
+                for (n, lbl) in all_services.items()
+                if _selector_matches(lbl, selector)
+            ]
+        );
+    }
+    core_v1.list_namespaced_service.side_effect = list_services;
+    policy_v1 = unittest.mock.MagicMock();
+    networking_v1 = unittest.mock.MagicMock();
+
+    _run_destroy(
+        apps_v1,
+        core_v1,
+        unittest.mock.MagicMock(),
+        component="application",
+        policy_v1=policy_v1,
+        networking_v1=networking_v1
+    );
+
+    deleted: list[str] = [
+        call.kwargs.get("name")
+        for call in core_v1.delete_namespaced_service.call_args_list
+    ];
+    assert sorted(deleted) == sorted(fleet_labels.keys()) , (
+        f"destroying only the application deleted {deleted}: the database and "
+        "monitoring Services went with it, leaving their pods running and unreachable"
+    );
+    # (kind, delete_collection call, labels of that kind's fleet object)
+    gateway_ingress: dict[str, str] = builder._build_ingress_manifest(
+        {"enabled": True, "host": "shop.example.com"}
+    )["metadata"]["labels"];
+    for (kind, sweep, fleet_obj) in [
+        (
+            "PodDisruptionBudget",
+            policy_v1.delete_collection_namespaced_pod_disruption_budget,
+            pdb_labels
+        ),
+        ("Ingress", networking_v1.delete_collection_namespaced_ingress, gateway_ingress)
+    ] {
+        selector = sweep.call_args.kwargs["label_selector"];
+        assert _selector_matches(fleet_obj, selector) , (
+            f"the {kind} sweep ('{selector}') no longer reaches the application's own {kind}"
+        );
+        assert not _selector_matches({"managed": "jac-scale"}, selector) , (
+            f"the {kind} sweep ('{selector}') reaches objects that are not the application's"
+        );
+    }
 }
 
 
