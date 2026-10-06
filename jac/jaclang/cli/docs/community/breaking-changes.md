@@ -17,7 +17,7 @@ This page documents significant breaking changes in Jac and Jaseci that may affe
 | your own `docker run -p` image | nothing | `ENV JAC_SERVE_HOST=0.0.0.0` (the official image sets it) |
 | a Kubernetes pod | nothing | nothing: the manifest sets `JAC_SERVE_HOST` |
 
-The startup banner lists "Network" URLs only for interfaces the server is bound to, and says when it is listening on this machine only. The dev Vite server follows the same host instead of always listening on every interface.
+The startup banner lists "Network" URLs only for interfaces the server is bound to, and says when it is listening on this machine only. The dev Vite server and the local fleet gateway (`[scale.gateway] gateway_host`, now unset by default) follow the same default instead of always listening on every interface. A pod never inherits a loopback `[serve] host`: the manifest emits `0.0.0.0` unless the pinned host is a real address.
 
 ---
 

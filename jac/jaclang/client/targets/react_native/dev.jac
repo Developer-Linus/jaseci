@@ -4,6 +4,7 @@ import subprocess;
 import from pathlib { Path }
 import from typing { Optional }
 import from jaclang.cli.console { console }
+import from jaclang.server.settings { is_loopback_host }
 import from jaclang.server.watcher { FileChangeEvent }
 import from jaclang.client.targets.react_native.common { resolve_node_tool }
 import from jaclang.client.targets.react_native.build {
@@ -27,7 +28,7 @@ glob JAC_RN_METRO_PORT_ENV: str = "JAC_RN_METRO_PORT",
 
 def backend_bind_host(visible_host: str) -> str {
     host = (visible_host or "").strip();
-    if host in ("", "localhost", "::1") or host.startswith("127.") {
+    if not host or is_loopback_host(host) {
         return "";
     }
     return "0.0.0.0";

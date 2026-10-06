@@ -173,6 +173,9 @@ test "an explicit plugin directory without jac.toml uses defaults rather than it
 
 test "normalize_gateway_config fills every section with defaults" {
     gw = normalize_gateway_config({});
+    # Left unset so the serving process decides: a laptop must not inherit the
+    # pod's every-interface bind from a config normalized on the laptop.
+    assert gw["gateway_host"] == "";
     for key in [
         "colocate",
         "gateway_port",
@@ -590,5 +593,45 @@ test "an unknown project-level [scale] key still fails strict mode while serving
     } finally {
         reset_scale_config();
         shutil.rmtree(d, ignore_errors=True);
+    }
+}
+
+
+test "the local gateway binds loopback unless a host is chosen or it runs in a pod" {
+    import from jaclang.scale.runtime.orchestrator.orchestrator { FleetOrchestrator }
+
+    # (in a pod, [scale.gateway] gateway_host, expected bind)
+    cases = [
+        (False, "", "127.0.0.1"),
+        (True, "", "0.0.0.0"),
+        (False, "0.0.0.0", "0.0.0.0"),
+        (False, "10.1.2.3", "10.1.2.3"),
+        (True, "127.0.0.1", "127.0.0.1")
+    ];
+    prev = os.environ.get("KUBERNETES_SERVICE_HOST");
+    try {
+        for (in_pod, configured, expected) in cases {
+            if in_pod {
+                os.environ["KUBERNETES_SERVICE_HOST"] = "10.96.0.1";
+            } else {
+                os.environ.pop("KUBERNETES_SERVICE_HOST", None);
+            }
+            orchestrator = FleetOrchestrator(
+                fleet=None,
+                gateway_config=normalize_gateway_config(
+                    {"gateway_host": configured} if configured else {}
+                )
+            );
+            got = orchestrator._gateway_host();
+            assert got == expected , (
+                f"pod={in_pod} configured={configured!r}: expected {expected}, got {got}"
+            );
+        }
+    } finally {
+        if prev is None {
+            os.environ.pop("KUBERNETES_SERVICE_HOST", None);
+        } else {
+            os.environ["KUBERNETES_SERVICE_HOST"] = prev;
+        }
     }
 }

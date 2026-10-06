@@ -1585,7 +1585,8 @@ def _network_urls_for(host: str) -> list[str] {
     if host in ('0.0.0.0', '::') {
         return _get_network_ips();
     }
-    if host in ('localhost', '::1') or host.startswith('127.') {
+    import from jaclang.server.settings { is_loopback_host }
+    if is_loopback_host(host) {
         return [];
     }
     return [host];

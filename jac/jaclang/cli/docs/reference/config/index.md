@@ -753,7 +753,7 @@ github_signature_header = "X-Hub-Signature-256"
 [scale.gateway]
 colocate = true                  # false: `jac run <app>` runs service apps as separate local processes
 gateway_port = 8000
-gateway_host = "0.0.0.0"
+gateway_host = ""                 # unset: 127.0.0.1 locally, 0.0.0.0 in a pod
 http_forward_timeout = 10.0
 boot_health_timeout = 60.0
 boot_max_wait = 90

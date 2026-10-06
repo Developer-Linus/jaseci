@@ -235,6 +235,7 @@ test "the serve host defaults to loopback outside a cluster and binds all interf
         ("config opts in, local", False, None, None, "0.0.0.0", "0.0.0.0"),
         ("CLI beats env", False, "0.0.0.0", "127.0.0.1", "", "127.0.0.1"),
         ("env beats config", False, "127.0.0.1", None, "0.0.0.0", "127.0.0.1"),
+        ("an empty CLI host falls through", False, None, "", "", "127.0.0.1"),
         ("a pinned loopback survives a pod", True, "127.0.0.1", None, "", "127.0.0.1"),
         (
             "a pinned config host survives a pod",
@@ -253,7 +254,7 @@ test "the serve host defaults to loopback outside a cluster and binds all interf
                 manifest += f'\n[serve]\nhost = "{toml_host}"\n';
             }
             (Path(tmp) / "jac.toml").write_text(manifest);
-            overrides = {"host": cli_host} if cli_host else {};
+            overrides = {"host": cli_host} if cli_host is not None else {};
             def _load -> str {
                 return ServeSettings.load(tmp, overrides).host;
             }

@@ -139,6 +139,11 @@ def in_cluster -> bool {
 }
 
 
+def is_loopback_host(host: str) -> bool {
+    return host in ('localhost', '::1') or host.startswith('127.');
+}
+
+
 def default_host -> str {
     return '0.0.0.0' if in_cluster() else '127.0.0.1';
 }
