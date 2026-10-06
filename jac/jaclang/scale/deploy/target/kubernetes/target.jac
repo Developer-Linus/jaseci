@@ -1456,6 +1456,28 @@ obj KubernetesTarget(KubernetesTargetBase) {
         return fleet_revert_order(names);
     }
 
+    def _fleet_app_labels(apps_v1: any, namespace: str) -> list[str] {
+        apps: list[str] = [];
+        try {
+            listed = apps_v1.list_namespaced_deployment(
+                namespace=namespace, label_selector=FLEET_SELECTOR
+            );
+        } except ApiException as e {
+            if e.status == 404 {
+                return apps;
+            }
+            raise;
+        }
+        dep_items: list[any] = list(listed.items or []);
+        for dep in dep_items {
+            app_label: str = str((dep.metadata.labels or {}).get("app", ""));
+            if app_label and app_label not in apps {
+                apps.append(app_label);
+            }
+        }
+        return apps;
+    }
+
     def _owned_replica_sets(
         apps_v1: any, namespace: str, strict: bool = False
     ) -> list[any] {
@@ -1798,6 +1820,8 @@ obj KubernetesTarget(KubernetesTargetBase) {
     ) {
         ms_selector: str = "managed=jac-scale";
 
+        fleet_apps: list[str] = self._fleet_app_labels(apps_v1, namespace);
+
         try {
             apps_v1.delete_collection_namespaced_deployment(
                 namespace=namespace, label_selector=FLEET_SELECTOR
@@ -1879,6 +1903,21 @@ obj KubernetesTarget(KubernetesTargetBase) {
             if e.status != 404 {
                 raise;
             }
+        }
+
+        for fleet_app in fleet_apps {
+            delete_if_exists(
+                core_v1.delete_namespaced_service,
+                f"{fleet_app}-service",
+                namespace,
+                "Service"
+            );
+            delete_if_exists(
+                policy_v1.delete_namespaced_pod_disruption_budget,
+                f"{fleet_app}-pdb",
+                namespace,
+                "PodDisruptionBudget"
+            );
         }
 
         try {
