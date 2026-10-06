@@ -359,19 +359,22 @@ test "empty file generates minimal js" {
     }
 }
 
-test "type to typeof transformation" {
-    jac_code = "\"\"\"Test type() to typeof conversion.\"\"\"\n\ndef check_types() {\n    x = 42;\n    y = \"hello\";\n    my_obj = {\"key\": \"value\"};\n    arr = [1, 2, 3];\n\n    t1 = type(x);\n    t2 = type(y);\n    t3 = type(my_obj);\n    t4 = type(arr[0]);\n\n    return t1;\n}\n";
+test "type() lowers to the runtime type object" {
+    jac_code = "\"\"\"Test type() lowering.\"\"\"\n\ndef check_types() {\n    x = 42;\n    y = \"hello\";\n    my_obj = {\"key\": \"value\"};\n    arr = [1, 2, 3];\n\n    t1 = type(x);\n    t2 = type(y);\n    t3 = type(my_obj);\n    t4 = type(arr[0]);\n\n    return t1;\n}\n";
 
     temp_path = write_temp_jac(jac_code);
 
     try {
         js_code = compile_fixture_to_js(temp_path);
 
-        for pattern in ["typeof x", "typeof y", "typeof my_obj", "typeof arr[0]"] {
+        for pattern in [
+            "_jac.builtin.type(x)",
+            "_jac.builtin.type(y)",
+            "_jac.builtin.type(my_obj)",
+            "_jac.builtin.type(arr[0])"
+        ] {
             assert pattern in js_code;
         }
-        assert "type(" not in js_code;
-        assert js_code.count("typeof") == 4;
         assert_balanced_syntax(js_code, temp_path);
     } finally {
         os.unlink(temp_path);

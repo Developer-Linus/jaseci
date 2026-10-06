@@ -689,6 +689,14 @@ glob STR_NA_GAPS: list[any] = [
              "builtins_introspection_na"
          ),
          (
+             "type identity",
+             "prim_builtins_introspection.jac",
+             "type_identity_py",
+             "type_identity_cl",
+             "builtins_introspection_na",
+             ["cl"]
+         ),
+         (
              "match sequence",
              "prim_match.jac",
              "match_seq_py",

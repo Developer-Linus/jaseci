@@ -573,6 +573,7 @@ verbose = false                   # Log LLM calls to stderr
 temperature = 0.7                 # Optional; omit to use the provider default (0.0-2.0)
 max_tokens = 0                    # Max response tokens (0 = no limit)
 max_output_retries = 3            # Retries for structured output (0 = disabled)
+timeout = 600.0                   # Non-streaming request timeout, seconds (0 = no limit)
 
 [byllm.litellm]
 local_cost_map = true             # Use local cost map
@@ -616,6 +617,7 @@ compaction_model       = ""       # Empty = copy of the active model; set to use
 | `temperature` | float | *unset* | Creativity/randomness (0.0-2.0, lower is more deterministic). Omitted from the request when unset, so the provider applies its own default |
 | `max_tokens` | int | `0` | Maximum response tokens (0 = no limit / model default) |
 | `max_output_retries` | int | `3` | Retries after the first attempt to regenerate a structured output that came back empty or unparseable (`0` disables). See [Typed-Output Retry](#typed-output-retry) |
+| `timeout` | float | `600.0` | Seconds one non-streaming request may take before raising `LLMTimeout` (`0` = no limit). See [Request Timeout](#request-timeout) |
 
 **`[byllm.litellm]` options:**
 
@@ -893,6 +895,18 @@ The original rejected text remains available on `raw_output` (see [`OutputConver
 
 ---
 
+## Request Timeout
+
+`[byllm.call_params] timeout` limits one non-streaming request, in seconds. Override it with `Model(timeout=...)` or `by llm(timeout=...)`; `0` removes the limit. When it expires the call raises `LLMTimeout`, which byLLM retries like other transient errors (`[byllm.streaming] num_retries`).
+
+| Path | Setting | Default |
+|------|---------|---------|
+| non-streaming | `[byllm.call_params] timeout` | `600.0` |
+| streaming | `[byllm.streaming] read_timeout` | `90.0` between chunks |
+| `ModelPool` | `[byllm.fallback] timeout` | `60.0` |
+
+---
+
 ## Invocation Parameters
 
 Parameters passed to `by llm()` at call time:
@@ -902,6 +916,7 @@ Parameters passed to `by llm()` at call time:
 | `temperature` | float | Controls randomness (0.0 = deterministic, 2.0 = creative). Omitted when unset, so the provider default applies |
 | `max_tokens` | int | Maximum tokens in response |
 | `max_output_retries` | int | Retries after the first attempt to regenerate a structured output that came back empty or unparseable (`0` disables). Default: 3. See [Typed-Output Retry](#typed-output-retry) |
+| `timeout` | float | Seconds one non-streaming request may take before raising `LLMTimeout` (`0` = no limit). Default: `600.0` |
 | `tools` | list | Tool functions for agentic behavior (automatically enables ReAct loop) |
 | `incl_info` | dict | Additional context key-value pairs injected into the prompt |
 | `stream` | bool | Enable streaming output (only supports `str` return type) |
@@ -2066,6 +2081,7 @@ ByLLMError (base)
 ├── OutputConversionError        - LLM response cannot be parsed / converted to the declared return type
 ├── FinishToolError              - finish_tool output failed validation against the declared return type
 ├── ConfigurationError           - Invalid byLLM usage (e.g. streaming with a non-str return type)
+├── LLMTimeout                   - A non-streaming request outlived its timeout
 └── CompactionNotEffectiveError  - Compaction triggered twice consecutively with no reduction in context size
 ```
 
@@ -2081,6 +2097,7 @@ All exceptions are importable from `byllm.lib`.
 | `OutputConversionError` | LLM returned a value that could not be converted to the declared return type; the raw string is on `e.raw_output` |
 | `FinishToolError` | The `finish_tool` output failed validation against the function's declared return type |
 | `ConfigurationError` | `by llm()` was used in an unsupported way, such as `stream=True` with a non-`str` return type |
+| `LLMTimeout` | A non-streaming request outlived its `timeout`. Also a `litellm.Timeout`. See [Request Timeout](#request-timeout) |
 | `CompactionNotEffectiveError` | Auto-compaction triggered on two back-to-back iterations without reducing context size. Provide a custom `on_compaction` hook, increase `ctx_window`, or switch to a model with a larger context window |
 
 ### Importing Exceptions
@@ -2094,6 +2111,7 @@ All exceptions are importable from `byllm.lib`.
         ModelNotFoundError,
         OutputConversionError,
         ConfigurationError,
+        LLMTimeout,
         CompactionNotEffectiveError
     }
     ```
@@ -2107,6 +2125,7 @@ All exceptions are importable from `byllm.lib`.
         ModelNotFoundError,
         OutputConversionError,
         ConfigurationError,
+        LLMTimeout,
         CompactionNotEffectiveError,
     )
     ```
