@@ -14,8 +14,9 @@ import from jaclang.project.jac_version {
     split_clause,
     version_key
 }
-import from urllib.request { urlopen }
+import from urllib.request { urlopen, Request }
 import from urllib.error { HTTPError }
+import from urllib.parse { urlsplit }
 import from jaclang.scale.injector.bundle { TOOLCHAIN_SUBDIR }
 import from jaclang.runtime.graph_utils { release_arch, host_arch, host_os }
 
@@ -75,8 +76,60 @@ def node_arch -> str {
 }
 
 
+glob GH_API_HOST: str = "api.github.com";
+
+
+def _github_token -> str {
+    return os.environ.get("GH_TOKEN", "") or os.environ.get("GITHUB_TOKEN", "");
+}
+
+
+def _http_request(url: str, method: str = "GET") -> Request {
+    req = Request(url, method=method);
+    parts = urlsplit(url);
+    token = _github_token();
+    if token and parts.scheme == "https" and parts.hostname == GH_API_HOST {
+        req.add_unredirected_header("Authorization", f"Bearer {token}");
+    }
+    return req;
+}
+
+
+def _quota_exhausted(url: str, err: HTTPError) -> bool {
+    return err.code == 403
+        and urlsplit(url).hostname == GH_API_HOST
+        and err.headers is not None
+        and err.headers.get("X-RateLimit-Remaining") == "0";
+}
+
+
+def _asset_exists(url: str) -> bool {
+    try {
+        resp = urlopen(_http_request(url, "HEAD"), timeout=_HTTP_TIMEOUT);
+    } except HTTPError as e {
+        if e.code == 404 {
+            return False;
+        }
+        raise;
+    }
+    resp.close();
+    return True;
+}
+
+
 def _http_get_bytes(url: str) -> bytes {
-    resp = urlopen(url, timeout=_HTTP_TIMEOUT);
+    try {
+        resp = urlopen(_http_request(url), timeout=_HTTP_TIMEOUT);
+    } except HTTPError as e {
+        if _quota_exhausted(url, e) {
+            raise RuntimeError(
+                "GitHub API rate limit exhausted for this IP; set GH_TOKEN (or "
+                "GITHUB_TOKEN) to use your own quota, or pin an exact "
+                "[project] jac-version so the release assets need no API lookup."
+            ) from e;
+        }
+        raise;
+    }
     try {
         return bytes(resp.read());
     } finally {
@@ -304,6 +357,24 @@ def stable_release_meta(version: str = "") -> dict[str, any] {
 }
 
 
+def stable_asset_urls(version: str, suffix: str) -> tuple[str, str] {
+    binary_url = (
+        f"https://github.com/{GH_REPO}/releases/download/v{version}/jac-{version}{suffix}"
+    );
+    return (binary_url, f"{binary_url}.sha256");
+}
+
+
+def _missing_pinned_asset_message(version: str, suffix: str, what: str) -> str {
+    return (
+        f"No {what} `jac-{version}{suffix}` on the {GH_REPO} release v{version}. "
+        "The release may not be published (fix [project] jac-version), or the "
+        "node arch may be unpublished (set JAC_NODE_ARCH); see "
+        f"https://github.com/{GH_REPO}/releases."
+    );
+}
+
+
 def _no_asset_message(meta: dict[str, any], suffix: str, version: str) -> str {
     tag = str(meta.get("tag_name", version or "latest"));
     return (
@@ -320,9 +391,25 @@ def preflight_pod_runtime(project_dir: str, channel: str, arch: str) -> str {
         return "";
     }
     version = resolve_deploy_version(project_dir, channel);
-    meta = stable_release_meta(version);
 
     needed = {f"-linux-{arch}", f"-{host_seal_platform()}-{host_arch()}"};
+    if version {
+        for suffix in sorted(needed) {
+            (binary_url, checksum_url) = stable_asset_urls(version, suffix);
+            if not _asset_exists(binary_url) {
+                raise RuntimeError(
+                    _missing_pinned_asset_message(version, suffix, "asset")
+                );
+            }
+            if not _asset_exists(checksum_url) {
+                raise RuntimeError(
+                    _missing_pinned_asset_message(version, suffix, "checksum for")
+                );
+            }
+        }
+        return version;
+    }
+    meta = stable_release_meta(version);
     for suffix in sorted(needed) {
         if not _pick_stable_assets(meta, suffix)[0] {
             raise RuntimeError(_no_asset_message(meta, suffix, version));
@@ -368,14 +455,14 @@ def download_release_binary(
         base = f"https://github.com/{repo}/releases/download/dev";
         binary_url = f"{base}/jac-dev{suffix}";
         checksum_url = f"{binary_url}.sha256";
+    } elif version {
+        (binary_url, checksum_url) = stable_asset_urls(version, suffix);
+        logger.info(f"Shipping the pinned pod runtime jac {version}.");
     } else {
         meta = stable_release_meta(version);
         (binary_url, checksum_url) = _pick_stable_assets(meta, suffix);
         if not binary_url {
             raise RuntimeError(_no_asset_message(meta, suffix, version));
-        }
-        if version {
-            logger.info(f"Shipping the pinned pod runtime jac {version}.");
         }
     }
 
@@ -576,9 +663,21 @@ def _admin_dist_urls(channel: str, version: str = "") -> tuple[str, str] {
         return ("", "");
     }
 
-    api = f"https://api.github.com/repos/{repo}/releases/tags/v{version}"
-        if version
-        else f"https://api.github.com/repos/{repo}/releases/latest";
+    if version {
+        (dist_url, checksum_url) = stable_asset_urls(version, suffix);
+        if not _asset_exists(dist_url) {
+            return ("", "");
+        }
+        if not _asset_exists(checksum_url) {
+            raise RuntimeError(
+                f"Pinned jac {version} publishes an admin console without a "
+                f"checksum; refusing to stage it unverified."
+            );
+        }
+        return (dist_url, checksum_url);
+    }
+
+    api = f"https://api.github.com/repos/{repo}/releases/latest";
     meta = json.loads(_http_get_bytes(api).decode("utf-8"));
     dist_url = "";
     checksum_url = "";
@@ -593,12 +692,6 @@ def _admin_dist_urls(channel: str, version: str = "") -> tuple[str, str] {
         } elif name.endswith(suffix) {
             dist_url = url;
         }
-    }
-    if version and dist_url and not checksum_url {
-        raise RuntimeError(
-            f"Pinned jac {version} publishes an admin console without a "
-            f"checksum; refusing to stage it unverified."
-        );
     }
     return (dist_url, checksum_url);
 }

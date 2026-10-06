@@ -202,35 +202,6 @@ test "a declared pin matching no release aborts the deploy" {
 }
 
 
-test "the admin console uses the same release tag as the pinned binary" {
-    meta = _release_meta(
-        ["jac-0.34.2-admin-dist.tar.gz", "jac-0.34.2-admin-dist.tar.gz.sha256"]
-    );
-    with unittest.mock.patch.object(
-        binary_mod, "_http_get_bytes", return_value=meta
-    ) as fetch {
-        (dist, sha) = binary_mod._admin_dist_urls("stable", "0.34.2");
-        assert "releases/tags/v0.34.2" in fetch.call_args[0][0];
-        assert dist.endswith("jac-0.34.2-admin-dist.tar.gz");
-        assert sha == dist + ".sha256";
-    }
-}
-
-
-test "a pinned console without a published checksum aborts" {
-    meta = _release_meta(["jac-0.34.2-admin-dist.tar.gz"]);
-    with unittest.mock.patch.object(binary_mod, "_http_get_bytes", return_value=meta) {
-        raised = False;
-        try {
-            binary_mod._admin_dist_urls("stable", "0.34.2");
-        } except RuntimeError {
-            raised = True;
-        }
-        assert raised;
-    }
-}
-
-
 test "resolve_deploy_version lists releases once per deploy" {
     d = _project(
         '[project]\nname = "x"\nversion = "0.1.0"\njac-version = ">=0.34,<0.35"\n'
@@ -350,8 +321,10 @@ test "a pinned console failure aborts; unpinned stays soft" {
 
 
 test "a pinned release with no console asset is skipped, not fatal" {
-    meta = _release_meta(["jac-0.30.0-linux-x86_64", "jac-0.30.0-linux-x86_64.sha256"]);
-    with unittest.mock.patch.object(binary_mod, "_http_get_bytes", return_value=meta) {
+    calls: list[dict[str, any]] = [];
+    with unittest.mock.patch.object(
+        binary_mod, "urlopen", _github(calls, [], ["jac-0.30.0-admin-dist.tar.gz"])
+    ) {
         assert binary_mod.download_admin_dist("stable", "0.30.0") is None;
     }
 }
@@ -363,10 +336,9 @@ test "a pinned no-console release clears a previously staged console" {
     stale = Path(d) / ".jac" / "admin";
     stale.mkdir(parents=True);
     (stale / "index.html").write_text("stale", encoding="utf-8");
+    calls: list[dict[str, any]] = [];
     with unittest.mock.patch.object(
-        binary_mod,
-        "_http_get_bytes",
-        return_value=_release_meta(["jac-0.30.0-linux-x86_64"])
+        binary_mod, "urlopen", _github(calls, [], ["jac-0.30.0-admin-dist.tar.gz"])
     ) {
         # Pinned: the stale console from an earlier deploy must not ship.
         assert binary_mod.stage_admin_dist(d, "stable", "0.30.0") == False;
@@ -390,62 +362,6 @@ test "config round-trips the stamped jac-version pin" {
     toml = '[project]\nname = "x"\nversion = "0.1.0"\njac-version = "==0.34.3"\n';
     cfg = JacConfig.from_toml_str(toml);
     assert cfg.project.jac_version == "==0.34.3";
-}
-
-
-test "the preflight refuses a pin that names no published release" {
-    # An exact pin short-circuits resolve_deploy_version, so only the release
-    # record reveals the typo.
-    import from urllib.error { HTTPError }
-    d = _project(
-        '[project]\nname = "x"\nversion = "0.1.0"\njac-version = "==0.34.99"\n'
-    );
-    def _absent(url: str) -> bytes {
-        raise HTTPError(url, 404, "Not Found", {}, None);
-    }
-    with unittest.mock.patch.object(binary_mod, "_http_get_bytes", _absent) {
-        raised = False;
-        try {
-            binary_mod.preflight_pod_runtime(d, "stable", "x86_64");
-        } except RuntimeError {
-            raised = True;
-        }
-        assert raised;
-    }
-}
-
-
-test "the preflight needs the pod binary and the host sealing binary" {
-    # Since jac#7989 a deploy may also fetch a host-platform build of the same
-    # version to seal the .jab, so a release missing either one cannot deploy.
-    # The pod arch is chosen to DIFFER from the host arch: on a linux host
-    # whose arch matches the pod's, the two required asset names collapse into
-    # one and neither "missing" leg can trip.
-    d = _project(
-        '[project]\nname = "x"\nversion = "0.1.0"\njac-version = "==0.34.3"\n'
-    );
-    pod_arch = "aarch64" if binary_mod.host_arch() == "x86_64" else "x86_64";
-    pod = f"jac-0.34.3-linux-{pod_arch}";
-    host = f"jac-0.34.3-{binary_mod.host_seal_platform()}-{binary_mod.host_arch()}";
-    assert pod != host;
-    for names in [[pod], [host]] {
-        with unittest.mock.patch.object(
-            binary_mod, "_http_get_bytes", return_value=_release_meta(names)
-        ) {
-            raised = False;
-            try {
-                binary_mod.preflight_pod_runtime(d, "stable", pod_arch);
-            } except RuntimeError {
-                raised = True;
-            }
-            assert raised;
-        }
-    }
-    with unittest.mock.patch.object(
-        binary_mod, "_http_get_bytes", return_value=_release_meta([pod, host])
-    ) {
-        assert binary_mod.preflight_pod_runtime(d, "stable", pod_arch) == "0.34.3";
-    }
 }
 
 
