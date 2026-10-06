@@ -154,7 +154,9 @@ impl ServeSettings.load(
             else env_int('PORT', cfg.port)
     );
     host_override = given.get('host');
-    host = str(host_override) if host_override else (env_value('HOST') or cfg.host);
+    host = str(host_override)
+        if host_override
+        else (env_value('HOST') or cfg.host or default_host());
 
     auth_defaults = AuthSettings();
     settings = ServeSettings(

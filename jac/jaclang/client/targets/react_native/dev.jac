@@ -25,6 +25,14 @@ glob JAC_RN_METRO_PORT_ENV: str = "JAC_RN_METRO_PORT",
      JAC_RN_DEV_HOST_ENV: str = "JAC_RN_DEV_HOST",
      DEFAULT_METRO_PORT: int = 8081;
 
+def backend_bind_host(visible_host: str) -> str {
+    host = (visible_host or "").strip();
+    if host in ("", "localhost", "::1") or host.startswith("127.") {
+        return "";
+    }
+    return "0.0.0.0";
+}
+
 def resolve_metro_port(cli_port: int = DEFAULT_METRO_PORT) -> int {
     raw = os.environ.get(JAC_RN_METRO_PORT_ENV, "");
     if raw and str(raw).strip() {

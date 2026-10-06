@@ -590,7 +590,7 @@ impl ViteBundler._generate_vite_config_content(
         compiled_reload_plug_in: str = "\n    jacCompiledReload(),"
             if reload_enabled
             else "";
-        host_value = '"127.0.0.1"' if for_desktop_dev else 'true';
+        host_value = '"127.0.0.1"';
         claimed = {p for p in (client_paths or [])};
         builtin_proxy_str: str = "";
         for prefix in DEV_PROXY_PREFIXES {
@@ -1245,8 +1245,6 @@ def _build_vite_dev_command(
     if host {
         cmd.append('--host');
         cmd.append(host);
-    } else {
-        cmd.append('--host');
     }
     return cmd;
 }

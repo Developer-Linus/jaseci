@@ -1435,7 +1435,12 @@ impl serve(
                     console.warning(f"Could not read declared API paths: {e}");
                 }
                 (started_vite, bound_port) = _start_vite_dev_server(
-                    base, free_vite_port, actual_port, declared_paths, claimed_paths
+                    base,
+                    free_vite_port,
+                    actual_port,
+                    declared_paths,
+                    claimed_paths,
+                    settings.host
                 );
                 if started_vite {
                     vite_holder.append(started_vite);
@@ -1447,7 +1452,8 @@ impl serve(
                 no_client=no_client,
                 primary_port=primary_port,
                 api_port=actual_port,
-                base_path=base
+                base_path=base,
+                host=settings.host
             );
         }
         try {
@@ -1575,8 +1581,23 @@ def _count_jac_files(directory: str) -> int {
     }
 }
 
+def _network_urls_for(host: str) -> list[str] {
+    if host in ('0.0.0.0', '::') {
+        return _get_network_ips();
+    }
+    if host in ('localhost', '::1') or host.startswith('127.') {
+        return [];
+    }
+    return [host];
+}
+
 def _print_startup_message(
-    dev: bool, no_client: bool, primary_port: int, api_port: int, base_path: str = '.'
+    dev: bool,
+    no_client: bool,
+    primary_port: int,
+    api_port: int,
+    base_path: str = '.',
+    host: str = '127.0.0.1'
 ) {
     import from importlib.metadata { version as pkg_version }
 
@@ -1590,12 +1611,19 @@ def _print_startup_message(
     urls = [];
     urls.append(("Local", f"http://localhost:{primary_port}/"));
 
-    network_ips = _get_network_ips();
+    network_ips = _network_urls_for(host);
     for ip in network_ips {
         urls.append(("Network", f"http://{ip}:{primary_port}/"));
     }
 
     console.print_urls(urls);
+    if not network_ips {
+        console.print(
+            "  Listening on this machine only; pass --host 0.0.0.0 to serve "
+            "other devices",
+            style="muted"
+        );
+    }
 
     console.print();
 
@@ -1651,7 +1679,8 @@ def _start_vite_dev_server(
     vite_port: int,
     api_port: int,
     api_paths: (list[str] | None) = None,
-    client_paths: (list[str] | None) = None
+    client_paths: (list[str] | None) = None,
+    host: str = ''
 ) -> any {
     import from pathlib { Path }
 
@@ -1686,7 +1715,9 @@ def _start_vite_dev_server(
             console.warning(f"Client error events will not reach the terminal: {e}");
         }
 
-        process = bundler.start_dev_server(vite_port, suppress_initial_output=True);
+        process = bundler.start_dev_server(
+            vite_port, suppress_initial_output=True, host=host
+        );
         return (process, bundler.dev_server_port or vite_port);
     } except ImportError as e {
         console.warning(f"client bundler unavailable, skipping Vite dev server: {e}");

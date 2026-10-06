@@ -310,7 +310,7 @@ both.
 
 ```toml
 [serve]
-host = "0.0.0.0"         # Interface to bind; 127.0.0.1 keeps a dev server off the network
+host = ""                # Interface to bind; unset = 127.0.0.1 (0.0.0.0 in a pod); "0.0.0.0" serves other devices
 port = 8000              # Server port
 session = ""             # Session name
 main = true              # Run as main module

@@ -938,6 +938,7 @@ obj ManifestBuilder {
     def _serve_env(svc_name: str, svc_cfg: dict[str, any]) -> list[dict[str, any]] {
         serve = self._serve_config();
         env: list[dict[str, any]] = [
+            {"name": "JAC_SERVE_HOST", "value": serve.host or "0.0.0.0"},
             {"name": "JAC_SERVE_WORKERS", "value": self._worker_count_env(svc_cfg)},
             {"name": "JAC_SERVE_ACCESS_LOG_FORMAT", "value": "json"},
             {"name": "JAC_SERVE_ACCESS_LOG_SUPPRESS_HEALTH", "value": "1"},
