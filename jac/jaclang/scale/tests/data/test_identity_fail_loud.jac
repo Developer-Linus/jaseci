@@ -3,14 +3,15 @@ resolves, the user manager must fail loudly instead of silently degrading to
 a second credential store with divergent semantics (the old sqlite fallback).
 
 Also guards the way a server could reach a request while its identity is
-wrong: a signing secret that cannot be kept.
+wrong: a signing secret that cannot be kept, or a system principal that was
+never provisioned (the one scheduled jobs and webhooks run as).
 """
 
 import os;
 import unittest.mock;
 import from pathlib { Path }
 import from tempfile { TemporaryDirectory }
-import from jaclang.server.identity.user_manager { UserManager }
+import from jaclang.server.identity.user_manager { SYSTEM_USER, UserManager, UserRole }
 
 
 """Apply `values` over the environment, returning what was there before."""
@@ -69,6 +70,96 @@ test "a signing secret that cannot be kept fails the boot, not a request" {
             assert "keep to" in message;
         } finally {
             _set_env(previous);
+        }
+    }
+}
+
+
+"""Remove every trace of the system principal from the identity tables."""
+def _wipe_system_user(srv: any) {
+    store = srv.user_manager._identity_storage.store;
+    store.rows(
+        "DELETE FROM identity_users WHERE user_id IN "
+        "(SELECT user_id FROM identity_lookups WHERE value_normalized = :v)",
+        {"v": SYSTEM_USER}
+    );
+    store.rows(
+        "DELETE FROM identity_lookups WHERE value_normalized = :v", {"v": SYSTEM_USER}
+    );
+}
+
+
+"""A lookup row for the system identity whose user document is gone, as a
+partially migrated identity table leaves it: the identity reads as absent, yet
+creating it collides."""
+def _orphan_system_lookup(srv: any) {
+    srv.user_manager._identity_storage.store.rows(
+        "INSERT INTO identity_lookups (value_normalized, user_id) VALUES (:v, :u)",
+        {"v": SYSTEM_USER, "u": "orphaned-system-user"}
+    );
+}
+
+
+def _role_cannot_be_stored(self: any, user_id: str, role: str) -> dict[str, str] {
+    return {"error": "role store unavailable"};
+}
+
+
+test "a boot refuses to continue without a verified system principal" {
+    import from jaclang.server.server { JacAPIServer }
+    with TemporaryDirectory() as tmpdir {
+        try {
+            srv = JacAPIServer(module_name="app", port=0, base_path=tmpdir);
+            _wipe_system_user(srv);
+        } except Exception as e {
+            print(f"[skip] embedded postgres unavailable: {e}");
+            return;
+        }
+        # (label, wipe first, prepare, role setter, boot must fail)
+        cases = [
+            ("first boot provisions it", True, None, None, False),
+            ("a restart finds it already provisioned", False, None, None, False),
+            (
+                "an identity that is taken but unreadable",
+                True,
+                _orphan_system_lookup,
+                None,
+                True
+            ),
+            ("a role that cannot be applied", True, None, _role_cannot_be_stored, True)
+        ];
+        try {
+            for (label, wipe, prepare, role_setter, must_fail) in cases {
+                if wipe {
+                    _wipe_system_user(srv);
+                }
+                if prepare is not None {
+                    prepare(srv);
+                }
+                with unittest.mock.patch.object(
+                    UserManager,
+                    "set_user_role",
+                    new=role_setter or UserManager.set_user_role
+                ) {
+                    if must_fail {
+                        with testraises(RuntimeError) as exc {
+                            srv._ensure_internal_users();
+                        }
+                        assert SYSTEM_USER in str(exc.value) , label;
+                    } else {
+                        srv._ensure_internal_users();
+                        found = srv.user_manager.find_user_by_identity(SYSTEM_USER);
+                        assert found is not None , label;
+                        assert (
+                            srv.user_manager.get_user_role(str(found["user_id"]))
+                            == UserRole.SYSTEM.value
+                        ) , label;
+                    }
+                }
+            }
+        } finally {
+            _wipe_system_user(srv);
+            srv._ensure_internal_users();
         }
     }
 }
