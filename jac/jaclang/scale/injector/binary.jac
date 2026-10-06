@@ -339,21 +339,9 @@ def host_seal_platform -> str {
 }
 
 
-def stable_release_meta(version: str = "") -> dict[str, any] {
-    api = f"https://api.github.com/repos/{GH_REPO}/releases/tags/v{version}"
-        if version
-        else f"https://api.github.com/repos/{GH_REPO}/releases/latest";
-    try {
-        return dict(json.loads(_http_get_bytes(api).decode("utf-8")));
-    } except HTTPError as e {
-        if e.code == 404 and version {
-            raise RuntimeError(
-                f"Pinned jac-version v{version} is not a published {GH_REPO} "
-                "release; fix [project] jac-version or remove it for latest."
-            );
-        }
-        raise;
-    }
+def stable_release_meta -> dict[str, any] {
+    api = f"https://api.github.com/repos/{GH_REPO}/releases/latest";
+    return dict(json.loads(_http_get_bytes(api).decode("utf-8")));
 }
 
 
@@ -375,8 +363,8 @@ def _missing_pinned_asset_message(version: str, suffix: str, what: str) -> str {
 }
 
 
-def _no_asset_message(meta: dict[str, any], suffix: str, version: str) -> str {
-    tag = str(meta.get("tag_name", version or "latest"));
+def _no_asset_message(meta: dict[str, any], suffix: str) -> str {
+    tag = str(meta.get("tag_name", "latest"));
     return (
         f"No `jac-*{suffix}` asset on the {GH_REPO} release ({tag}). The node "
         "arch may be unpublished; set JAC_NODE_ARCH or check "
@@ -409,10 +397,10 @@ def preflight_pod_runtime(project_dir: str, channel: str, arch: str) -> str {
         }
         return version;
     }
-    meta = stable_release_meta(version);
+    meta = stable_release_meta();
     for suffix in sorted(needed) {
         if not _pick_stable_assets(meta, suffix)[0] {
-            raise RuntimeError(_no_asset_message(meta, suffix, version));
+            raise RuntimeError(_no_asset_message(meta, suffix));
         }
     }
     return version;
@@ -459,10 +447,10 @@ def download_release_binary(
         (binary_url, checksum_url) = stable_asset_urls(version, suffix);
         logger.info(f"Shipping the pinned pod runtime jac {version}.");
     } else {
-        meta = stable_release_meta(version);
+        meta = stable_release_meta();
         (binary_url, checksum_url) = _pick_stable_assets(meta, suffix);
         if not binary_url {
-            raise RuntimeError(_no_asset_message(meta, suffix, version));
+            raise RuntimeError(_no_asset_message(meta, suffix));
         }
     }
 

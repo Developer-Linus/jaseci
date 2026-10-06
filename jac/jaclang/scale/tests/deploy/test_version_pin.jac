@@ -620,7 +620,7 @@ test "an exhausted GitHub API quota says so, and only that 403 does" {
         err = None;
         with unittest.mock.patch.object(binary_mod, "urlopen", forbidden) {
             try {
-                binary_mod.stable_release_meta("");
+                binary_mod.stable_release_meta();
             } except Exception as e {
                 err = e;
             }
