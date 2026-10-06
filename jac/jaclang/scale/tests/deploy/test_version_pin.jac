@@ -21,6 +21,8 @@ import from jaclang.scale.runtime.realizer.kubernetes_realizer {
 }
 import from jaclang.project.config { JacConfig }
 import from pathlib { Path }
+import from urllib.error { HTTPError }
+import from email.message { Message }
 
 glob REPO: str = "jaseci-labs/jac";
 
@@ -37,6 +39,67 @@ def _release_meta(names: list[str]) -> bytes {
         {"name": n, "browser_download_url": f"https://dl.test/{n}"} for n in names
     ];
     return json.dumps({"assets": assets}).encode("utf-8");
+}
+
+
+def _github(calls: list[dict[str, any]], names: list[str], missing: list[str]) -> any {
+    # Stands in for urlopen at the network edge, so the code under test picks
+    # the URLs, the methods and the headers itself. Anything whose URL contains
+    # an entry of `missing` is a 404.
+    def fake(req: any, timeout: any = None) -> any {
+        url = req if isinstance(req, str) else req.full_url;
+        method = "GET" if isinstance(req, str) else req.get_method();
+        calls.append({"url": url, "method": method, "req": req});
+        for m in missing {
+            if m in url {
+                raise HTTPError(url, 404, "Not Found", {}, None);
+            }
+        }
+        if "api.github.com" in url and "releases?per_page" in url {
+            body = json.dumps(
+                [{"tag_name": "v0.34.3", "assets": [{"name": n} for n in names]}]
+            ).encode(
+                "utf-8"
+            );
+        } elif "api.github.com" in url {
+            body = _release_meta(names);
+        } else {
+            body = ("ab" * 32 + "  jac\n").encode("utf-8");
+        }
+        resp = unittest.mock.MagicMock();
+        resp.read.return_value = body;
+        resp.status = 200;
+        resp.getcode.return_value = 200;
+        return resp;
+    }
+    return fake;
+}
+
+
+def _github_calls(calls: list[dict[str, any]]) -> list[str] {
+    return [
+        str(c["url"])
+        for c in calls
+        if "api.github.com" in str(c["url"])
+    ];
+}
+
+
+def _set_tokens(env: dict[str, str]) {
+    os.environ.pop("GH_TOKEN", None);
+    os.environ.pop("GITHUB_TOKEN", None);
+    for (k, v) in env.items() {
+        os.environ[k] = v;
+    }
+}
+
+
+def _pod_and_host(version: str) -> tuple[str, str, str] {
+    pod_arch = "aarch64" if binary_mod.host_arch() == "x86_64" else "x86_64";
+    pod = f"jac-{version}-linux-{pod_arch}";
+    host = f"jac-{version}-{binary_mod.host_seal_platform()}-{binary_mod.host_arch()}";
+    assert pod != host;
+    return (pod_arch, pod, host);
 }
 
 
@@ -541,4 +604,189 @@ test "a jac.toml it cannot read refuses the deploy instead of allowing it" {
         "an unreadable jac.toml was treated as no pin, so the deploy runs "
         "without either generation ever being compared"
     );
+}
+
+
+test "the GitHub token rides only on api.github.com requests" {
+    api = "https://api.github.com/repos/jaseci-labs/jac/releases/latest";
+    rows = [
+        ({"GH_TOKEN": "gh-tok"}, api, "Bearer gh-tok"),
+        ({"GITHUB_TOKEN": "gha-tok"}, api, "Bearer gha-tok"),
+        ({"GH_TOKEN": "gh-tok", "GITHUB_TOKEN": "gha-tok"}, api, "Bearer gh-tok"),
+        ({}, api, None),
+        (
+            {"GH_TOKEN": "gh-tok"},
+            "https://github.com/jaseci-labs/jac/releases/download/v0.34.3/jac-0.34.3-linux-x86_64.sha256",
+            None
+        ),
+        (
+            {"GH_TOKEN": "gh-tok"},
+            "https://hub.docker.com/v2/repositories/jaseci/jaclang/tags/0.34.3",
+            None
+        ),
+        ({"GH_TOKEN": "gh-tok"}, "https://api.github.com.evil.test/steal", None)
+    ];
+    for (env, url, expected) in rows {
+        calls: list[dict[str, any]] = [];
+        with unittest.mock.patch.dict(os.environ, {}) {
+            _set_tokens(env);
+            with unittest.mock.patch.object(
+                binary_mod, "urlopen", _github(calls, [], [])
+            ) {
+                binary_mod._http_get_bytes(url);
+            }
+        }
+        req = calls[0]["req"];
+        sent = None if isinstance(req, str) else req.get_header("Authorization");
+        assert sent == expected , f"{url}: sent {sent!a}, expected {expected!a}";
+        if expected {
+            # A redirect must not carry the token to whatever host it names.
+            assert "Authorization" in req.unredirected_hdrs;
+            assert "Authorization" not in req.headers;
+        }
+    }
+}
+
+
+test "a known jac version never goes back to the Releases API for its assets" {
+    # exact pin: the version is known, so no api.github.com request at all.
+    # range: one listing to learn the version, then direct downloads.
+    # unpinned: nothing is known, so latest still comes from the API.
+    (pod_arch, pod, host) = _pod_and_host("0.34.3");
+    rows = [
+        ("==0.34.3", [], True),
+        (">=0.34,<0.35", ["releases?per_page"], True),
+        ("", ["releases/latest"], False)
+    ];
+    for (spec, allowed_api, direct) in rows {
+        pin = f'jac-version = "{spec}"\n' if spec else "";
+        d = _project(f'[project]\nname = "x"\nversion = "0.1.0"\n{pin}');
+        calls: list[dict[str, any]] = [];
+        with unittest.mock.patch.object(
+            binary_mod, "urlopen", _github(calls, [pod, host], [])
+        ) {
+            with unittest.mock.patch.object(
+                binary_mod, "_fetch_verified_asset", return_value=b"jac"
+            ) as fetched {
+                version = binary_mod.preflight_pod_runtime(d, "stable", pod_arch);
+                binary_mod.download_release_binary("stable", pod_arch, version);
+            }
+        }
+        for api in _github_calls(calls) {
+            assert any(a in api for a in allowed_api) , (
+                f"{spec!a}: unexpected GitHub API request {api}"
+            );
+        }
+        if direct {
+            assert version == "0.34.3";
+            asset = f"https://github.com/{REPO}/releases/download/v0.34.3/{pod}";
+            (url, checksum_url) = fetched.call_args[0][:2];
+            assert url == asset , f"{spec!a}: downloaded {url}";
+            assert checksum_url == asset + ".sha256" , (
+                f"{spec!a}: the download must still be checksum-verified"
+            );
+        }
+    }
+}
+
+
+test "an exhausted GitHub API quota says so, and only that 403 does" {
+    rows = [("0", True), ("17", False), (None, False)];
+    for (remaining, is_quota) in rows {
+        headers = Message();
+        if remaining is not None {
+            headers["X-RateLimit-Remaining"] = remaining;
+        }
+        def forbidden(req: any, timeout: any = None) -> any {
+            url = req if isinstance(req, str) else req.full_url;
+            raise HTTPError(url, 403, "rate limit exceeded", headers, None);
+        }
+        err = None;
+        with unittest.mock.patch.object(binary_mod, "urlopen", forbidden) {
+            try {
+                binary_mod.stable_release_meta("");
+            } except Exception as e {
+                err = e;
+            }
+        }
+        assert err is not None;
+        if is_quota {
+            text = str(err);
+            assert "rate limit" in text.lower() , f"{text!a}";
+            assert "GH_TOKEN" in text and "jac-version" in text , f"{text!a}";
+        } else {
+            assert isinstance(err, HTTPError) and err.code == 403 , (
+                f"remaining={remaining!a}: a plain 403 must not be reported as quota"
+            );
+        }
+    }
+}
+
+
+test "the preflight proves both pod and sealing assets exist without the API" {
+    (pod_arch, pod, host) = _pod_and_host("0.34.3");
+    d = _project(
+        '[project]\nname = "x"\nversion = "0.1.0"\njac-version = "==0.34.3"\n'
+    );
+    rows = [
+        ([], True),
+        ([pod], False),
+        ([host], False),
+        ([pod + ".sha256"], False),
+        ([host + ".sha256"], False),
+        (["/releases/download/v0.34.3/"], False)
+    ];
+    for (missing, ok) in rows {
+        calls: list[dict[str, any]] = [];
+        err = None;
+        version = "";
+        with unittest.mock.patch.object(
+            binary_mod, "urlopen", _github(calls, [], missing)
+        ) {
+            try {
+                version = binary_mod.preflight_pod_runtime(d, "stable", pod_arch);
+            } except RuntimeError as e {
+                err = e;
+            }
+        }
+        assert _github_calls(calls) == [] , f"{missing!a}: asked the Releases API";
+        assert {c["method"] for c in calls} <= {"HEAD"} , f"{missing!a}";
+        if ok {
+            assert err is None and version == "0.34.3";
+            assert len(calls) >= 4 , "the pod and sealing assets must both be probed";
+        } else {
+            assert err is not None , f"{missing!a} must stop the deploy";
+            assert "0.34.3" in str(err) and "404" not in str(err) , f"{err!a}";
+        }
+    }
+}
+
+
+test "a pinned admin console is found by direct URL and stays checksum-gated" {
+    dist = "jac-0.34.2-admin-dist.tar.gz";
+    base = f"https://github.com/{REPO}/releases/download/v0.34.2/{dist}";
+    rows = [
+        ([], (base, base + ".sha256"), False),
+        ([dist], ("", ""), False),
+        ([dist + ".sha256"], None, True)
+    ];
+    for (missing, expected, refused) in rows {
+        calls: list[dict[str, any]] = [];
+        got = None;
+        raised = False;
+        with unittest.mock.patch.object(
+            binary_mod, "urlopen", _github(calls, [], missing)
+        ) {
+            try {
+                got = binary_mod._admin_dist_urls("stable", "0.34.2");
+            } except RuntimeError {
+                raised = True;
+            }
+        }
+        assert _github_calls(calls) == [] , f"{missing!a}: asked the Releases API";
+        assert raised == refused , f"{missing!a}";
+        if not refused {
+            assert got == expected , f"{missing!a}: {got!a}";
+        }
+    }
 }
