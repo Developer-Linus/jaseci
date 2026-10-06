@@ -204,6 +204,9 @@ test "build_env injects K8S_APP_NAME and K8S_NAMESPACE from k8s_config" {
     assert pairs.get("JAC_SV_NAME") == "orders";
     assert pairs.get("K8S_APP_NAME") == "jac-shop";
     assert pairs.get("K8S_NAMESPACE") == "jac-shop-dev";
+    # A pod is reached over the pod network, so its server must not rely on
+    # the local-run loopback default.
+    assert pairs.get("JAC_SERVE_HOST") == "0.0.0.0";
 }
 
 

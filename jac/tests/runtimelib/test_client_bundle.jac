@@ -61,6 +61,9 @@ test "dev vite config registers the port reporter; build config does not" {
         # The plugin writes the bound port to .dev-port on "listening" —
         # the jac CLI reads it instead of parsing Vite's stdout.
         assert "jac-port-reporter" in dev_content;
+        # `host: true` would make Vite listen on every interface; binding past
+        # loopback has to be a choice the caller makes, not the config's default.
+        assert "host: true" not in dev_content;
         assert ".dev-port" in dev_content;
         # Build errors surface through Vite's native overlay in dev mode,
         # driven by the single status document the Jac process owns
