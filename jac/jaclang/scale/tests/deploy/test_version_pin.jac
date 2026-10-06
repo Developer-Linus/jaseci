@@ -21,7 +21,7 @@ import from jaclang.scale.runtime.realizer.kubernetes_realizer {
 }
 import from jaclang.project.config { JacConfig }
 import from pathlib { Path }
-import from urllib.error { HTTPError }
+import from urllib.error { HTTPError, URLError }
 import from email.message { Message }
 
 glob REPO: str = "jaseci-labs/jac";
@@ -42,7 +42,12 @@ def _release_meta(names: list[str]) -> bytes {
 }
 
 
-def _github(calls: list[dict[str, any]], names: list[str], missing: list[str]) -> any {
+def _github(
+    calls: list[dict[str, any]],
+    names: list[str],
+    missing: list[str],
+    broken: dict[str, any] | None = None
+) -> any {
     # Stands in for urlopen at the network edge, so the code under test picks
     # the URLs, the methods and the headers itself. Anything whose URL contains
     # an entry of `missing` is a 404.
@@ -53,6 +58,11 @@ def _github(calls: list[dict[str, any]], names: list[str], missing: list[str]) -
         for m in missing {
             if m in url {
                 raise HTTPError(url, 404, "Not Found", {}, None);
+            }
+        }
+        for (m, exc) in (broken or {}).items() {
+            if m in url {
+                raise exc;
             }
         }
         if "api.github.com" in url and "releases?per_page" in url {
@@ -644,20 +654,23 @@ test "the preflight proves both pod and sealing assets exist without the API" {
     d = _project(
         '[project]\nname = "x"\nversion = "0.1.0"\njac-version = "==0.34.3"\n'
     );
+    down = HTTPError("u", 503, "Service Unavailable", {}, None);
     rows = [
-        ([], True),
-        ([pod], False),
-        ([host], False),
-        ([pod + ".sha256"], False),
-        ([host + ".sha256"], False),
-        (["/releases/download/v0.34.3/"], False)
+        ([], {}, True),
+        ([pod], {}, False),
+        ([host], {}, False),
+        ([pod + ".sha256"], {}, False),
+        ([host + ".sha256"], {}, False),
+        (["/releases/download/v0.34.3/"], {}, False),
+        ([], {"/releases/download/": down}, False),
+        ([], {"/releases/download/": URLError("timed out")}, False)
     ];
-    for (missing, ok) in rows {
+    for (missing, broken, ok) in rows {
         calls: list[dict[str, any]] = [];
         err = None;
         version = "";
         with unittest.mock.patch.object(
-            binary_mod, "urlopen", _github(calls, [], missing)
+            binary_mod, "urlopen", _github(calls, [], missing, broken)
         ) {
             try {
                 version = binary_mod.preflight_pod_runtime(d, "stable", pod_arch);
@@ -672,7 +685,13 @@ test "the preflight proves both pod and sealing assets exist without the API" {
             assert len(calls) >= 4 , "the pod and sealing assets must both be probed";
         } else {
             assert err is not None , f"{missing!a} must stop the deploy";
-            assert "0.34.3" in str(err) and "404" not in str(err) , f"{err!a}";
+            text = str(err);
+            assert "404" not in text , f"{err!a}";
+            if broken {
+                assert "https://github.com/" in text and "retry" in text , f"{err!a}";
+            } else {
+                assert pod in text or host in text , f"{err!a} must name the asset";
+            }
         }
     }
 }
@@ -684,7 +703,8 @@ test "a pinned admin console is found by direct URL and stays checksum-gated" {
     rows = [
         ([], (base, base + ".sha256"), False),
         ([dist], ("", ""), False),
-        ([dist + ".sha256"], None, True)
+        ([dist + ".sha256"], None, True),
+        ([dist, "/releases/tag/v0.34.2"], None, True)
     ];
     for (missing, expected, refused) in rows {
         calls: list[dict[str, any]] = [];

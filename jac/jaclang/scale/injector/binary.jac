@@ -103,14 +103,20 @@ def _quota_exhausted(url: str, err: HTTPError) -> bool {
 }
 
 
-def _asset_exists(url: str) -> bool {
+def _url_exists(url: str) -> bool {
     try {
         resp = urlopen(_http_request(url, "HEAD"), timeout=_HTTP_TIMEOUT);
     } except HTTPError as e {
         if e.code == 404 {
             return False;
         }
-        raise;
+        raise RuntimeError(
+            f"Could not check {url} (HTTP {e.code}); retry the deploy."
+        ) from e;
+    } except OSError as e {
+        raise RuntimeError(
+            f"Could not reach {url} ({e}); check the network and retry the deploy."
+        ) from e;
     }
     resp.close();
     return True;
@@ -384,12 +390,12 @@ def preflight_pod_runtime(project_dir: str, channel: str, arch: str) -> str {
     if version {
         for suffix in sorted(needed) {
             (binary_url, checksum_url) = stable_asset_urls(version, suffix);
-            if not _asset_exists(binary_url) {
+            if not _url_exists(binary_url) {
                 raise RuntimeError(
                     _missing_pinned_asset_message(version, suffix, "asset")
                 );
             }
-            if not _asset_exists(checksum_url) {
+            if not _url_exists(checksum_url) {
                 raise RuntimeError(
                     _missing_pinned_asset_message(version, suffix, "checksum for")
                 );
@@ -653,10 +659,16 @@ def _admin_dist_urls(channel: str, version: str = "") -> tuple[str, str] {
 
     if version {
         (dist_url, checksum_url) = stable_asset_urls(version, suffix);
-        if not _asset_exists(dist_url) {
+        if not _url_exists(dist_url) {
+            if not _url_exists(f"https://github.com/{repo}/releases/tag/v{version}") {
+                raise RuntimeError(
+                    f"Pinned jac-version v{version} is not a published {repo} "
+                    "release; fix [project] jac-version or remove it for latest."
+                );
+            }
             return ("", "");
         }
-        if not _asset_exists(checksum_url) {
+        if not _url_exists(checksum_url) {
             raise RuntimeError(
                 f"Pinned jac {version} publishes an admin console without a "
                 f"checksum; refusing to stage it unverified."
