@@ -1716,8 +1716,11 @@ def _start_vite_dev_server(
             console.warning(f"Client error events will not reach the terminal: {e}");
         }
 
+        import from jaclang.client.vite_bundler { _vite_host_arg }
         process = bundler.start_dev_server(
-            vite_port, suppress_initial_output=True, host=host
+            vite_port,
+            suppress_initial_output=True,
+            host=_vite_host_arg(bundler.config_loader.get_vite_config(), host)
         );
         return (process, bundler.dev_server_port or vite_port);
     } except ImportError as e {

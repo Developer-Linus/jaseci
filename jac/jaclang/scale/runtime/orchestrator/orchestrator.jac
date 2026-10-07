@@ -2,7 +2,7 @@ import time;
 import atexit;
 import logging;
 import from jaclang.cli.console { console }
-import from jaclang.server.settings { default_host }
+import from jaclang.server.settings { serve_host }
 import from jaclang.scale.runtime.fleet { FleetSpec, ROOT_PREFIX }
 import from jaclang.scale.runtime.gateway.service_registry {
     ServiceRegistry,
@@ -35,7 +35,7 @@ obj FleetOrchestrator {
     }
 
     def _gateway_host -> str {
-        return str(self.gateway_config.get("gateway_host") or default_host());
+        return str(self.gateway_config.get("gateway_host") or serve_host());
     }
 
     def _port_pinned -> bool {

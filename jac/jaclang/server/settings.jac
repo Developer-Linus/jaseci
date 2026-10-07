@@ -148,6 +148,10 @@ def default_host -> str {
     return '0.0.0.0' if in_cluster() else '127.0.0.1';
 }
 
+def serve_host -> str {
+    return env_value('HOST') or default_host();
+}
+
 def env_value(name: str) -> (str | None) {
     raw = os.environ.get(ENV_PREFIX + name);
     if raw is None {

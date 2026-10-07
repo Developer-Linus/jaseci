@@ -1236,6 +1236,14 @@ def _toml_config_from_raw(config_data: dict[str, any]) -> str {
     return content + '\n' if content else '';
 }
 
+def _vite_host_arg(vite_config: dict[str, any], serve_host: str) -> str {
+    server = vite_config.get('server');
+    if isinstance(server, dict) and server.get('host') {
+        return '';
+    }
+    return serve_host;
+}
+
 def _build_vite_dev_command(
     build_dir: Path, config_rel: Path, port: int, host: str = ""
 ) -> list[str] {
