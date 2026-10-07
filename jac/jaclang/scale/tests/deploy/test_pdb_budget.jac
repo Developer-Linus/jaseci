@@ -21,7 +21,11 @@ import from jaclang.scale.runtime.cli.diagnostics { PlanValidator }
 import from jaclang.scale.runtime.fleet { fleet_of }
 
 
-def _pdbs(services: dict[str, any]) -> dict[str, any] {
+def _bundle(
+    services: dict[str, any],
+    autoscaler_engine: str = "hpa",
+    idle_replicas: (int | None) = None
+) -> dict[str, any] {
     import tempfile;
     import from pathlib { Path }
     with tempfile.TemporaryDirectory() as project {
@@ -30,7 +34,11 @@ def _pdbs(services: dict[str, any]) -> dict[str, any] {
         }
         builder = ManifestBuilder(
             k8s_config=KubernetesConfig(
-                app_name="shop", namespace="shop-ns", bundle_storage_class="standard"
+                app_name="shop",
+                namespace="shop-ns",
+                bundle_storage_class="standard",
+                autoscaler_engine=autoscaler_engine,
+                idle_replicas=idle_replicas
             ),
             fleet=fleet_of(
                 {name: f"/{name}" for name in services},
@@ -39,11 +47,15 @@ def _pdbs(services: dict[str, any]) -> dict[str, any] {
             ),
             dry_run=True
         );
-        bundle = builder.generate_manifests(
+        return builder.generate_manifests(
             AppConfig(code_folder=project, app_name="shop"), ""
         );
-        return dict(bundle.get("pdbs", {}));
     }
+}
+
+
+def _pdbs(services: dict[str, any]) -> dict[str, any] {
+    return dict(_bundle(services).get("pdbs", {}));
 }
 
 
@@ -193,4 +205,44 @@ test "the plan validator skips the HPA and PDB checks for an HTTP_ACTIVATION ser
     assert not any(
         "PodDisruptionBudget" in m or "pdb." in m for m in messages
     ) , messages;
+}
+
+
+# --- hpa.min = 0 is a supported KEDA scale-to-zero config, but only when a
+# real trigger can wake the workload: cpu and memory utilization cannot be
+# measured with zero pods, and the plain HPA engine never goes below one. The
+# check used to reject every hpa.min < 1, failing --dry-run for a correctly
+# configured KEDA service.
+test "the plan validator rejects hpa.min below one only when nothing can wake the workload" {
+    cron = {"type": "cron", "metadata": {"desiredReplicas": "2"}};
+    # (label, engine, idle_replicas, hpa.min, triggers, expect an hpa.min error)
+    table: list[tuple[str, str, int | None, int, list[any], bool]] = [
+        ("keda with a real trigger", "keda", None, 0, [cron], False),
+        ("keda with idle_replicas=0 and a real trigger", "keda", 0, 0, [cron], False),
+        ("keda with no triggers", "keda", None, 0, [], True),
+        ("keda with a cpu-only trigger", "keda", None, 0, [{"type": "cpu"}], True),
+        ("plain hpa never reaches zero", "hpa", None, 0, [cron], True),
+        ("keda at the floor of one", "keda", None, 1, [], False)
+    ];
+    wrong: list[str] = [];
+    for (label, engine, idle, hpa_min, triggers, expect_error) in table {
+        bundle = _bundle(
+            {"orders_app": {"hpa": {"min": hpa_min}, "triggers": triggers}},
+            autoscaler_engine=engine,
+            idle_replicas=idle
+        );
+        errors = [
+            d.message
+            for d in PlanValidator(
+                bundle=bundle,
+                routes={"orders_app": "/orders"},
+                svc_configs={"orders_app": {"hpa": {"min": hpa_min}}}
+            ).run()
+            if d.service == "orders_app" and d.message.startswith("HPA min=")
+        ];
+        if bool(errors) != expect_error {
+            wrong.append(f"{label}: expected error={expect_error}, got {errors}");
+        }
+    }
+    assert wrong == [] , "\n".join(wrong);
 }
