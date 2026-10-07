@@ -726,3 +726,95 @@ test "a pinned admin console is found by direct URL and stays checksum-gated" {
         }
     }
 }
+
+
+test "a failed release listing is reported as such, not as a pin matching nothing" {
+    api = "https://api.github.com/repos/jaseci-labs/jac/releases?per_page=100";
+    quota = Message();
+    quota["X-RateLimit-Remaining"] = "0";
+    rows = [
+        (
+            {"releases?per_page": HTTPError(api, 403, "rate limit", quota, None)},
+            [],
+            "GH_TOKEN"
+        ),
+        ({"releases?per_page": HTTPError(api, 503, "down", {}, None)}, [], "retry"),
+        ({"releases?per_page": URLError("timed out")}, [], "retry"),
+        ({}, [], "matches no published")
+    ];
+    for (broken, names, fragment) in rows {
+        d = _project(
+            '[project]\nname = "x"\nversion = "0.1.0"\njac-version = ">=0.34,<0.35"\n'
+        );
+        err = None;
+        with unittest.mock.patch.object(
+            binary_mod, "urlopen", _github([], names, [], broken)
+        ) {
+            try {
+                binary_mod.resolve_deploy_version(d, "stable");
+            } except Exception as e {
+                err = e;
+            }
+        }
+        assert isinstance(err, RuntimeError) , f"{fragment!a}: {err!a}";
+        assert fragment in str(err) , f"{fragment!a} missing from {str(err)!a}";
+        if fragment != "matches no published" {
+            assert "matches no published" not in str(err) , f"{str(err)!a}";
+        }
+    }
+}
+
+
+test "a rejected GitHub token is retried once without it, and says so" {
+    api = "https://api.github.com/repos/jaseci-labs/jac/releases/latest";
+    rows = [
+        ({"GH_TOKEN": "stale"}, api, True, True, 2, True),
+        ({"GH_TOKEN": "stale"}, api, False, False, 2, True),
+        ({}, api, False, False, 1, False),
+        (
+            {"GH_TOKEN": "stale"},
+            "https://github.com/jaseci-labs/jac",
+            False,
+            False,
+            1,
+            False
+        )
+    ];
+    for (env, url, anon_ok, succeeds, attempts, warns) in rows {
+        calls: list[any] = [];
+        def fake(req: any, timeout: any = None) -> any {
+            calls.append(req);
+            if req.has_header("Authorization") or not anon_ok {
+                raise HTTPError(req.full_url, 401, "Bad credentials", {}, None);
+            }
+            resp = unittest.mock.MagicMock();
+            resp.read.return_value = b"{}";
+            return resp;
+        }
+        err = None;
+        with unittest.mock.patch.dict(os.environ, {}) {
+            _set_tokens(env);
+            with unittest.mock.patch.object(binary_mod, "urlopen", fake) {
+                with unittest.mock.patch.object(
+                    binary_mod.logger, "warning"
+                ) as warned {
+                    try {
+                        binary_mod._http_get_bytes(url);
+                    } except HTTPError as e {
+                        err = e;
+                    }
+                }
+            }
+        }
+        label = f"{env!a} {url} anon_ok={anon_ok}";
+        assert (err is None) == succeeds , f"{label}: {err!a}";
+        assert len(calls) == attempts , f"{label}: {len(calls)} requests";
+        if attempts == 2 {
+            assert not calls[1].has_header("Authorization") , f"{label}";
+        }
+        assert warned.called == warns , f"{label}";
+        if warns {
+            assert "GH_TOKEN" in str(warned.call_args[0][0]) , f"{label}";
+        }
+    }
+}

@@ -84,11 +84,19 @@ def _github_token -> str {
 }
 
 
-def _http_request(url: str, method: str = "GET") -> Request {
-    req = Request(url, method=method);
+def _api_token(url: str) -> str {
     parts = urlsplit(url);
-    token = _github_token();
-    if token and parts.scheme == "https" and parts.hostname == GH_API_HOST {
+    if parts.scheme == "https" and parts.hostname == GH_API_HOST {
+        return _github_token();
+    }
+    return "";
+}
+
+
+def _http_request(url: str, method: str = "GET", anonymous: bool = False) -> Request {
+    req = Request(url, method=method);
+    token = "" if anonymous else _api_token(url);
+    if token {
         req.add_unredirected_header("Authorization", f"Bearer {token}");
     }
     return req;
@@ -123,9 +131,9 @@ def _url_exists(url: str) -> bool {
 }
 
 
-def _http_get_bytes(url: str) -> bytes {
+def _open_get(url: str, anonymous: bool = False) -> any {
     try {
-        resp = urlopen(_http_request(url), timeout=_HTTP_TIMEOUT);
+        return urlopen(_http_request(url, "GET", anonymous), timeout=_HTTP_TIMEOUT);
     } except HTTPError as e {
         if _quota_exhausted(url, e) {
             raise RuntimeError(
@@ -135,6 +143,22 @@ def _http_get_bytes(url: str) -> bytes {
             ) from e;
         }
         raise;
+    }
+}
+
+
+def _http_get_bytes(url: str) -> bytes {
+    try {
+        resp = _open_get(url);
+    } except HTTPError as e {
+        if e.code != 401 or not _api_token(url) {
+            raise;
+        }
+        logger.warning(
+            "GitHub rejected the token in GH_TOKEN/GITHUB_TOKEN (401 Bad "
+            "credentials); retrying without it. Replace or unset the token."
+        );
+        resp = _open_get(url, anonymous=True);
     }
     try {
         return bytes(resp.read());
@@ -151,9 +175,11 @@ def _list_release_versions(repo: str) -> list[str] {
     api = f"https://api.github.com/repos/{repo}/releases?per_page=100";
     try {
         arr = json.loads(_http_get_bytes(api).decode("utf-8"));
-    } except Exception as e {
-        logger.warning(f"Could not list {repo} releases ({e}).");
-        return [];
+    } except (OSError, ValueError) as e {
+        raise RuntimeError(
+            f"Could not list the {repo} releases to resolve [project] jac-version "
+            f"({e}); retry the deploy, or pin an exact jac-version to skip the listing."
+        ) from e;
     }
     out: list[str] = [];
     for rel in arr {
