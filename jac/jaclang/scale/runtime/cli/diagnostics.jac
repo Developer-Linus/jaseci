@@ -195,14 +195,12 @@ obj PlanValidator {
         if not bget(hpa, "enabled", True) {
             return;
         }
-        hpa_min = iget(hpa, "min", 1);
-        hpa_max = iget(hpa, "max", 3);
-        hpa_cpu = iget(hpa, "cpu_target", 70);
+        autoscaler = dget(scaling_entry, "autoscaler");
+        hpa_min = iget(autoscaler, "min", iget(hpa, "min", 1));
+        hpa_max = iget(autoscaler, "max", iget(hpa, "max", 3));
+        hpa_cpu = iget(autoscaler, "cpu_target", iget(hpa, "cpu_target", 70));
         engine = sget(scaling_entry, "engine") or "hpa";
-        if hpa_min < 1
-            and not triggers_can_reach_zero(
-                dget(scaling_entry, "autoscaler"), engine
-            ) {
+        if hpa_min < 1 and not triggers_can_reach_zero(autoscaler, engine) {
             if engine == "keda" {
                 reason = (
                     "scaling to zero needs an event trigger, since cpu and memory "
