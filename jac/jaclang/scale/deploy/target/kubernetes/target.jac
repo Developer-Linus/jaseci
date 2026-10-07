@@ -1822,6 +1822,21 @@ obj KubernetesTarget(KubernetesTargetBase) {
 
         fleet_apps: list[str] = self._fleet_app_labels(apps_v1, namespace);
 
+        for fleet_app in fleet_apps {
+            delete_if_exists(
+                core_v1.delete_namespaced_service,
+                f"{fleet_app}-service",
+                namespace,
+                "Service"
+            );
+            delete_if_exists(
+                policy_v1.delete_namespaced_pod_disruption_budget,
+                f"{fleet_app}-pdb",
+                namespace,
+                "PodDisruptionBudget"
+            );
+        }
+
         try {
             apps_v1.delete_collection_namespaced_deployment(
                 namespace=namespace, label_selector=FLEET_SELECTOR
@@ -1903,21 +1918,6 @@ obj KubernetesTarget(KubernetesTargetBase) {
             if e.status != 404 {
                 raise;
             }
-        }
-
-        for fleet_app in fleet_apps {
-            delete_if_exists(
-                core_v1.delete_namespaced_service,
-                f"{fleet_app}-service",
-                namespace,
-                "Service"
-            );
-            delete_if_exists(
-                policy_v1.delete_namespaced_pod_disruption_budget,
-                f"{fleet_app}-pdb",
-                namespace,
-                "PodDisruptionBudget"
-            );
         }
 
         try {
