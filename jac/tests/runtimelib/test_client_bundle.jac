@@ -289,6 +289,24 @@ test "vite commands address vite's js entry, not the bunx shim" {
     }
 }
 
+test "a vite server host the project set wins over the serve host" {
+    import from jaclang.client.vite_bundler { _vite_host_arg }
+
+    # (the [client.vite] table, the host jac run resolved, host passed to vite)
+    cases = [
+        ({}, "127.0.0.1", "127.0.0.1"),
+        ({"server": {"port": 3000}}, "127.0.0.1", "127.0.0.1"),
+        ({"server": {"host": "0.0.0.0"}}, "127.0.0.1", ""),
+        ({"server": {"host": ""}}, "127.0.0.1", "127.0.0.1"),
+        ({"server": None}, "0.0.0.0", "0.0.0.0"),
+        ({"server": {"host": "0.0.0.0"}}, "", "")
+    ];
+    for (vite_config, serve_host, expected) in cases {
+        got = _vite_host_arg(vite_config, serve_host);
+        assert got == expected , f"{vite_config!r} serve={serve_host!r}: got {got!r}";
+    }
+}
+
 test "a missing vite install is an error, not a silent bunx fallback" {
     import tempfile;
     import from jaclang.client { get_bun }

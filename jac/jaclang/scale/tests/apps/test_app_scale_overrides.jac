@@ -598,23 +598,37 @@ test "an unknown project-level [scale] key still fails strict mode while serving
 
 
 test "the local gateway binds loopback unless a host is chosen or it runs in a pod" {
+    import from unittest.mock { MagicMock, patch }
     import from jaclang.scale.runtime.orchestrator.orchestrator { FleetOrchestrator }
+    import from jaclang.scale.runtime.gateway.service_registry { ServiceRegistry }
+    import from jaclang.scale.runtime.gateway.microservice_gateway {
+        MicroserviceGateway
+    }
+    import from jaclang.scale.runtime.gateway.embedded_gateway { EmbeddedGateway }
+    import from jaclang.scale.runtime.gateway.process_gateway { ProcessGateway }
 
-    # (in a pod, [scale.gateway] gateway_host, expected bind)
+    # (in a pod, [scale.gateway] gateway_host, JAC_SERVE_HOST the image sets, expected bind)
     cases = [
-        (False, "", "127.0.0.1"),
-        (True, "", "0.0.0.0"),
-        (False, "0.0.0.0", "0.0.0.0"),
-        (False, "10.1.2.3", "10.1.2.3"),
-        (True, "127.0.0.1", "127.0.0.1")
+        (False, "", "", "127.0.0.1"),
+        (True, "", "", "0.0.0.0"),
+        (False, "0.0.0.0", "", "0.0.0.0"),
+        (False, "10.1.2.3", "", "10.1.2.3"),
+        (True, "127.0.0.1", "", "127.0.0.1"),
+        (False, "", "0.0.0.0", "0.0.0.0"),
+        (False, "10.1.2.3", "0.0.0.0", "10.1.2.3")
     ];
-    prev = os.environ.get("KUBERNETES_SERVICE_HOST");
+    saved = {
+        k: os.environ.get(k) for k in ["KUBERNETES_SERVICE_HOST", "JAC_SERVE_HOST"]
+    };
     try {
-        for (in_pod, configured, expected) in cases {
+        for (in_pod, configured, image_host, expected) in cases {
+            os.environ.pop("KUBERNETES_SERVICE_HOST", None);
+            os.environ.pop("JAC_SERVE_HOST", None);
             if in_pod {
                 os.environ["KUBERNETES_SERVICE_HOST"] = "10.96.0.1";
-            } else {
-                os.environ.pop("KUBERNETES_SERVICE_HOST", None);
+            }
+            if image_host {
+                os.environ["JAC_SERVE_HOST"] = image_host;
             }
             orchestrator = FleetOrchestrator(
                 fleet=None,
@@ -623,15 +637,36 @@ test "the local gateway binds loopback unless a host is chosen or it runs in a p
                 )
             );
             got = orchestrator._gateway_host();
-            assert got == expected , (
-                f"pod={in_pod} configured={configured!r}: expected {expected}, got {got}"
+            label = f"pod={in_pod} configured={configured!r} env={image_host!r}";
+            assert got == expected , f"{label}: expected {expected}, got {got}";
+            if configured {
+                continue;
+            }
+            # A gateway built with no host binds where the serve default says.
+            reg = ServiceRegistry();
+            assert ProcessGateway(registry=reg).host == "" , label;
+            bound: dict[str, str] = {};
+            with patch("jaclang.server.serving.server.ServingServer") as serving {
+                gw = MicroserviceGateway(registry=reg);
+                gw.app = MagicMock();
+                gw.start();
+                bound["microservice"] = str(serving.call_args.kwargs["settings"].host);
+                emb = EmbeddedGateway(registry=reg, transport=MagicMock());
+                emb.app = MagicMock();
+                emb.serve();
+                bound["embedded"] = str(serving.call_args.kwargs["host"]);
+            }
+            assert bound == {"microservice": expected, "embedded": expected} , (
+                f"{label}: {bound}"
             );
         }
     } finally {
-        if prev is None {
-            os.environ.pop("KUBERNETES_SERVICE_HOST", None);
-        } else {
-            os.environ["KUBERNETES_SERVICE_HOST"] = prev;
+        for (k, v) in saved.items() {
+            if v is None {
+                os.environ.pop(k, None);
+            } else {
+                os.environ[k] = v;
+            }
         }
     }
 }
