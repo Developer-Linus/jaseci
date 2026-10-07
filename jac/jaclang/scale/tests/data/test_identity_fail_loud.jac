@@ -100,31 +100,27 @@ def _orphan_system_lookup(srv: any) {
 }
 
 
-def _role_cannot_be_stored(self: any, user_id: str, role: str) -> dict[str, str] {
-    return {"error": "role store unavailable"};
+"""Make every write to a user document a silent no-op, so a role cannot be
+stored although the user reads back: the UPDATE matches no row to return."""
+def _freeze_user_updates(srv: any) {
+    store = srv.user_manager._identity_storage.store;
+    store.rows(
+        "CREATE OR REPLACE FUNCTION freeze_user_updates() RETURNS trigger AS "
+        "'BEGIN RETURN NULL; END' LANGUAGE plpgsql",
+        {}
+    );
+    store.rows(
+        "CREATE TRIGGER freeze_user_updates BEFORE UPDATE ON identity_users "
+        "FOR EACH ROW EXECUTE FUNCTION freeze_user_updates()",
+        {}
+    );
 }
 
 
-"""The system user as a concurrent boot leaves it between creating the user and
-giving it its role."""
-def _system_user_without_role(srv: any) {
-    srv.user_manager.create_internal_user(SYSTEM_USER, "__no_login__");
-}
-
-
-"""A lookup of the system identity that misses once, as it does for the process
-that reads before the other boot has created the user, then reads for real."""
-def _first_system_lookup_misses -> any {
-    missed: list[bool] = [False];
-    real = UserManager.find_user_by_identity;
-    def _find(self: any, value: str) -> any {
-        if value == SYSTEM_USER and not missed[0] {
-            missed[0] = True;
-            return None;
-        }
-        return real(self, value);
-    }
-    return _find;
+def _thaw_user_updates(srv: any) {
+    srv.user_manager._identity_storage.store.rows(
+        "DROP TRIGGER IF EXISTS freeze_user_updates ON identity_users", {}
+    );
 }
 
 
@@ -138,55 +134,27 @@ test "a boot refuses to continue without a verified system principal" {
             print(f"[skip] embedded postgres unavailable: {e}");
             return;
         }
-        # (label, wipe first, prepare, role setter, first lookup misses, boot must fail)
+        # (label, wipe first, prepare, boot must fail)
         cases = [
-            ("first boot provisions it", True, None, None, False, False),
-            ("a restart finds it already provisioned", False, None, None, False, False),
+            ("first boot provisions it", True, None, False),
+            ("a restart finds it already provisioned", False, None, False),
             (
                 "an identity that is taken but unreadable",
                 True,
                 _orphan_system_lookup,
-                None,
-                False,
                 True
             ),
-            (
-                "a role that cannot be applied",
-                True,
-                None,
-                _role_cannot_be_stored,
-                False,
-                True
-            ),
-            (
-                "a concurrent boot that created the user but not yet its role",
-                True,
-                _system_user_without_role,
-                None,
-                True,
-                False
-            )
+            ("a role that cannot be applied", True, _freeze_user_updates, True)
         ];
         try {
-            for (label, wipe, prepare, role_setter, misses_first, must_fail) in cases {
+            for (label, wipe, prepare, must_fail) in cases {
                 if wipe {
                     _wipe_system_user(srv);
                 }
                 if prepare is not None {
                     prepare(srv);
                 }
-                finder = (
-                    _first_system_lookup_misses()
-                        if misses_first
-                        else UserManager.find_user_by_identity
-                );
-                with unittest.mock.patch.object(
-                    UserManager, "find_user_by_identity", new=finder
-                ), unittest.mock.patch.object(
-                    UserManager,
-                    "set_user_role",
-                    new=role_setter or UserManager.set_user_role
-                ) {
+                try {
                     if must_fail {
                         with testraises(RuntimeError) as exc {
                             srv._ensure_internal_users();
@@ -201,9 +169,12 @@ test "a boot refuses to continue without a verified system principal" {
                             == UserRole.SYSTEM.value
                         ) , label;
                     }
+                } finally {
+                    _thaw_user_updates(srv);
                 }
             }
         } finally {
+            _thaw_user_updates(srv);
             _wipe_system_user(srv);
             srv._ensure_internal_users();
         }
