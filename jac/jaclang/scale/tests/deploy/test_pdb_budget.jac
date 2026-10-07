@@ -217,61 +217,69 @@ test "the plan validator skips the HPA and PDB checks for an HTTP_ACTIVATION ser
 # configured KEDA service.
 test "the plan validator rejects hpa.min below one only when nothing can wake the workload" {
     cron = {"type": "cron", "metadata": {"desiredReplicas": "2"}};
-    # (label, engine, idle_replicas, fleet min_replicas, per-service hpa,
-    # triggers, expect an hpa.min error)
-    table: list[tuple[str, str, int | None, int, dict[str, any], list[any], bool]] = [
-        ("keda with a real trigger", "keda", None, 1, {"min": 0}, [cron], False),
-        (
-            "keda with idle_replicas=0 and a real trigger",
-            "keda",
-            0,
-            1,
-            {"min": 0},
-            [cron],
-            False
-        ),
-        ("keda with no triggers", "keda", None, 1, {"min": 0}, [], True),
-        (
-            "keda with a cpu-only trigger",
-            "keda",
-            None,
-            1,
-            {"min": 0},
-            [{"type": "cpu"}],
-            True
-        ),
-        (
-            "keda with a mixed-case CPU trigger",
-            "keda",
-            None,
-            1,
-            {"min": 0},
-            [{"type": "CPU"}],
-            True
-        ),
-        ("plain hpa never reaches zero", "hpa", None, 1, {"min": 0}, [cron], True),
-        ("keda at the floor of one", "keda", None, 1, {"min": 1}, [], False),
-        (
-            "a fleet-wide min of zero is checked without a per-service override",
-            "keda",
-            None,
-            0,
-            {},
-            [{"type": "cpu"}],
-            True
-        )
+    # Each case sets only what differs from a KEDA service with hpa.min = 0.
+    rows: list[dict[str, any]] = [
+        {"label": "keda with a real trigger", "triggers": [cron], "error": False},
+        {
+            "label": "keda with idle_replicas=0 and a real trigger",
+            "idle": 0,
+            "triggers": [cron],
+            "error": False
+        },
+        {"label": "keda with no triggers", "triggers": [], "error": True},
+        {
+            "label": "idle_replicas=0 does not stand in for a trigger",
+            "idle": 0,
+            "triggers": [],
+            "error": True
+        },
+        {
+            "label": "keda with a cpu-only trigger",
+            "triggers": [{"type": "cpu"}],
+            "error": True
+        },
+        {
+            "label": "keda with a mixed-case CPU trigger",
+            "triggers": [{"type": "CPU"}],
+            "error": True
+        },
+        {
+            "label": "keda with a blank trigger type",
+            "triggers": [{"type": ""}],
+            "error": True
+        },
+        {
+            "label": "plain hpa never reaches zero",
+            "engine": "hpa",
+            "triggers": [cron],
+            "error": True
+        },
+        {
+            "label": "keda at the floor of one",
+            "hpa": {"min": 1},
+            "triggers": [],
+            "error": False
+        },
+        {
+            "label": "a fleet-wide min of zero is checked without a per-service override",
+            "fleet_min": 0,
+            "hpa": {},
+            "triggers": [{"type": "cpu"}],
+            "error": True
+        }
     ];
     wrong: list[str] = [];
-    for (label, engine, idle, fleet_min, hpa, triggers, expect_error) in table {
-        svc_cfg: dict[str, any] = {"triggers": triggers};
+    for row in rows {
+        hpa = row.get("hpa", {"min": 0});
+        svc_cfg: dict[str, any] = {"triggers": row["triggers"]};
         if hpa {
             svc_cfg["hpa"] = hpa;
         }
         bundle = _bundle(
             {"orders_app": svc_cfg},
-            autoscaler_engine=engine,
-            idle_replicas=idle,
-            min_replicas=fleet_min
+            autoscaler_engine=row.get("engine", "keda"),
+            idle_replicas=row.get("idle"),
+            min_replicas=row.get("fleet_min", 1)
         );
         errors = [
             d.message
@@ -282,8 +290,10 @@ test "the plan validator rejects hpa.min below one only when nothing can wake th
             ).run()
             if d.service == "orders_app" and d.message.startswith("HPA min=")
         ];
-        if bool(errors) != expect_error {
-            wrong.append(f"{label}: expected error={expect_error}, got {errors}");
+        if bool(errors) != row["error"] {
+            wrong.append(
+                f"{row['label']}: expected error={row['error']}, got {errors}"
+            );
         }
     }
     assert wrong == [] , "\n".join(wrong);
