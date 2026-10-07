@@ -24,7 +24,8 @@ import from jaclang.scale.runtime.fleet { fleet_of }
 def _bundle(
     services: dict[str, any],
     autoscaler_engine: str = "hpa",
-    idle_replicas: (int | None) = None
+    idle_replicas: (int | None) = None,
+    min_replicas: int = 1
 ) -> dict[str, any] {
     import tempfile;
     import from pathlib { Path }
@@ -38,7 +39,8 @@ def _bundle(
                 namespace="shop-ns",
                 bundle_storage_class="standard",
                 autoscaler_engine=autoscaler_engine,
-                idle_replicas=idle_replicas
+                idle_replicas=idle_replicas,
+                min_replicas=min_replicas
             ),
             fleet=fleet_of(
                 {name: f"/{name}" for name in services},
@@ -215,28 +217,68 @@ test "the plan validator skips the HPA and PDB checks for an HTTP_ACTIVATION ser
 # configured KEDA service.
 test "the plan validator rejects hpa.min below one only when nothing can wake the workload" {
     cron = {"type": "cron", "metadata": {"desiredReplicas": "2"}};
-    # (label, engine, idle_replicas, hpa.min, triggers, expect an hpa.min error)
-    table: list[tuple[str, str, int | None, int, list[any], bool]] = [
-        ("keda with a real trigger", "keda", None, 0, [cron], False),
-        ("keda with idle_replicas=0 and a real trigger", "keda", 0, 0, [cron], False),
-        ("keda with no triggers", "keda", None, 0, [], True),
-        ("keda with a cpu-only trigger", "keda", None, 0, [{"type": "cpu"}], True),
-        ("plain hpa never reaches zero", "hpa", None, 0, [cron], True),
-        ("keda at the floor of one", "keda", None, 1, [], False)
+    # (label, engine, idle_replicas, fleet min_replicas, per-service hpa,
+    # triggers, expect an hpa.min error)
+    table: list[tuple[str, str, int | None, int, dict[str, any], list[any], bool]] = [
+        ("keda with a real trigger", "keda", None, 1, {"min": 0}, [cron], False),
+        (
+            "keda with idle_replicas=0 and a real trigger",
+            "keda",
+            0,
+            1,
+            {"min": 0},
+            [cron],
+            False
+        ),
+        ("keda with no triggers", "keda", None, 1, {"min": 0}, [], True),
+        (
+            "keda with a cpu-only trigger",
+            "keda",
+            None,
+            1,
+            {"min": 0},
+            [{"type": "cpu"}],
+            True
+        ),
+        (
+            "keda with a mixed-case CPU trigger",
+            "keda",
+            None,
+            1,
+            {"min": 0},
+            [{"type": "CPU"}],
+            True
+        ),
+        ("plain hpa never reaches zero", "hpa", None, 1, {"min": 0}, [cron], True),
+        ("keda at the floor of one", "keda", None, 1, {"min": 1}, [], False),
+        (
+            "a fleet-wide min of zero is checked without a per-service override",
+            "keda",
+            None,
+            0,
+            {},
+            [{"type": "cpu"}],
+            True
+        )
     ];
     wrong: list[str] = [];
-    for (label, engine, idle, hpa_min, triggers, expect_error) in table {
+    for (label, engine, idle, fleet_min, hpa, triggers, expect_error) in table {
+        svc_cfg: dict[str, any] = {"triggers": triggers};
+        if hpa {
+            svc_cfg["hpa"] = hpa;
+        }
         bundle = _bundle(
-            {"orders_app": {"hpa": {"min": hpa_min}, "triggers": triggers}},
+            {"orders_app": svc_cfg},
             autoscaler_engine=engine,
-            idle_replicas=idle
+            idle_replicas=idle,
+            min_replicas=fleet_min
         );
         errors = [
             d.message
             for d in PlanValidator(
                 bundle=bundle,
                 routes={"orders_app": "/orders"},
-                svc_configs={"orders_app": {"hpa": {"min": hpa_min}}}
+                svc_configs={"orders_app": svc_cfg}
             ).run()
             if d.service == "orders_app" and d.message.startswith("HPA min=")
         ];
