@@ -404,6 +404,44 @@ test "removing the application also removes the fleet's Services and PDBs built 
             f"behind, or removed another: {budgets}"
         );
     }
+
+    # A sweep that fails after the Deployments are gone must not strand them:
+    # the next destroy finds no fleet Deployment to name them from.
+    for component in ["application", ""] {
+        core_v1.reset_mock();
+        policy_v1.reset_mock();
+        policy_v1.delete_collection_namespaced_pod_disruption_budget.side_effect = (
+            ApiException(status=403)
+        );
+        failed = False;
+        try {
+            _run_destroy(
+                apps_v1,
+                core_v1,
+                unittest.mock.MagicMock(),
+                component=component,
+                policy_v1=policy_v1
+            );
+        } except ApiException {
+            failed = True;
+        }
+        assert failed , f"the 403 on the PDB sweep (component '{component}') was swallowed";
+        services = sorted(
+            call.args[0] for call in core_v1.delete_namespaced_service.call_args_list
+        );
+        budgets = sorted(
+            call.args[0]
+            for call in policy_v1.delete_namespaced_pod_disruption_budget.call_args_list
+        );
+        assert services == ["gateway-service", "orders-app-service"] , (
+            f"a failed sweep (component '{component}') stranded a pre-role Service: "
+            f"{services}"
+        );
+        assert budgets == ["gateway-pdb", "orders-app-pdb"] , (
+            f"a failed sweep (component '{component}') stranded a pre-role PDB: "
+            f"{budgets}"
+        );
+    }
 }
 
 

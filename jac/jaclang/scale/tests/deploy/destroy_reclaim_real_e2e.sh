@@ -360,7 +360,13 @@ echo "=== F: destroy --component application spares the database's Service ==="
 deploy_app "${APP}" "${ADOPTED_NS}"
 kubectl label service "${APP}-service" -n "${ADOPTED_NS}" jac-scale.role- >/dev/null \
     || fail "${ADOPTED_NS}" "service/${APP}-service was not there to relabel as pre-role"
-kubectl label pdb "${APP}-pdb" -n "${ADOPTED_NS}" jac-scale.role- >/dev/null 2>&1 || true
+# The app deploys without a PodDisruptionBudget (a floor of one replica that may
+# lose one makes the builder return none), so seed one in the pre-role shape.
+kubectl delete pdb "${APP}-pdb" -n "${ADOPTED_NS}" --ignore-not-found >/dev/null
+kubectl create pdb "${APP}-pdb" -n "${ADOPTED_NS}" --selector="app=${APP}" --max-unavailable=1 >/dev/null \
+    || fail "${ADOPTED_NS}" "could not seed a pre-role pdb/${APP}-pdb"
+kubectl label pdb "${APP}-pdb" -n "${ADOPTED_NS}" managed=jac-scale >/dev/null
+require_present "${ADOPTED_NS}" pdb "${APP}-pdb"
 require_present "${ADOPTED_NS}" service "${APP}-postgres-service"
 
 SDK_DEPLOY_COMPONENT=application destroy_app "${APP}" "${ADOPTED_NS}"
