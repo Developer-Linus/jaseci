@@ -1,7 +1,5 @@
-import from jaclang.scale.deploy.target.kubernetes.manifest_builder {
-    ScalingMode,
-    triggers_can_reach_zero
-}
+import from jaclang.scale.deploy.target.kubernetes.manifest_builder { ScalingMode }
+import from jaclang.scale.deploy.autoscale.autoscaler { triggers_can_reach_zero }
 import from jaclang.scale.runtime.context.util { GATEWAY_NAME }
 import from jaclang.scale.runtime.cli._narrow {
     bget,
@@ -205,8 +203,7 @@ obj PlanValidator {
                 reason = (
                     "scaling to zero needs an event trigger, since cpu and memory "
                     "targets cannot wake a workload with no pods; add one under "
-                    f"[[apps.{svc_name}.scale.triggers]], set idle_replicas = 0, "
-                    "or set hpa.min >= 1"
+                    f"[[apps.{svc_name}.scale.triggers]] or set hpa.min >= 1"
                 );
             } else {
                 reason = (

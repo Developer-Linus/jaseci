@@ -17,7 +17,6 @@ import from jaclang.scale.deploy.target.kubernetes.kubernetes_config {
 import from jaclang.scale.deploy.autoscale.http_activation_config {
     build_http_activation_spec
 }
-import from jaclang.scale.deploy.autoscale.autoscaler { RESOURCE_ONLY_TRIGGER_TYPES }
 import from jaclang.scale.runtime.context.service_routing {
     resolve_http_activation_config
 }
@@ -176,30 +175,6 @@ def pdb_spec(
         return None;
     }
     return {"maxUnavailable": max_unavailable};
-}
-
-
-def _is_real_trigger_type(trigger_type: any) -> bool {
-    normalized = str(trigger_type or "").strip().lower();
-    return bool(normalized) and normalized not in RESOURCE_ONLY_TRIGGER_TYPES;
-}
-
-
-def triggers_can_reach_zero(
-    autoscaler_cfg: (dict[str, any] | None), engine: str
-) -> bool {
-    if not isinstance(autoscaler_cfg, dict) or str(engine or "hpa") != "keda" {
-        return False;
-    }
-    triggers = autoscaler_cfg.get("triggers", []);
-    if not isinstance(triggers, list) {
-        return False;
-    }
-    return any(
-        _is_real_trigger_type(t.get("type", ""))
-        for t in triggers
-        if isinstance(t, dict)
-    );
 }
 
 
@@ -1521,6 +1496,7 @@ obj ManifestBuilder {
                 "service_name": service_name,
                 "autoscaler": {},
                 "http_activation": http,
+                "engine": self.k8s_config.autoscaler_engine,
                 "replica_floor": int(http.get("min_replicas", 0))
             };
         }
@@ -1555,6 +1531,7 @@ obj ManifestBuilder {
         }
         return {
             "mode": ScalingMode.NONE,
+            "engine": self.k8s_config.autoscaler_engine,
             "scale_target_name": scale_target,
             "service_name": service_name,
             "autoscaler": {},
