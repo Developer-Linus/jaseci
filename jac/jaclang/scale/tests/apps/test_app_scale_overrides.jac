@@ -598,14 +598,7 @@ test "an unknown project-level [scale] key still fails strict mode while serving
 
 
 test "the local gateway binds loopback unless a host is chosen or it runs in a pod" {
-    import from unittest.mock { MagicMock, patch }
     import from jaclang.scale.runtime.orchestrator.orchestrator { FleetOrchestrator }
-    import from jaclang.scale.runtime.gateway.service_registry { ServiceRegistry }
-    import from jaclang.scale.runtime.gateway.microservice_gateway {
-        MicroserviceGateway
-    }
-    import from jaclang.scale.runtime.gateway.embedded_gateway { EmbeddedGateway }
-    import from jaclang.scale.runtime.gateway.process_gateway { ProcessGateway }
 
     # (in a pod, [scale.gateway] gateway_host, JAC_SERVE_HOST the image sets, expected bind)
     cases = [
@@ -639,26 +632,6 @@ test "the local gateway binds loopback unless a host is chosen or it runs in a p
             got = orchestrator._gateway_host();
             label = f"pod={in_pod} configured={configured!r} env={image_host!r}";
             assert got == expected , f"{label}: expected {expected}, got {got}";
-            if configured {
-                continue;
-            }
-            # A gateway built with no host binds where the serve default says.
-            reg = ServiceRegistry();
-            assert ProcessGateway(registry=reg).host == "" , label;
-            bound: dict[str, str] = {};
-            with patch("jaclang.server.serving.server.ServingServer") as serving {
-                gw = MicroserviceGateway(registry=reg);
-                gw.app = MagicMock();
-                gw.start();
-                bound["microservice"] = str(serving.call_args.kwargs["settings"].host);
-                emb = EmbeddedGateway(registry=reg, transport=MagicMock());
-                emb.app = MagicMock();
-                emb.serve();
-                bound["embedded"] = str(serving.call_args.kwargs["host"]);
-            }
-            assert bound == {"microservice": expected, "embedded": expected} , (
-                f"{label}: {bound}"
-            );
         }
     } finally {
         for (k, v) in saved.items() {

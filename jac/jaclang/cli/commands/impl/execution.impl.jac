@@ -1147,7 +1147,8 @@ def _serve_fleet(
     port: int,
     fleet: bool,
     dev: bool = False,
-    no_client: bool = False
+    no_client: bool = False,
+    host: str = ''
 ) -> (int | None) {
     if cfg is None or served is None {
         if fleet {
@@ -1193,7 +1194,7 @@ def _serve_fleet(
         return 1;
     }
     return scale_local_serve(
-        served_plan, members, port=port, dev=dev, no_client=no_client
+        served_plan, members, port=port, dev=dev, no_client=no_client, host=host
     );
 }
 
@@ -1251,7 +1252,7 @@ impl serve(
 
     import from jaclang.scale.runtime.provider { mark_scale_runtime }
     mark_scale_runtime();
-    fleet_rc = _serve_fleet(cfg, served, filename, port, fleet, dev, no_client);
+    fleet_rc = _serve_fleet(cfg, served, filename, port, fleet, dev, no_client, host);
     if fleet_rc is not None {
         return fleet_rc;
     }
