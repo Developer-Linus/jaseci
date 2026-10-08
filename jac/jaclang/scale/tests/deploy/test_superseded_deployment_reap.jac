@@ -72,10 +72,15 @@ def _hand_rolled_canary(app: str) -> any {
 
 obj FakeAppsV1 {
     has items: list[any],
-        deleted: list[str] = [];
+        deleted: list[str] = [],
+        stateful_sets: list[any] = [];
 
     def list_namespaced_deployment(namespace: str, **kwargs: any) -> any {
         return SimpleNamespace(items=list(self.items));
+    }
+
+    def list_namespaced_stateful_set(namespace: str, **kwargs: any) -> any {
+        return SimpleNamespace(items=list(self.stateful_sets));
     }
 
     def delete_namespaced_deployment(name: str, namespace: str, **kwargs: any) {
@@ -631,6 +636,134 @@ test "assess_workload settles only on active or intentionally inactive" {
         crashlooping=True
     ).reason
         == "CrashLoopBackOff";
+}
+
+
+obj FakeCoreV1 {
+    has pods: list[any];
+
+    def list_namespaced_pod(namespace: str, **kwargs: any) -> any {
+        return SimpleNamespace(items=list(self.pods));
+    }
+
+    def list_node(**kwargs: any) -> any {
+        return SimpleNamespace(items=[]);
+    }
+}
+
+
+def _pod(
+    app: str,
+    ready: bool,
+    restarts: int,
+    waiting: (str | None) = None,
+    last_terminated: bool = False,
+    deleting: bool = False
+) -> any {
+    return SimpleNamespace(
+        metadata=SimpleNamespace(
+            name=f"{app}-pod",
+            labels={"app": app},
+            deletion_timestamp="2026-01-01T00:00:00Z" if deleting else None
+        ),
+        status=SimpleNamespace(
+            container_statuses=[
+                SimpleNamespace(
+                    name="main",
+                    ready=ready,
+                    restart_count=restarts,
+                    state=SimpleNamespace(
+                        waiting=SimpleNamespace(reason=waiting) if waiting else None,
+                        running=None if waiting else SimpleNamespace(),
+                        terminated=None
+                    ),
+                    last_state=SimpleNamespace(
+                        terminated=SimpleNamespace(exit_code=1)
+                            if last_terminated
+                            else None
+                    )
+                )
+            ]
+        )
+    );
+}
+
+
+# restart_count is the lifetime total and never goes down. `jac deploy status`
+# read any nonzero count as "crash-looping", so a pod that restarted once while
+# its volume attached read degraded through every later rollout. Only a
+# container that is not Ready now, and is waiting in CrashLoopBackOff or has
+# died before, is crash-looping.
+test "status reads a container's current state, not its lifetime restart count" {
+    import unittest.mock;
+    # (label, the app's pod, expected status of a Deployment mid-rollout)
+    cases: list[tuple[str, any, str]] = [
+        (
+            "restarted twice, Ready now",
+            _pod("standup", ready=True, restarts=2),
+            "activating"
+        ),
+        (
+            "waiting in CrashLoopBackOff",
+            _pod("standup", ready=False, restarts=2, waiting="CrashLoopBackOff"),
+            "degraded"
+        ),
+        (
+            "not Ready and its last run terminated",
+            _pod("standup", ready=False, restarts=3, last_terminated=True),
+            "degraded"
+        ),
+        (
+            "still starting, never restarted",
+            _pod("standup", ready=False, restarts=0, waiting="ContainerCreating"),
+            "activating"
+        ),
+        (
+            "an outgoing pod being deleted",
+            _pod(
+                "standup",
+                ready=False,
+                restarts=5,
+                waiting="CrashLoopBackOff",
+                deleting=True
+            ),
+            "activating"
+        ),
+        (
+            "another app's crash-looping pod",
+            _pod("other", ready=False, restarts=5, waiting="CrashLoopBackOff"),
+            "activating"
+        )
+    ];
+    deployment = _rollout(generation=2, observed=2, replicas=2, updated=1, available=1);
+    deployment.metadata.name = "standup";
+    wrong: list[str] = [];
+    for (label, pod, expected) in cases {
+        with unittest.mock.patch(
+            "jaclang.scale.deploy.target.kubernetes.kubernetes_target.k8s_cluster_config"
+        ) {
+            with unittest.mock.patch(
+                "jaclang.scale.deploy.target.kubernetes.kubernetes_target.client.AppsV1Api",
+                return_value=FakeAppsV1(items=[deployment])
+            ) {
+                with unittest.mock.patch(
+                    "jaclang.scale.deploy.target.kubernetes.kubernetes_target.client.CoreV1Api",
+                    return_value=FakeCoreV1(pods=[pod])
+                ) {
+                    status = _target().get_full_status("standup");
+                }
+            }
+        }
+        app = [
+            c
+            for c in status["components"]
+            if c["name"] == "Jaseci App"
+        ][0];
+        if app["status"] != expected {
+            wrong.append(f"{label}: expected {expected}, got {app['status']}");
+        }
+    }
+    assert wrong == [] , "\n".join(wrong);
 }
 
 
