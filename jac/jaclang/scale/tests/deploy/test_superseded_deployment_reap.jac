@@ -658,32 +658,38 @@ def _pod(
     restarts: int,
     waiting: (str | None) = None,
     last_terminated: bool = False,
-    deleting: bool = False
+    deleting: bool = False,
+    labeled: bool = True,
+    statuses: bool = True
 ) -> any {
     return SimpleNamespace(
         metadata=SimpleNamespace(
             name=f"{app}-pod",
-            labels={"app": app},
+            labels={"app": app} if labeled else None,
             deletion_timestamp="2026-01-01T00:00:00Z" if deleting else None
         ),
         status=SimpleNamespace(
-            container_statuses=[
-                SimpleNamespace(
-                    name="main",
-                    ready=ready,
-                    restart_count=restarts,
-                    state=SimpleNamespace(
-                        waiting=SimpleNamespace(reason=waiting) if waiting else None,
-                        running=None if waiting else SimpleNamespace(),
-                        terminated=None
-                    ),
-                    last_state=SimpleNamespace(
-                        terminated=SimpleNamespace(exit_code=1)
-                            if last_terminated
-                            else None
+            container_statuses=None
+                if not statuses
+                else [
+                    SimpleNamespace(
+                        name="main",
+                        ready=ready,
+                        restart_count=restarts,
+                        state=SimpleNamespace(
+                            waiting=SimpleNamespace(reason=waiting)
+                                if waiting
+                                else None,
+                            running=None if waiting else SimpleNamespace(),
+                            terminated=None
+                        ),
+                        last_state=SimpleNamespace(
+                            terminated=SimpleNamespace(exit_code=1)
+                                if last_terminated
+                                else None
+                        )
                     )
-                )
-            ]
+                ]
         )
     );
 }
@@ -733,34 +739,48 @@ test "status reads a container's current state, not its lifetime restart count" 
             "another app's crash-looping pod",
             _pod("other", ready=False, restarts=5, waiting="CrashLoopBackOff"),
             "activating"
+        ),
+        (
+            "a pod with no labels",
+            _pod(
+                "standup",
+                ready=False,
+                restarts=5,
+                waiting="CrashLoopBackOff",
+                labeled=False
+            ),
+            "activating"
+        ),
+        (
+            "a pod that reports no container statuses yet",
+            _pod("standup", ready=False, restarts=0, statuses=False),
+            "activating"
         )
     ];
     deployment = _rollout(generation=2, observed=2, replicas=2, updated=1, available=1);
     deployment.metadata.name = "standup";
+    core = FakeCoreV1(pods=[]);
     wrong: list[str] = [];
-    for (label, pod, expected) in cases {
-        with unittest.mock.patch(
-            "jaclang.scale.deploy.target.kubernetes.kubernetes_target.k8s_cluster_config"
-        ) {
-            with unittest.mock.patch(
-                "jaclang.scale.deploy.target.kubernetes.kubernetes_target.client.AppsV1Api",
-                return_value=FakeAppsV1(items=[deployment])
-            ) {
-                with unittest.mock.patch(
-                    "jaclang.scale.deploy.target.kubernetes.kubernetes_target.client.CoreV1Api",
-                    return_value=FakeCoreV1(pods=[pod])
-                ) {
-                    status = _target().get_full_status("standup");
-                }
+    with unittest.mock.patch(
+        "jaclang.scale.deploy.target.kubernetes.kubernetes_target.k8s_cluster_config"
+    ), unittest.mock.patch(
+        "jaclang.scale.deploy.target.kubernetes.kubernetes_target.client.AppsV1Api",
+        return_value=FakeAppsV1(items=[deployment])
+    ), unittest.mock.patch(
+        "jaclang.scale.deploy.target.kubernetes.kubernetes_target.client.CoreV1Api",
+        return_value=core
+    ) {
+        for (label, pod, expected) in cases {
+            core.pods = [pod];
+            status = _target().get_full_status("standup");
+            app = [
+                c
+                for c in status["components"]
+                if c["name"] == "Jaseci App"
+            ][0];
+            if app["status"] != expected {
+                wrong.append(f"{label}: expected {expected}, got {app['status']}");
             }
-        }
-        app = [
-            c
-            for c in status["components"]
-            if c["name"] == "Jaseci App"
-        ][0];
-        if app["status"] != expected {
-            wrong.append(f"{label}: expected {expected}, got {app['status']}");
         }
     }
     assert wrong == [] , "\n".join(wrong);
