@@ -129,11 +129,11 @@ test "a boot refuses to continue without a verified system principal" {
     with TemporaryDirectory() as tmpdir {
         try {
             srv = JacAPIServer(module_name="app", port=0, base_path=tmpdir);
-            _wipe_system_user(srv);
         } except Exception as e {
             print(f"[skip] embedded postgres unavailable: {e}");
             return;
         }
+        _wipe_system_user(srv);
         # (label, wipe first, prepare, boot must fail)
         cases = [
             ("first boot provisions it", True, None, False),
