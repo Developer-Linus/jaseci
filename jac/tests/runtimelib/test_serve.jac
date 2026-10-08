@@ -404,6 +404,7 @@ test "route registration grows with the route count, not its square" {
                     calls['walker_tables'] += 1;
                 }
             }
+            srv._ensure_internal_users();
             sys.setprofile(tally);
             try {
                 app = srv.build_app();
