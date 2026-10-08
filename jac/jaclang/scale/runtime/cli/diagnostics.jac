@@ -238,7 +238,7 @@ obj PlanValidator {
                 )
             );
         }
-        hpa_mem = iget(hpa, "memory_target", 80);
+        hpa_mem = iget(autoscaler, "memory_target", iget(hpa, "memory_target", 80));
         if hpa_mem < 1 or hpa_mem > 100 {
             out.append(
                 Diagnostic(

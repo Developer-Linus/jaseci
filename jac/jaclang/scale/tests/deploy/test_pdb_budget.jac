@@ -25,7 +25,8 @@ def _bundle(
     services: dict[str, any],
     autoscaler_engine: str = "hpa",
     idle_replicas: (int | None) = None,
-    min_replicas: int = 1
+    min_replicas: int = 1,
+    memory_utilization_target: int = 80
 ) -> dict[str, any] {
     import tempfile;
     import from pathlib { Path }
@@ -40,7 +41,8 @@ def _bundle(
                 bundle_storage_class="standard",
                 autoscaler_engine=autoscaler_engine,
                 idle_replicas=idle_replicas,
-                min_replicas=min_replicas
+                min_replicas=min_replicas,
+                memory_utilization_target=memory_utilization_target
             ),
             fleet=fleet_of(
                 {name: f"/{name}" for name in services},
@@ -217,7 +219,8 @@ test "the plan validator skips the HPA and PDB checks for an HTTP_ACTIVATION ser
 # configured KEDA service.
 test "the plan validator rejects hpa.min below one only when nothing can wake the workload" {
     cron = {"type": "cron", "metadata": {"desiredReplicas": "2"}};
-    # Each case sets only what differs from a KEDA service with hpa.min = 0.
+    # Each case sets only what differs from a KEDA service with hpa.min = 0; "check"
+    # names the diagnostic a row is about (default: the hpa.min one).
     rows: list[dict[str, any]] = [
         {"label": "keda with a real trigger", "triggers": [cron], "error": False},
         {
@@ -266,6 +269,22 @@ test "the plan validator rejects hpa.min below one only when nothing can wake th
             "hpa": {},
             "triggers": [{"type": "cpu"}],
             "error": True
+        },
+        {
+            "label": "a fleet-wide memory target out of range is checked",
+            "fleet_memory": 150,
+            "hpa": {},
+            "triggers": [cron],
+            "check": "HPA memory_target=",
+            "error": True
+        },
+        {
+            "label": "a fleet-wide memory target in range passes",
+            "fleet_memory": 75,
+            "hpa": {},
+            "triggers": [cron],
+            "check": "HPA memory_target=",
+            "error": False
         }
     ];
     wrong: list[str] = [];
@@ -279,7 +298,8 @@ test "the plan validator rejects hpa.min below one only when nothing can wake th
             {"orders_app": svc_cfg},
             autoscaler_engine=row.get("engine", "keda"),
             idle_replicas=row.get("idle"),
-            min_replicas=row.get("fleet_min", 1)
+            min_replicas=row.get("fleet_min", 1),
+            memory_utilization_target=row.get("fleet_memory", 80)
         );
         errors = [
             d.message
@@ -288,7 +308,8 @@ test "the plan validator rejects hpa.min below one only when nothing can wake th
                 routes={"orders_app": "/orders"},
                 svc_configs={"orders_app": svc_cfg}
             ).run()
-            if d.service == "orders_app" and d.message.startswith("HPA min=")
+            if d.service == "orders_app"
+                and d.message.startswith(row.get("check", "HPA min="))
         ];
         if bool(errors) != row["error"] {
             wrong.append(
