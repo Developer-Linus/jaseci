@@ -581,6 +581,7 @@ graph import {
             build_link_plan,
             link_artifact,
             optimize_merged_program,
+            unique_callbacks,
             whole_program_module
         },
         dist.precompile_bytecode.prebuild_native_closure { build_link_plan },
@@ -6427,6 +6428,9 @@ graph import compiler {
             InteropContext,
             InteropManifest
         },
+        passes.boundary_analysis_pass.BoundaryAnalysisPass._interop_symbol {
+            interop_callback_symbol
+        },
         passes.capability_check_pass { NATIVE_SUPPORTED_STDLIB, is_native_by_location },
         passes.capability_check_pass.classify_native_import
             | placement.placement._erased_only_import { native_erased_import_names },
@@ -8639,6 +8643,7 @@ graph import compiler {
             Archetype,
             AtomTrailer,
             ContextAwareNode,
+            FuncCall,
             Import,
             Module,
             ModuleCode,
@@ -10011,7 +10016,10 @@ graph import compiler {
             config_kind_space,
             effective_module_pin
         },
-        driver.program.JacProgram.stamp_boundary_facts { config_module_pin },
+        driver.program.JacProgram.stamp_boundary_facts
+            | passes.boundary_analysis_pass.BoundaryAnalysisPass._bind_server_callee {
+            config_module_pin
+        },
         passes.placement_pass.element_requirements {
             config_element_pin,
             config_pin_for
@@ -15253,6 +15261,7 @@ graph import runtime {
         runtime.JacRuntime.get_selfhost { build_services },
     ]
     builtin --> archetype.Archetype.__init_subclass__ { _jac_region_instrument }
+    cinterop ++> interop_bridge.callback_ctype { shape_ctype }
     cinterop as _cinterop_mod --> builtin.__getattr__;
     constants ++> [
         context { Constants as Con },
@@ -15300,7 +15309,7 @@ graph import runtime {
     }
     interop_bridge --> [
         prepared.execute_module { NativeLibrary },
-        source_app._load_application { NativeCallback, NativeLibrary },
+        source_app._load_application { NativeLibrary, native_callback_of },
     ]
     memory ++> context { Memory }
     object_interop ++> typecache { fields, is_record }
@@ -15404,7 +15413,8 @@ graph import runtime {
     type runtime ++> builtin { LLMModel }
     scalars ++> [
         builtin._is_sized_type_name { is_sized },
-        cinterop { numeric_shapes },
+        cinterop { ScalarShape, numeric_shapes },
+        interop_bridge { shape_of },
         sized { numeric_shapes, range_of, shape_of, wrap_value },
     ]
     semantic ++> runtime { Info }
