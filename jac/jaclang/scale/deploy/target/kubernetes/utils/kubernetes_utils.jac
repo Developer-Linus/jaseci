@@ -22,7 +22,27 @@ def released_pss_labels(
     namespace: str, existing: dict[str, str]
 ) -> dict[str, str | None];
 
+glob BASELINE_ALLOWED_CAPABILITIES: frozenset[str] = frozenset(
+         [
+             "AUDIT_WRITE",
+             "CHOWN",
+             "DAC_OVERRIDE",
+             "FOWNER",
+             "FSETID",
+             "KILL",
+             "MKNOD",
+             "NET_BIND_SERVICE",
+             "SETFCAP",
+             "SETGID",
+             "SETPCAP",
+             "SETUID",
+             "SYS_CHROOT"
+         ]
+     );
+
 def pod_spec_escapes_baseline(spec: any) -> bool;
+
+def job_finished(job: any) -> bool;
 
 glob COMPANION_DEFS: list[tuple[str, str, bool]] = [
          ("", "Jaseci App", False),

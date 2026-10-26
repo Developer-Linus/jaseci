@@ -75,9 +75,12 @@ test "only a privileged level jac-scale set is released, and default goes back t
 }
 
 
-test "a pod spec escapes baseline exactly when it asks the node for something" {
+test "a workload holds the namespace exactly while it can ask the node for something" {
     import from kubernetes.client {
         V1Capabilities,
+        V1Job,
+        V1JobCondition,
+        V1JobStatus,
         V1Container,
         V1ContainerPort,
         V1HostPathVolumeSource,
@@ -129,6 +132,45 @@ test "a pod spec escapes baseline exactly when it asks the node for something" {
             True
         ),
         (
+            "jac-bootstrap's baseline-allowed capabilities",
+            V1PodSpec(
+                containers=[plain],
+                init_containers=[
+                    V1Container(
+                        name="jac-bootstrap",
+                        security_context=V1SecurityContext(
+                            capabilities=V1Capabilities(
+                                drop=["ALL"],
+                                add=[
+                                    "CHOWN",
+                                    "DAC_OVERRIDE",
+                                    "FOWNER",
+                                    "FSETID",
+                                    "SETUID",
+                                    "SETGID"
+                                ]
+                            )
+                        )
+                    )
+                ]
+            ),
+            False
+        ),
+        (
+            "one capability beyond baseline among allowed ones",
+            V1PodSpec(
+                containers=[
+                    V1Container(
+                        name="x",
+                        security_context=V1SecurityContext(
+                            capabilities=V1Capabilities(add=["CHOWN", "SYS_ADMIN"])
+                        )
+                    )
+                ]
+            ),
+            True
+        ),
+        (
             "dropped capabilities only",
             V1PodSpec(
                 containers=[
@@ -158,5 +200,25 @@ test "a pod spec escapes baseline exactly when it asks the node for something" {
     ];
     for (label, spec, expected) in cases {
         assert pod_spec_escapes_baseline(spec) == expected , label;
+    }
+
+    def _job(*conditions: tuple[str, str]) -> any {
+        return V1Job(
+            status=V1JobStatus(
+                conditions=[V1JobCondition(type=t, status=st) for (t, st) in conditions]
+            )
+        );
+    }
+    jobs: list[tuple[str, any, bool]] = [
+        ("running", _job(), False),
+        ("no status", V1Job(), False),
+        ("complete", _job(("Complete", "True")), True),
+        ("failed", _job(("Failed", "True")), True),
+        ("suspended, not finished", _job(("Suspended", "True")), False),
+        ("complete condition not yet true", _job(("Complete", "False")), False),
+
+    ];
+    for (label, job, finished) in jobs {
+        assert job_finished(job) == finished , label;
     }
 }

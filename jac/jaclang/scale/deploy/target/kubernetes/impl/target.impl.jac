@@ -926,6 +926,11 @@ impl KubernetesTarget._workloads_escaping_baseline(namespace: str) -> list[str] 
             "CronJob",
             batch_v1.list_namespaced_cron_job,
             lambda (w: any) { w.spec.job_template.spec.template.spec; }
+        ),
+        (
+            "Job",
+            batch_v1.list_namespaced_job,
+            lambda (w: any) { None if job_finished(w) else w.spec.template.spec; }
         )
     ];
     holders: list[str] = [];

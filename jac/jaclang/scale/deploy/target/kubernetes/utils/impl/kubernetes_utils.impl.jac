@@ -405,14 +405,27 @@ impl pod_spec_escapes_baseline(spec: any) -> bool {
                 return True;
             }
             caps = ctx?.capabilities;
-            if caps is not None and caps?.add {
-                return True;
+            added: list[str] = list(caps?.add or []) if caps is not None else [];
+            for cap in added {
+                if cap not in BASELINE_ALLOWED_CAPABILITIES {
+                    return True;
+                }
             }
         }
         for port in container?.ports or [] {
             if port?.host_port {
                 return True;
             }
+        }
+    }
+    return False;
+}
+
+
+impl job_finished(job: any) -> bool {
+    for cond in job?.status?.conditions or [] {
+        if cond?.type in ("Complete", "Failed") and cond?.status == "True" {
+            return True;
         }
     }
     return False;
