@@ -15,16 +15,30 @@ impl NaIRGenPass._codegen_expr(nd: (uni.UniNode | None)) -> (ir.Value | None) {
         return _folded;
     }
     if isinstance(nd, uni.Int) {
-        tok_name = nd?.name;
-        if tok_name == Tok.HEX {
-            _lit = ir.Constant(ir.IntType(64), int(nd.value, 16));
-        } elif tok_name == Tok.OCT {
-            _lit = ir.Constant(ir.IntType(64), int(nd.value, 8));
-        } elif tok_name == Tok.BIN {
-            _lit = ir.Constant(ir.IntType(64), int(nd.value, 2));
-        } else {
-            _lit = ir.Constant(ir.IntType(64), int(nd.value, 0));
+        _bits = uni.int_literal_i64(nd.value);
+        if _bits is None {
+            _shape = self._scalar_shape_named(self._literal_destination(nd));
+            if _shape is not None and _shape.is_float {
+                _wide = ir.Constant(ir.DoubleType(), uni.int_literal_float(nd.value));
+                return self._lower_coercion(nd, _wide)
+                    if nd.coerce_to is not None
+                    else _wide;
+            }
+            if _shape is not None and not _shape.signed and _shape.width >= 64 {
+                _bits = uni.int_literal_u64_bits(nd.value);
+            }
         }
+        if _bits is None {
+            self.emit(
+                E5092,
+                node_override=nd,
+                kind="integer literal",
+                name=nd.value,
+                help_text="A native int is 64 bits and this literal does not fit one. Annotate it as u64 if it is an unsigned 64-bit value; any wider integer runs in the server codespace, where ints are unbounded."
+            );
+            return None;
+        }
+        _lit = ir.Constant(ir.IntType(64), _bits);
         return self._lower_coercion(nd, _lit) if nd.coerce_to is not None else _lit;
     }
     if isinstance(nd, uni.Float) {
@@ -228,7 +242,7 @@ impl NaIRGenPass._reads_unlowered_local(nd: uni.UniNode) -> bool {
     for _sub in _reads {
         if _sub.value in _names
             and _sub.value not in self.local_vars
-            and _sub.value not in self.func_symtab
+            and not self.scope.binds_function(_sub.value)
             and _sub.value not in self.global_vars {
             return True;
         }
@@ -325,16 +339,6 @@ impl NaIRGenPass._emit_yield_suspend(v: ir.Value) -> None {
 }
 
 impl NaIRGenPass._emit_gen_pending_raise -> None {
-    """Raise an exception thrown into the generator at its suspension point.
-
-    A caller throws by filling the frame's pending-exception record and
-    resuming. The raise happens after the resume point has re-armed the
-    handlers of every `try` (and `with`) the suspension sits inside, so it
-    lands in the innermost one exactly as a raise from the `yield` would --
-    its `except` can catch it, its `finally` runs -- and escapes to the
-    caller when none handles it. The resume index is retired first, so a
-    generator the exception leaves reads as finished.
-    """;
     gc = self._gen_ctx;
     if gc is None
         or self.builder.function is not gc.resume_fn
@@ -514,9 +518,6 @@ impl NaIRGenPass._codegen_lambda(nd: uni.LambdaExpr) -> (ir.Value | None) {
         } else {
             body_value = self._codegen_expr(tail);
             if isinstance(ret_type, ir.VoidType) {
-                """A void lambda evaluates its tail expression for effect
-                only; the expression's value (a call's placeholder, say)
-                is never the function's result.""";
                 self.builder.ret_void();
             } elif body_value is not None {
                 self.builder.ret(self._coerce_type(body_value, ret_type));
@@ -624,14 +625,15 @@ impl NaIRGenPass._codegen_name(nd: uni.Name) -> (ir.Value | None) {
         _self_val: (ir.Value | None) = None;
         if "self" in self.local_vars {
             _self_val = self.builder.load(self.local_vars["self"], name="self");
-        } elif "self" in self.func_symtab {
-            _self_val = self.func_symtab["self"];
+        } elif self.scope.binds_function("self") {
+            _self_val = self.scope.function("self");
         }
         if _self_val is not None {
             return self._codegen_field_access(_self_val, var_name, _ct_owner, nd);
         }
     }
-    _has_caps = var_name in self.lambda_captures or var_name in self.nested_captures;
+    _has_caps = self.scope.lambda_captures(var_name) is not None
+        or self.scope.closure(var_name) is not None;
     if _has_caps {
         _np = nd.parent;
         _is_call_target = isinstance(_np, uni.FuncCall) and _np.target is nd;
@@ -657,16 +659,16 @@ impl NaIRGenPass._codegen_name(nd: uni.Name) -> (ir.Value | None) {
         }
         return value;
     }
-    if var_name in self.func_symtab
+    if self.scope.binds_function(var_name)
         and not (
             var_name in self.global_vars
-            and self.func_symtab[var_name] is self.clib_extern_fns.get(var_name)
+            and self.scope.function(var_name) is self.clib_extern_fns.get(var_name)
         )
         and not (
-            isinstance(self.func_symtab[var_name], ir.Function)
+            isinstance(self.scope.function(var_name), ir.Function)
             and self._binds_variable(nd)
         ) {
-        return self.func_symtab[var_name];
+        return self.scope.function(var_name);
     }
 
     c_global = self._clib_global_of(nd);
@@ -692,7 +694,7 @@ impl NaIRGenPass._codegen_name(nd: uni.Name) -> (ir.Value | None) {
     }
     if var_name == "__file__" and self.module?.loc and self.module.loc.mod_path {
         import os;
-        return self._make_global_string(os.path.realpath(self.module.loc.mod_path));
+        return self._make_global_string(real_path(self.module.loc.mod_path));
     }
 
     _np = nd.parent;
@@ -865,7 +867,7 @@ impl NaIRGenPass._codegen_spawn(nd: uni.BinaryExpr) -> (ir.Value | None) {
         walker_val = right_val if _root_right else left_val;
         loc_val = left_val if _root_right else right_val;
         _osp_ready = self._osp_rt_global is not None
-            and "osp_spawn" in self.func_symtab;
+            and self.scope.binds_function("osp_spawn");
         _tag = self._codegen_class_osp_tag(walker_val) if _osp_ready else None;
         if _tag is not None {
             return self._codegen_kernel_spawn("Walker", walker_val, loc_val, _tag);
@@ -900,7 +902,7 @@ impl NaIRGenPass._codegen_spawn(nd: uni.BinaryExpr) -> (ir.Value | None) {
     if (_spawn_model is not None)
         and (walker_name in _spawn_model.tags)
         and (self._osp_rt_global is not None)
-        and ("osp_spawn" in self.func_symtab) {
+        and self.scope.binds_function("osp_spawn") {
         return self._codegen_kernel_spawn(walker_name, walker_val, loc_val);
     }
 
@@ -920,7 +922,7 @@ impl NaIRGenPass._codegen_kernel_spawn(
     if self._osp_ensure_fn is not None {
         self.builder.call(self._osp_ensure_fn, []);
     }
-    osp_spawn_fn = self.func_symtab.get("osp_spawn");
+    osp_spawn_fn = self.scope.function("osp_spawn");
     if osp_spawn_fn is None {
         return walker_val;
     }
@@ -947,7 +949,7 @@ impl NaIRGenPass._codegen_kernel_spawn(
             name="spawn.walker_tag"
         );
     }
-    _nd_fn = self.func_symtab.get("osp_node_desc");
+    _nd_fn = self.scope.function("osp_node_desc");
     if _nd_fn is None {
         return walker_val;
     }
@@ -955,7 +957,7 @@ impl NaIRGenPass._codegen_kernel_spawn(
     _descp = self.builder.call(
         _nd_fn, [self._coerce_type(_wtag, _nd_args[0])], name="spawn.descp"
     );
-    _dead_fn = self.func_symtab.get("osp_is_dead");
+    _dead_fn = self.scope.function("osp_is_dead");
     if _dead_fn is not None {
         _d_argtys = _dead_fn.function_type.args;
         _dead = self.builder.call(
@@ -1060,21 +1062,7 @@ impl NaIRGenPass._codegen_compare(nd: uni.CompareExpr) -> (ir.Value | None) {
 
 def _class_typed_operand(
     pass_ref: NaIRGenPass, value: ir.Value, origin: uni.UniNode
-) -> ir.Value {
-    if value.type != ir.IntType(8).as_pointer() or isinstance(value, ir.Constant) {
-        return value;
-    }
-    class_name = pass_ref._struct_name_of(origin);
-    if class_name is None {
-        return value;
-    }
-    class_type = pass_ref.struct_types.get(class_name);
-    if class_type is None {
-        return value;
-    }
-    typed = pass_ref.builder.bitcast(value, class_type.as_pointer(), name="cmp.typed");
-    return typed;
-}
+) -> ir.Value;
 
 impl NaIRGenPass._codegen_compare_link(
     op: str,
@@ -1797,18 +1785,6 @@ impl NaIRGenPass._codegen_compare_link(
 impl NaIRGenPass._identity_over_optional(
     left: ir.Value, right: ir.Value, negate: bool
 ) -> (ir.Value | None) {
-    """`x is y` where at least one operand is an option and neither is `None`.
-
-    A `T | None` value lowers to a `JacOpt` -- a presence tag beside the
-    payload -- which is not a pointer, so the pointer path cannot answer this
-    and the fallback below answers a different question entirely: the
-    truthiness of the left operand, with the right operand discarded. Two
-    options are identical when both are absent, or both present with the same
-    payload; an option against a plain reference or value is identical when
-    the option is present and the payloads match. A reference payload matches
-    by address, a by-value payload by its bits. A comparison against a literal `None`
-    never reaches here -- it is answered as a tag test further up.
-    """;
     _lp = self._opt_payload_of(left.type);
     _rp = self._opt_payload_of(right.type);
     if _lp is None and _rp is None {
@@ -2044,6 +2020,20 @@ impl NaIRGenPass._codegen_unary(nd: uni.UnaryExpr) -> (ir.Value | None) {
     if lent is not None {
         return self._c_lent_address(nd, lent);
     }
+    _magnitude: (uni.UniNode | None) = nd.operand;
+    while isinstance(_magnitude, uni.AtomUnit) {
+        _magnitude = _magnitude.value;
+    }
+    if isinstance(nd.op, uni.Token)
+        and nd.op.name == Tok.MINUS
+        and isinstance(_magnitude, uni.Int)
+        and uni.int_literal_i64(_magnitude.value) is None
+        and uni.int_literal_u64_bits(_magnitude.value) == -9223372036854775807 - 1 {
+        _i64_min = ir.Constant(ir.IntType(64), -9223372036854775807 - 1);
+        return self._lower_coercion(nd, _i64_min)
+            if nd.coerce_to is not None
+            else _i64_min;
+    }
     operand = self._codegen_expr(nd.operand);
     if operand is None {
         return None;
@@ -2131,9 +2121,6 @@ impl NaIRGenPass._bool_expr_unify_type(a: ir.Type, b: ir.Type) -> (ir.Type | Non
     _b_ptrish = isinstance(b, ir.PointerType)
         or (_pb is not None and isinstance(_pb, ir.PointerType));
     if _a_ptrish and _b_ptrish and self?.jacval_type {
-        """A container met with a different kind of pointer keeps its tag:
-        as a bare pointer the pair would test true whenever it is non-null,
-        so `obj and items` held for an empty `items`.""";
         _ka = self._ptr_box_kind(a if _pa is None else _pa);
         _kb = self._ptr_box_kind(b if _pb is None else _pb);
         if _ka != _kb and (_ka in (3, 4, 5) or _kb in (3, 4, 5)) {
@@ -2388,6 +2375,42 @@ impl NaIRGenPass._codegen_if_else_expr(nd: uni.IfElseExpr) -> (ir.Value | None) 
             }
         }
         if then_val.type != else_val.type {
+            if isinstance(else_val.type, ir.LiteralStructType)
+                and isinstance(then_val.type, ir.PointerType)
+                and isinstance(then_val.type.pointee, ir.LiteralStructType)
+                and else_open {
+                self.builder.position_at_end(else_end_bb);
+                else_val = self._box_value_tuple(
+                    self._coerce_tuple_to_struct(else_val, then_val.type.pointee)
+                );
+                else_end_bb = self.builder.block;
+            } elif isinstance(then_val.type, ir.LiteralStructType)
+                and isinstance(else_val.type, ir.PointerType)
+                and isinstance(else_val.type.pointee, ir.LiteralStructType)
+                and then_open {
+                self.builder.position_at_end(then_end_bb);
+                then_val = self._box_value_tuple(
+                    self._coerce_tuple_to_struct(then_val, else_val.type.pointee)
+                );
+                then_end_bb = self.builder.block;
+            }
+        }
+        if then_val.type != else_val.type {
+            _opt_tup = self._optional_tuple_meet_type(nd, then_val, else_val);
+            if _opt_tup is not None {
+                if then_open {
+                    self.builder.position_at_end(then_end_bb);
+                    then_val = self._meet_optional_tuple_side(then_val, _opt_tup);
+                    then_end_bb = self.builder.block;
+                }
+                if else_open {
+                    self.builder.position_at_end(else_end_bb);
+                    else_val = self._meet_optional_tuple_side(else_val, _opt_tup);
+                    else_end_bb = self.builder.block;
+                }
+            }
+        }
+        if then_val.type != else_val.type {
             _uni_ty = self._unify_repr_lowering([then_val.type, else_val.type]);
             if _uni_ty is not None and then_val.type != _uni_ty and then_open {
                 self.builder.position_at_end(then_end_bb);
@@ -2430,9 +2453,6 @@ impl NaIRGenPass._codegen_if_else_expr(nd: uni.IfElseExpr) -> (ir.Value | None) 
 }
 
 impl NaIRGenPass._ternary_keep(value: ir.Value) -> ir.Value {
-    """One arm of a conditional expression whose other arm owns its value:
-    the result is owned, so a borrowed arm takes a reference, or, where
-    nothing is counted (headerless nogc), a copy of its text or bytes.""";
     if self._is_owned(value) {
         return value;
     }
@@ -2469,18 +2489,6 @@ impl NaIRGenPass._ternary_keep(value: ir.Value) -> ir.Value {
 }
 
 impl NaIRGenPass._object_meet_type(nd: uni.Expr) -> (ir.Type | None) {
-    """The pointer type an expression's branch values meet at when the
-    expression is an object.
-
-    A value whose static type is an archetype, or a union of archetypes,
-    is one object pointer however its slot is typed: a field of a declared
-    class reads as that class's struct pointer, while an element of a list
-    of a union reads as an untyped pointer. Boxing the pair into an `any`
-    would tag the untyped one as a string, and a later `isinstance` on the
-    result would never match; they meet as the pointer they both are. The
-    type is an object when it lowers to a named struct that is not a
-    container or a closure, whether or not this unit registered the class.
-    """;
     if nd.type is None {
         return None;
     }
@@ -2491,6 +2499,45 @@ impl NaIRGenPass._object_meet_type(nd: uni.Expr) -> (ir.Type | None) {
         return None;
     }
     return _lowered;
+}
+
+impl NaIRGenPass._optional_tuple_meet_type(
+    nd: uni.Expr, then_val: ir.Value, else_val: ir.Value
+) -> (ir.Type | None) {
+    _tuple_and_none = (
+        isinstance(then_val.type, ir.LiteralStructType)
+        and self._is_null_ptr_const(else_val)
+    )
+        or (
+            isinstance(else_val.type, ir.LiteralStructType)
+            and self._is_null_ptr_const(then_val)
+        );
+    if not _tuple_and_none or nd.type is None {
+        return None;
+    }
+    _lowered = self._lower_type(nd.type);
+    _payload = self._opt_payload_of(_lowered) if _lowered is not None else None;
+    if isinstance(_payload, ir.PointerType)
+        and isinstance(_payload.pointee, ir.LiteralStructType) {
+        return _payload;
+    }
+    return None;
+}
+
+impl NaIRGenPass._meet_optional_tuple_side(
+    value: ir.Value, target: ir.Type
+) -> ir.Value {
+    if self._is_null_ptr_const(value) {
+        return ir.Constant(target, None);
+    }
+    if isinstance(value.type, ir.LiteralStructType)
+        and isinstance(target, ir.PointerType)
+        and isinstance(target.pointee, ir.LiteralStructType) {
+        return self._box_value_tuple(
+            self._coerce_tuple_to_struct(value, target.pointee)
+        );
+    }
+    return value;
 }
 
 impl NaIRGenPass._recast_object(value: ir.Value, target: ir.Type) -> ir.Value {
@@ -2812,16 +2859,16 @@ impl NaIRGenPass._codegen_plain_trailer(nd: uni.AtomTrailer) -> (ir.Value | None
                     return self._emit_sys_argv();
                 }
                 if right_name == "platform" {
-                    return self._make_global_string(
-                        active_host().native_fact(FACT_OS, "").lower()
-                    );
+                    return self._emit_platform_name();
                 }
                 if right_name == "maxsize" {
                     return ir.Constant(ir.IntType(64), 0x7FFFFFFFFFFFFFFF);
                 }
                 if right_name == "byteorder" {
-                    import sys as _sys;
-                    return self._make_global_string(_sys.byteorder);
+                    layout = str(self.llvm_module.data_layout or "");
+                    return self._make_global_string(
+                        "big" if layout.startswith("E") else "little"
+                    );
                 }
                 if right_name == "stdout" or right_name == "stderr" {
                     return self._emit_sys_stream(right_name);
@@ -3145,7 +3192,14 @@ impl NaIRGenPass._codegen_plain_trailer(nd: uni.AtomTrailer) -> (ir.Value | None
                             name="chr.len"
                         );
                         result = self._codegen_string_index(
-                            _ddata, _didx_val, len_val=_dlen
+                            _ddata,
+                            _didx_val,
+                            len_val=_dlen,
+                            root_val=_ddata
+                                if self._nogc_headerless()
+                                else self.builder.extract_value(
+                                    target_val, 0, name="chr.root"
+                                )
                         );
                         return self._finish_borrowed_read(target_val, result);
                     }
@@ -3387,26 +3441,21 @@ impl NaIRGenPass._ct_type_param_owner(nd: uni.Name) -> (str | None) {
     if not (isinstance(owner, uni.TypeParam) and owner.is_comptime) {
         return None;
     }
-    arch = owner.find_parent_of_type(uni.Archetype);
+    arch = owner.enclosing_decl(uni.Archetype);
     return self._arch_key(arch) if arch is not None else None;
 }
 
 impl NaIRGenPass._final_variant_value(
     nd: uni.Name, value: uni.Expr
 ) -> (uni.Expr | None) {
-    """The value a Final glob has on the native target: a module with a
-    platform variant (`<name>.<os>.<arch>.jac`) is lowered as that variant,
-    so its glob is folded from the variant's declaration of the same name,
-    never from the portable module's placeholder. None when the variant
-    declares no such Final glob, which leaves the read a load.""";
     import os;
 
     mod = value.find_parent_of_type(uni.Module);
     if mod is None or mod.loc is None or not mod.loc.mod_path {
         return value;
     }
-    variant = os.path.realpath(native_variant_of(mod.loc.mod_path));
-    if variant == os.path.realpath(mod.loc.mod_path) {
+    variant = real_path(native_variant_of(mod.loc.mod_path));
+    if variant == real_path(mod.loc.mod_path) {
         return value;
     }
     variant_mod = self.prog.mod.hub.get(variant);
@@ -3458,4 +3507,40 @@ impl NaIRGenPass._final_scalar_value(
         }
     }
     return None;
+}
+
+impl _class_typed_operand(
+    pass_ref: NaIRGenPass, value: ir.Value, origin: uni.UniNode
+) -> ir.Value {
+    if value.type != ir.IntType(8).as_pointer() or isinstance(value, ir.Constant) {
+        return value;
+    }
+    class_name = pass_ref._struct_name_of(origin);
+    if class_name is None {
+        return value;
+    }
+    class_type = pass_ref.struct_types.get(class_name);
+    if class_type is None {
+        return value;
+    }
+    typed = pass_ref.builder.bitcast(value, class_type.as_pointer(), name="cmp.typed");
+    return typed;
+}
+
+impl NaIRGenPass._literal_destination(nd: uni.Int) -> (str | None) {
+    dest = nd.coerce_to;
+    up: (uni.UniNode | None) = nd.parent;
+    while dest is None
+        and (
+            isinstance(up, uni.AtomUnit)
+            or (
+                isinstance(up, uni.UnaryExpr)
+                and isinstance(up.op, uni.Token)
+                and up.op.name in (Tok.PLUS, Tok.MINUS)
+            )
+        ) {
+        dest = up.coerce_to;
+        up = up.parent;
+    }
+    return dest;
 }

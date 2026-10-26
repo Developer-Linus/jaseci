@@ -1,59 +1,3 @@
-import from jaclang.compiler.frontend.roles { Kid }
-import from jaclang.compiler.driver.pipeline_types { PassContract }
-import from jaclang.compiler.frontend.unitree {
-    Module,
-    TreeWalker,
-    UniNode,
-    Ability,
-    ArchHas,
-    Archetype,
-    Assignment,
-    AstSymbolNode,
-    AtomTrailer,
-    ContextAwareNode,
-    BinaryExpr,
-    Bool,
-    BuiltinType,
-    DictVal,
-    Enum,
-    Float,
-    FuncCall,
-    FuncSignature,
-    HasVar,
-    Import,
-    IndexSlice,
-    Int,
-    KVPair,
-    LambdaExpr,
-    ListVal,
-    ModuleItem,
-    ModulePath,
-    MultiString,
-    Name,
-    NameAtom,
-    Null,
-    ParamVar,
-    Slice,
-    String,
-    Token,
-    TupleVal,
-    UnaryExpr,
-    ability_of_symbol,
-    resolved_decl_of
-}
-import from jaclang.compiler.passes.context { CompileContext, TreePass }
-import from jaclang.compiler.frontend.constant {
-    CodeContext,
-    SymbolType,
-    Tokens as Tok
-}
-import from jaclang.compiler.frontend.codeinfo {
-    BoundaryTypeInfo,
-    InteropBinding,
-    InteropContext,
-    InteropManifest
-}
-
 walker BoundaryAnalysisPass(TreePass) {
     static has contract: PassContract = PassContract();
     has _func_defs: dict[(str, tuple[(InteropContext, Ability)])] = {},
@@ -71,6 +15,11 @@ walker BoundaryAnalysisPass(TreePass) {
     def _extract_type_name(expr: (UniNode | None)) -> str;
     def _in_native_module -> bool;
     def _native_source_module_of(mod: (Module | None)) -> (str | None);
+    def _bind_server_callee(call: FuncCall, local_name: str) -> None;
+    def _interop_symbol(
+        decl: (UniNode | None), provider: (Module | None), fallback: str, name: str
+    ) -> str;
+
     def _register_native_absorb(nd: Import) -> None;
     can enter_import with Import entry;
     def _register_sv_import(

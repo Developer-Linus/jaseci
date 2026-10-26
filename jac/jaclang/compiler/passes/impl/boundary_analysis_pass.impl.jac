@@ -50,7 +50,6 @@ impl BoundaryAnalysisPass._signature_of_decl(
 }
 
 impl BoundaryAnalysisPass._get_context(nd: UniNode) -> InteropContext {
-    import from jaclang.compiler.frontend.constant { CodeContext }
     cs = nd.codespace();
     if cs == CodeContext.NATIVE {
         return InteropContext.NATIVE;
@@ -127,8 +126,65 @@ impl BoundaryAnalysisPass._native_source_module_of(
     return None;
 }
 
+impl BoundaryAnalysisPass._interop_symbol(
+    decl: (UniNode | None), provider: (Module | None), fallback: str, name: str
+) -> str {
+    owner = decl.find_parent_of_type(Module) if decl is not None else None;
+    if owner is None {
+        owner = provider;
+    }
+    path = owner.loc.mod_path if owner is not None and owner.loc is not None else '';
+    path = path or fallback;
+    return interop_callback_symbol(path, name) if path else '';
+}
+
+impl BoundaryAnalysisPass._bind_server_callee(call: FuncCall, local_name: str) -> None {
+    manifest = self.module.gen.interop_manifest;
+    served = manifest.bindings.get(local_name);
+    if served is not None {
+        if served.source_context == InteropContext.SERVER
+            and served.kind == 'function'
+            and not served.provider_app
+            and InteropContext.SERVER in served.callers {
+            served.callers.add(InteropContext.NATIVE);
+        }
+        return;
+    }
+    if not isinstance(call.target, Name) {
+        return;
+    }
+    decl = self._resolved_native_decl(call.target);
+    if decl is None {
+        return;
+    }
+    owner = decl.find_parent_of_type(Module);
+    if owner is None or owner.loc is None or decl.is_comptime {
+        return;
+    }
+    if owner is self.module {
+        if self._get_context(decl) != InteropContext.SERVER {
+            return;
+        }
+    } elif not owner.loc.mod_path.endswith('.jac')
+        or config_module_pin(owner.loc.mod_path) != 'server' {
+        return;
+    }
+    (ret_type, param_types, param_names) = self._signature_of_decl(decl);
+    manifest.bindings[local_name] = InteropBinding(
+        name=decl.sym_name,
+        source_context=InteropContext.SERVER,
+        callers={InteropContext.NATIVE},
+        ret_type=ret_type,
+        param_types=param_types,
+        param_names=param_names,
+        ast_node=decl,
+        source_module=None if owner is self.module else owner.name,
+        kind='function',
+        symbol=self._interop_symbol(decl, owner, '', decl.sym_name)
+    );
+}
+
 impl BoundaryAnalysisPass._register_native_absorb(nd: Import) -> None {
-    import from jaclang.compiler.frontend.constant { SymbolAccess }
     item = nd.items[0];
     if not (isinstance(item, ModulePath) and item.path) {
         return;
@@ -183,7 +239,6 @@ impl BoundaryAnalysisPass._register_native_absorb(nd: Import) -> None {
 impl BoundaryAnalysisPass._caller_context(
     nd: Import, import_context: InteropContext
 ) -> InteropContext {
-    """Interop context of the caller site: client wins, then native.""";
     if (nd.in_client_context()) {
         return InteropContext.CLIENT;
     }
@@ -297,11 +352,6 @@ impl BoundaryAnalysisPass.enter_import with Import entry {
 impl BoundaryAnalysisPass._register_sv_import(
     nd: Import, module_name: str, caller_ctx: InteropContext
 ) -> None {
-    import from jaclang.compiler.driver.boundary_classify {
-        import_crosses_apps,
-        import_provider_app,
-        import_provider_route
-    }
     facts = nd.boundary_facts;
     source_abilities: dict[(str, Ability)] = facts.sv_abilities if facts else {};
     source_walkers: dict[(str, Archetype)] = facts.sv_walkers if facts else {};
@@ -386,7 +436,13 @@ impl BoundaryAnalysisPass._register_sv_import(
             ast_node=ability_node,
             source_module=module_name,
             kind='function',
-            provider_app=provider_app
+            provider_app=provider_app,
+            symbol=self._interop_symbol(
+                ability_node,
+                provider_mod or parsed_mod,
+                (facts.from_loc_resolved or '') if facts else '',
+                sym_name
+            )
         );
         manifest.bindings[local_name] = binding;
     }
@@ -468,14 +524,6 @@ impl BoundaryAnalysisPass._register_na_client_import(nd: Import) -> None {
 }
 
 impl BoundaryAnalysisPass._register_client_bridged_import(nd: Import) -> None {
-    import from jaclang.compiler.driver.boundary_classify {
-        ClientImportVerdict,
-        classify_client_import_item,
-        is_client_boundary_import,
-        import_crosses_apps,
-        import_provider_app,
-        import_provider_route
-    }
     facts = nd.boundary_facts;
     cross_app = import_crosses_apps(nd);
     if cross_app {
@@ -534,7 +582,6 @@ impl BoundaryAnalysisPass._register_type_import(
     source_mod: (Module | None),
     caller_ctx: InteropContext
 ) -> bool {
-    import from jaclang.compiler.driver.boundary_classify { import_provider_app }
     info = self._collect_boundary_type(item.name.value, source_mod);
     if info is None or info.kind not in ('obj', 'enum', 'node', 'edge') {
         return False;
@@ -558,10 +605,6 @@ impl BoundaryAnalysisPass._register_type_import(
 }
 
 impl BoundaryAnalysisPass._provider_module_of(nd: Import) -> (Module | None) {
-    import from jaclang.compiler.driver.boundary_classify {
-        bridgeable_import_target,
-        symbol_linked_source_module
-    }
     facts = nd.boundary_facts;
     if facts is not None {
         decls = list(facts.sv_walkers.values()) + list(facts.sv_abilities.values());
@@ -584,10 +627,6 @@ impl BoundaryAnalysisPass._provider_module_of(nd: Import) -> (Module | None) {
 }
 
 impl BoundaryAnalysisPass._record_app_edge(nd: Import) -> None {
-    import from jaclang.compiler.driver.boundary_classify {
-        module_app,
-        import_provider_app
-    }
     provider_app = import_provider_app(nd);
     if provider_app is None {
         return;
@@ -607,11 +646,6 @@ impl BoundaryAnalysisPass._record_app_edge(nd: Import) -> None {
 }
 
 impl BoundaryAnalysisPass._bridge_targets(mod: Module) -> list[tuple[(str, str)]] {
-    import from jaclang.compiler.driver.boundary_classify {
-        bridgeable_import_target,
-        module_app,
-        import_provider_app
-    }
     consumer_app = module_app(mod) or '';
     targets: list[tuple[(str, str)]] = [];
     for imp in mod.get_all_sub_nodes(Import) {
@@ -631,8 +665,6 @@ impl BoundaryAnalysisPass._bridge_targets(mod: Module) -> list[tuple[(str, str)]
 impl BoundaryAnalysisPass._check_app_cycle(
     nd: Import, consumer_app: str, provider_app: str
 ) -> None {
-    import from jaclang.compiler.driver.boundary_classify { bridgeable_import_target }
-    import from jaclang.compiler.frontend.diagnostics { E5104 }
     start = bridgeable_import_target(nd);
     if start is None {
         return;
@@ -678,7 +710,6 @@ impl BoundaryAnalysisPass._find_ability(mod: Module, target: str) -> (Ability | 
 
 impl BoundaryAnalysisPass._parsed_provider_of(nd: Import) -> (Module | None) {
     import os;
-    import from jaclang.compiler.driver.boundary_classify { bridgeable_import_target }
     target = bridgeable_import_target(nd);
     if not target or not os.path.isfile(str(target)) {
         return None;
@@ -689,11 +720,6 @@ impl BoundaryAnalysisPass._parsed_provider_of(nd: Import) -> (Module | None) {
 impl BoundaryAnalysisPass._reject_owned_type_import(
     nd: Import, item: ModuleItem, kind: str
 ) -> None {
-    import from jaclang.compiler.driver.boundary_classify {
-        module_app,
-        import_provider_app
-    }
-    import from jaclang.compiler.frontend.diagnostics { E5108 }
     consumer = module_app(self.module) or self.module.name;
     self.ctx.emit(
         E5108,
@@ -706,13 +732,6 @@ impl BoundaryAnalysisPass._reject_owned_type_import(
 }
 
 impl BoundaryAnalysisPass._check_provider_pub(nd: Import, item: ModuleItem) -> None {
-    import from jaclang.compiler.driver.boundary_classify {
-        ClientImportVerdict,
-        classify_client_import_item,
-        module_app,
-        import_provider_app
-    }
-    import from jaclang.compiler.frontend.diagnostics { E5106 }
     provider_mod = self._provider_module_of(nd);
     if provider_mod is None {
         return;
@@ -823,7 +842,7 @@ impl BoundaryAnalysisPass.enter_ability with Ability entry {
     if (
         here.sym_name
         and isinstance(here.signature, FuncSignature)
-        and here.find_parent_of_type(Ability) is None
+        and here.enclosing_decl(Ability) is None
         and here.find_parent_of_type(LambdaExpr) is None
     ) {
         nd_cc = here.code_context;
@@ -854,10 +873,9 @@ impl BoundaryAnalysisPass.enter_func_call with FuncCall entry {
         target_sym = target.sym;
         target_decl = target_sym.decl if target_sym is not None else None;
         if target_decl is not None {
-            _decl_ab = target_decl.find_parent_of_type(Ability);
+            _decl_ab = target_decl.enclosing_decl(Ability);
             if (
-                _decl_ab is not None
-                and _decl_ab.find_parent_of_type(Ability) is not None
+                _decl_ab is not None and _decl_ab.enclosing_decl(Ability) is not None
             ) {
                 return;
             }
@@ -917,12 +935,15 @@ impl BoundaryAnalysisPass.enter_func_call with FuncCall entry {
     if not func_name {
         return;
     }
-    if func_name not in self._imported_native_funcs
-        and func_name not in self._func_defs {
-        return;
-    }
     caller_ctx = self._get_context(here);
     manifest = self.module.gen.interop_manifest;
+    if func_name not in self._imported_native_funcs
+        and func_name not in self._func_defs {
+        if caller_ctx == InteropContext.NATIVE or self._in_native_module() {
+            self._bind_server_callee(here, func_name);
+        }
+        return;
+    }
     if (func_name in self._imported_native_funcs) {
         (source_module, import_ctx) = self._imported_native_funcs[func_name];
         if (caller_ctx == InteropContext.NATIVE or self._in_native_module()) {
@@ -964,7 +985,10 @@ impl BoundaryAnalysisPass.enter_func_call with FuncCall entry {
             ret_type=ret_type,
             param_types=param_types,
             param_names=param_names,
-            ast_node=callee_node
+            ast_node=callee_node,
+            symbol=self._interop_symbol(callee_node, self.module, '', func_name)
+                if callee_ctx == InteropContext.SERVER
+                else ''
         );
         manifest.bindings[func_name] = binding;
     }
@@ -1561,7 +1585,6 @@ impl BoundaryAnalysisPass._record_surface(manifest: InteropManifest) -> None {
 impl BoundaryAnalysisPass._route_facts(
     item: (Ability | Archetype)
 ) -> tuple[(dict[str, any] | None), bool, bool] {
-    import from jaclang.compiler.frontend.unitree { KWPair }
     route: (dict[str, any] | None) = None;
     scheduled = False;
     reflect = False;
@@ -1594,27 +1617,7 @@ impl BoundaryAnalysisPass._route_facts(
     return (route, scheduled, reflect);
 }
 
-def route_literal(expr: any) -> tuple[bool, any] {
-    import from jaclang.compiler.frontend.unitree { Null }
-    if isinstance(expr, (String, MultiString)) {
-        value = expr.lit_value;
-        return (True, value) if isinstance(value, str) else (False, None);
-    }
-    if isinstance(expr, Bool) {
-        return (True, expr.lit_value);
-    }
-    if isinstance(expr, Null) {
-        return (True, None);
-    }
-    if isinstance(expr, AtomTrailer)
-        and expr.is_attr
-        and isinstance(expr.target, Name)
-        and expr.target.value in ('HTTPMethod', 'APIProtocol')
-        and isinstance(expr.right, Name) {
-        return (True, expr.right.value);
-    }
-    return (False, None);
-}
+def route_literal(expr: any) -> tuple[bool, any];
 
 impl BoundaryAnalysisPass.enter_atom_trailer with AtomTrailer entry {
     if not here.is_attr or self._get_context(here) != InteropContext.CLIENT {
@@ -1673,4 +1676,25 @@ impl BoundaryAnalysisPass._export_mixed_native(manifest: InteropManifest) -> Non
             ast_node=stmt
         );
     }
+}
+
+impl route_literal(expr: any) -> tuple[bool, any] {
+    if isinstance(expr, (String, MultiString)) {
+        value = expr.lit_value;
+        return (True, value) if isinstance(value, str) else (False, None);
+    }
+    if isinstance(expr, Bool) {
+        return (True, expr.lit_value);
+    }
+    if isinstance(expr, Null) {
+        return (True, None);
+    }
+    if isinstance(expr, AtomTrailer)
+        and expr.is_attr
+        and isinstance(expr.target, Name)
+        and expr.target.value in ('HTTPMethod', 'APIProtocol')
+        and isinstance(expr.right, Name) {
+        return (True, expr.right.value);
+    }
+    return (False, None);
 }

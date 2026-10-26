@@ -322,8 +322,15 @@ interfaces is checked (`E5116`). A refusal only the backend can see places
 the module on the server in place (`settle_native_module`): the tree was
 typed for no codespace, so the Python backend, which runs after the native
 one in the same schedule, emits it as it is. A backend exception is a
-compiler error and is never absorbed as a refusal, and so is a native unit
-the host fails to link after the kernel lowered it. Nothing about a
+compiler error (E9003, which blocks the module: neither its bytecode nor the
+JCIR the kernel hands the host survives it) and is never absorbed as a
+refusal, and so is a native unit the host fails to link after the kernel
+lowered it. Once the kernel is loaded its answer is final: the host compiles a
+program itself only when the program reaches something only the host can
+answer (`host_deferred`: another copy of the compiler, a native stdlib module
+the kernel has no interface for, third-party Python source). A kernel crash,
+or a kernel answer with no unit and no error, is an error, never a reason to
+compile the program again on the host. Nothing about a
 placement is stored between compiles beyond each module's summary.
 
 Between client and server code the same boundary rule judges what a request
@@ -663,14 +670,13 @@ order, so it walks the AST manually. The pass derives directly from
 `ModuleCodegenPass`. Primitive types are defined in
 [`primitives_native.jac`](https://github.com/Jaseci-Labs/jaseci/blob/main/jac/jaclang/compiler/backends/native/primitives_native.jac).
 
-Linking is also self-contained -- no external linker is invoked:
-
-- [`linker_common.jac`](https://github.com/Jaseci-Labs/jaseci/blob/main/jac/jaclang/compiler/backends/native/linker_common.jac)
-  -- shared layout logic
-- [`elf_linker.jac`](https://github.com/Jaseci-Labs/jaseci/blob/main/jac/jaclang/compiler/backends/native/elf_linker.jac)
-  -- Linux ELF64 object writer
-- [`macho_linker.jac`](https://github.com/Jaseci-Labs/jaseci/blob/main/jac/jaclang/compiler/backends/native/macho_linker.jac)
-  -- macOS Mach-O object writer
+Linking is also self-contained: no system linker is invoked. LLD is
+linked into the bundled LLVM shim and runs in-process
+([`native_link.jac`](https://github.com/Jaseci-Labs/jaseci/blob/main/jac/jaclang/compiler/backends/native/native_link.jac)
+builds the `ld.lld`, `ld64.lld`, `lld-link` and `wasm-ld` command lines). A
+library the link never sees is named by a stand-in: an empty stub shared
+object on ELF, a text stub (`.tbd`) on Mach-O, and an import library on
+Windows, all written by the shim.
 
 The native backend supplies its own memory management: a 32-byte
 allocation header with reference counts (see `HDR_*` globals in
@@ -743,7 +749,7 @@ user-facing reference, [Primitives & Codespace Semantics](../reference/language/
 | `sv → cl` | None at runtime -- the client mounts its own DOM. The server only ships the bootstrap payload | `JcirGenPass` emits the static-file route for the bundle |
 | `sv → na` | In-process `ctypes.CFUNCTYPE` over the JIT'd function address (MCJIT); an AOT `--lib` build is loaded across the process boundary instead | `JcirGenPass` emits the ctypes stub; `NaIRGenPass` exposes the function with C ABI |
 | `na → sv` | Python callback wrapped in a `ctypes.CFUNCTYPE` and registered as a JIT symbol (`llvm.add_symbol`), so MCJIT resolves the native call back into CPython | `interop_bridge.register_py_callbacks`, alongside the `sv → na` stub |
-| `na → na` | Direct symbol reference resolved by the in-tree linker | `BoundaryAnalysisPass` records the import; `NativeCompilePass` emits the relocation |
+| `na → na` | Direct symbol reference resolved by the bundled LLD | `BoundaryAnalysisPass` records the import; `NativeCompilePass` emits the relocation |
 | `sv → sv` (cross-app) | A typed-async stub keyed by the provider **app name** when an import's target is compiled in a different app context; in-process when the provider app is colocated, HTTP `POST` when it runs as its own process | `JcirGenPass` emits a generated `async` `__jac_sv_client` stub (`call` / `spawn_walker`; un-awaited statement spawns become `_deferred`, the outbox); the manifest's app edges drive the built-in `scale` subsystem's boot order |
 
 Boundary types are serialised through the schemas in
@@ -917,8 +923,7 @@ A short index, organised by the role each file plays in the pipeline.
 
 - [`compiler/backends/native/na_ir_gen_pass.jac`](https://github.com/Jaseci-Labs/jaseci/blob/main/jac/jaclang/compiler/backends/native/na_ir_gen_pass.jac)
 - [`compiler/backends/native/na_compile_pass.jac`](https://github.com/Jaseci-Labs/jaseci/blob/main/jac/jaclang/compiler/backends/native/na_compile_pass.jac)
-- [`compiler/backends/native/elf_linker.jac`](https://github.com/Jaseci-Labs/jaseci/blob/main/jac/jaclang/compiler/backends/native/elf_linker.jac)
-  / [`macho_linker.jac`](https://github.com/Jaseci-Labs/jaseci/blob/main/jac/jaclang/compiler/backends/native/macho_linker.jac)
+- [`compiler/backends/native/native_link.jac`](https://github.com/Jaseci-Labs/jaseci/blob/main/jac/jaclang/compiler/backends/native/native_link.jac)
 - [`compiler/backends/native/primitives_native.jac`](https://github.com/Jaseci-Labs/jaseci/blob/main/jac/jaclang/compiler/backends/native/primitives_native.jac)
 
 **Interop**

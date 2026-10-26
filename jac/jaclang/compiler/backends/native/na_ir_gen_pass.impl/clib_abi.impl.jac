@@ -380,17 +380,17 @@ impl NaIRGenPass._declare_clib_definitions -> None {
             }
             continue;
         }
-        cfunc = self.clib_extern_fns.get(name) or self.func_symtab.get(name);
+        cfunc = self.clib_extern_fns.get(name) or self.scope.function(name);
         if not isinstance(cfunc, ir.Function) {
             continue;
         }
         self._clib_exports[name] = cfunc;
         self.clib_extern_fns.pop(name, None);
-        self.func_symtab.pop(name, None);
+        self.scope.unbind_function(name);
         self.clib_extern_names.discard(name);
         self._clib_symbol_lib.pop(name, None);
         self._maybe_declare_ability(decl, symbol=f"{name}.jac");
-        jac_fn = self.func_symtab.get(name);
+        jac_fn = self.scope.function(name);
         if isinstance(jac_fn, ir.Function) {
             jac_fn.linkage = "internal";
         }
@@ -412,7 +412,7 @@ impl NaIRGenPass._emit_clib_definitions -> None {
 
 impl NaIRGenPass._emit_clib_export_thunk(name: str) -> None {
     cfunc = self._clib_exports[name];
-    jac_fn = self.func_symtab.get(name);
+    jac_fn = self.scope.function(name);
     if not isinstance(jac_fn, ir.Function) or cfunc.blocks {
         return;
     }
@@ -530,18 +530,6 @@ impl NaIRGenPass._emit_clib_export_thunk(name: str) -> None {
 }
 
 impl NaIRGenPass._thunk_tail_callable(cfunc: ir.Function, jac_fn: ir.Function) -> bool {
-    """Emit an exported C symbol's thunk as one `musttail` jump into its body.
-
-    A C function defined in Jac is a thunk around the internal Jac body. When
-    each C parameter reaches the body unchanged or as the same 64-bit word (a
-    C pointer the body reads as `ptr[T]`, an i64), the thunk only adds a
-    frame; a C function pointer dispatch (`return tail
-    table.view(1)[0].step(...)`) jumps into the thunk, so an ordinary call here
-    grows the stack by a frame per step on an unoptimized build and breaks the
-    tail-call guarantee. The call goes through the body's address typed with
-    the thunk's own prototype, which `musttail` requires, and passes the same
-    registers the body reads.
-    """;
     cty = cfunc.function_type;
     jty = jac_fn.function_type;
     triple = str(self.llvm_module.triple or "");

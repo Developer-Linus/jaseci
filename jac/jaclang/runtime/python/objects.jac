@@ -5,34 +5,6 @@
 # until compiler values can be separated from the remaining object slots.
 # Its only import is opcode_meta, which defines the NB_* operation kinds.
 
-import from jaclang.runtime.python.cpython_api {
-    NULL,
-    PyErr_SetFromErrnoWithFilenameObjects,
-    PyObject_IsTrue,
-    PyObject_RichCompare,
-    PyObject_RichCompareBool,
-    PySequence_Fast,
-    PySequence_GetItem,
-    PySequence_Tuple,
-    PyUnicode_Format,
-    _Py_c_pow,
-    _Py_c_quot
-}
-import from jaclang.runtime.python.opcode_meta {
-    NB_ADD,
-    NB_AND,
-    NB_FLOOR_DIVIDE,
-    NB_LSHIFT,
-    NB_MULTIPLY,
-    NB_OR,
-    NB_POWER,
-    NB_REMAINDER,
-    NB_RSHIFT,
-    NB_SUBTRACT,
-    NB_TRUE_DIVIDE,
-    NB_XOR,
-}
-
 #
 # Behavior dispatches through virtual slot methods (CPython's tp_*/nb_*/sq_*/mp_*
 # tables as overridable methods -> na vtable, no function-pointer indirection).
@@ -253,14 +225,6 @@ obj PyInt(PyObj) {
             # any digit allocation: 0 << huge is 0, never an overflow.
             if a == 0 {
                 return PyInt(t="int", val=0);
-            }
-            # A shift count at or beyond 2**63 overflows the C ssize_t shift
-            # bound; CPython rejects it before allocating
-            # (OverflowError "too many digits in integer"), never MemoryError.
-            # Without this guard the underlying bigint op escapes as a fatal
-            # runtime error instead of a guest-visible Python exception.
-            if b >= 9223372036854775808 {
-                return py_error("OverflowError", "too many digits in integer");
             }
             return PyInt(t="int", val=a << b);
         }
@@ -2630,14 +2594,6 @@ def _bool_from_cmp(cmp: int, op: int) -> PyObj {
         return PyBool(t="bool", val=cmp >= 0);
     }
     return PyBool(t="bool", val=False);
-}
-
-# Two's-complement wrap of an unsigned 64-bit accumulator to signed.
-def _signed_hash(acc: int) -> int {
-    if acc >= 0x8000000000000000 {
-        return acc - 0x10000000000000000;
-    }
-    return acc;
 }
 
 # CPython 3.14's two-part unhashable TypeError, quoted at the insertion site
