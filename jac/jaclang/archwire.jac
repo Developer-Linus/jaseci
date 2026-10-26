@@ -30896,6 +30896,9 @@ graph import scale {
             with_config_revision
         },
     ]
+    deploy.target.kubernetes.monitoring ++> tests.deploy.test_monitoring_switch {
+        MonitoringDeployer
+    }
     deploy.target.kubernetes.ops_rbac ++> tests.deploy.test_ops_rbac {
         build_ops_rbac,
         ops_role_name,
