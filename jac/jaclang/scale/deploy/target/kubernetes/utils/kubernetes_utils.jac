@@ -40,6 +40,26 @@ glob BASELINE_ALLOWED_CAPABILITIES: frozenset[str] = frozenset(
          ]
      );
 
+glob BASELINE_SELINUX_TYPES: frozenset[str] = frozenset(
+         ["container_t", "container_init_t", "container_kvm_t", "container_engine_t"]
+     ),
+     BASELINE_SAFE_SYSCTLS: frozenset[str] = frozenset(
+         [
+             "kernel.shm_rmid_forced",
+             "net.ipv4.ip_local_port_range",
+             "net.ipv4.ip_local_reserved_ports",
+             "net.ipv4.ip_unprivileged_port_start",
+             "net.ipv4.ping_group_range",
+             "net.ipv4.tcp_fin_timeout",
+             "net.ipv4.tcp_keepalive_intvl",
+             "net.ipv4.tcp_keepalive_probes",
+             "net.ipv4.tcp_keepalive_time",
+             "net.ipv4.tcp_syncookies"
+         ]
+     );
+
+def security_context_escapes_baseline(ctx: any) -> bool;
+
 def pod_spec_escapes_baseline(spec: any) -> bool;
 
 def job_finished(job: any) -> bool;

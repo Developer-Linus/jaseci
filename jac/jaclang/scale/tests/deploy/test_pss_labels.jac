@@ -77,7 +77,13 @@ test "only a privileged level jac-scale set is released, and default goes back t
 
 test "a workload holds the namespace exactly while it can ask the node for something" {
     import from kubernetes.client {
+        V1AppArmorProfile,
         V1Capabilities,
+        V1PodSecurityContext,
+        V1SELinuxOptions,
+        V1SeccompProfile,
+        V1Sysctl,
+        V1WindowsSecurityContextOptions,
         V1Job,
         V1JobCondition,
         V1JobStatus,
@@ -164,6 +170,108 @@ test "a workload holds the namespace exactly while it can ask the node for somet
                         name="x",
                         security_context=V1SecurityContext(
                             capabilities=V1Capabilities(add=["CHOWN", "SYS_ADMIN"])
+                        )
+                    )
+                ]
+            ),
+            True
+        ),
+        (
+            "pod seccomp Unconfined",
+            V1PodSpec(
+                containers=[plain],
+                security_context=V1PodSecurityContext(
+                    seccomp_profile=V1SeccompProfile(type="Unconfined")
+                )
+            ),
+            True
+        ),
+        (
+            "pod seccomp RuntimeDefault",
+            V1PodSpec(
+                containers=[plain],
+                security_context=V1PodSecurityContext(
+                    seccomp_profile=V1SeccompProfile(type="RuntimeDefault")
+                )
+            ),
+            False
+        ),
+        (
+            "container AppArmor Unconfined",
+            V1PodSpec(
+                containers=[
+                    V1Container(
+                        name="x",
+                        security_context=V1SecurityContext(
+                            app_armor_profile=V1AppArmorProfile(type="Unconfined")
+                        )
+                    )
+                ]
+            ),
+            True
+        ),
+        (
+            "unsafe sysctl",
+            V1PodSpec(
+                containers=[plain],
+                security_context=V1PodSecurityContext(
+                    sysctls=[V1Sysctl(name="kernel.msgmax", value="65536")]
+                )
+            ),
+            True
+        ),
+        (
+            "safe sysctl",
+            V1PodSpec(
+                containers=[plain],
+                security_context=V1PodSecurityContext(
+                    sysctls=[V1Sysctl(name="net.ipv4.tcp_syncookies", value="1")]
+                )
+            ),
+            False
+        ),
+        (
+            "unmasked /proc",
+            V1PodSpec(
+                containers=[
+                    V1Container(
+                        name="x",
+                        security_context=V1SecurityContext(proc_mount="Unmasked")
+                    )
+                ]
+            ),
+            True
+        ),
+        (
+            "custom SELinux type",
+            V1PodSpec(
+                containers=[plain],
+                security_context=V1PodSecurityContext(
+                    se_linux_options=V1SELinuxOptions(type="spc_t")
+                )
+            ),
+            True
+        ),
+        (
+            "container SELinux type",
+            V1PodSpec(
+                containers=[plain],
+                security_context=V1PodSecurityContext(
+                    se_linux_options=V1SELinuxOptions(type="container_t", level="s0")
+                )
+            ),
+            False
+        ),
+        (
+            "Windows hostProcess",
+            V1PodSpec(
+                containers=[
+                    V1Container(
+                        name="x",
+                        security_context=V1SecurityContext(
+                            windows_options=V1WindowsSecurityContextOptions(
+                                host_process=True
+                            )
                         )
                     )
                 ]

@@ -383,6 +383,30 @@ impl released_pss_labels(
 }
 
 
+impl security_context_escapes_baseline(ctx: any) -> bool {
+    if ctx is None {
+        return False;
+    }
+    if ctx?.windows_options?.host_process {
+        return True;
+    }
+    if ctx?.seccomp_profile?.type == "Unconfined"
+        or ctx?.app_armor_profile?.type == "Unconfined" {
+        return True;
+    }
+    selinux = ctx?.se_linux_options;
+    if selinux is not None {
+        if selinux?.user or selinux?.role {
+            return True;
+        }
+        if selinux?.type and selinux?.type not in BASELINE_SELINUX_TYPES {
+            return True;
+        }
+    }
+    return False;
+}
+
+
 impl pod_spec_escapes_baseline(spec: any) -> bool {
     if spec is None {
         return False;
@@ -391,6 +415,15 @@ impl pod_spec_escapes_baseline(spec: any) -> bool {
         or getattr(spec, "host_pid", False)
         or getattr(spec, "host_ipc", False) {
         return True;
+    }
+    pod_ctx = spec?.security_context;
+    if security_context_escapes_baseline(pod_ctx) {
+        return True;
+    }
+    for sysctl in pod_ctx?.sysctls or [] {
+        if sysctl?.name not in BASELINE_SAFE_SYSCTLS {
+            return True;
+        }
     }
     for volume in spec?.volumes or [] {
         if volume?.host_path is not None {
@@ -401,7 +434,11 @@ impl pod_spec_escapes_baseline(spec: any) -> bool {
     for container in containers {
         ctx = container?.security_context;
         if ctx is not None {
-            if getattr(ctx, "privileged", False) {
+            if getattr(ctx, "privileged", False)
+                or security_context_escapes_baseline(ctx) {
+                return True;
+            }
+            if ctx?.proc_mount and ctx?.proc_mount != "Default" {
                 return True;
             }
             caps = ctx?.capabilities;
