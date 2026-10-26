@@ -1924,6 +1924,34 @@ impl MonitoringDeployer._deploy_alloy(
         alloy_ports.append({'containerPort': 4318, 'name': 'otlp-http'});
     }
 
+    alloy_mounts: list[dict[str, any]] = [
+        {'name': 'alloy-config-vol', 'mountPath': '/etc/alloy'}
+    ];
+    alloy_volumes: list[dict[str, any]] = [
+        {'name': 'alloy-config-vol', 'configMap': {'name': f"{alloy_name}-config"}}
+    ];
+    if self.k8s_config.loki_enabled {
+        alloy_mounts.append(
+            {'name': 'varlogpods', 'mountPath': '/var/log/pods', 'readOnly': True}
+        );
+        alloy_mounts.append(
+            {
+                'name': 'varlogcontainers',
+                'mountPath': '/var/lib/docker/containers',
+                'readOnly': True
+            }
+        );
+        alloy_volumes.append(
+            {'name': 'varlogpods', 'hostPath': {'path': '/var/log/pods'}}
+        );
+        alloy_volumes.append(
+            {
+                'name': 'varlogcontainers',
+                'hostPath': {'path': '/var/lib/docker/containers'}
+            }
+        );
+    }
+
     alloy_daemonset = {
         'apiVersion': 'apps/v1',
         'kind': 'DaemonSet',
@@ -1957,38 +1985,19 @@ impl MonitoringDeployer._deploy_alloy(
                                 '/etc/alloy/config.alloy'
                             ],
                             'ports': alloy_ports,
-                            'volumeMounts': [
-                                {'name': 'alloy-config-vol', 'mountPath': '/etc/alloy'},
-                                {
-                                    'name': 'varlogpods',
-                                    'mountPath': '/var/log/pods',
-                                    'readOnly': True
-                                },
-                                {
-                                    'name': 'varlogcontainers',
-                                    'mountPath': '/var/lib/docker/containers',
-                                    'readOnly': True
-                                }
-                            ]
+                            'volumeMounts': alloy_mounts
                         }
                     ],
-                    'volumes': [
-                        {
-                            'name': 'alloy-config-vol',
-                            'configMap': {'name': f"{alloy_name}-config"}
-                        },
-                        {'name': 'varlogpods', 'hostPath': {'path': '/var/log/pods'}},
-                        {
-                            'name': 'varlogcontainers',
-                            'hostPath': {'path': '/var/lib/docker/containers'}
-                        }
-                    ]
+                    'volumes': alloy_volumes
                 }
             }
         }
     };
     try {
         apps_v1.read_namespaced_daemon_set(name=alloy_name, namespace=namespace);
+        apps_v1.replace_namespaced_daemon_set(
+            name=alloy_name, namespace=namespace, body=alloy_daemonset
+        );
     } except ApiException as e {
         if e.status == 404 {
             apps_v1.create_namespaced_daemon_set(
@@ -2033,6 +2042,13 @@ impl MonitoringDeployer._deploy_alloy(
     if self.logger {
         self.logger.info(f"Alloy deployed for '{app_name}'");
     }
+}
+
+impl MonitoringDeployer.needs_privileged_namespace -> bool {
+    return bool(
+        self.k8s_config.monitoring_enabled and self.k8s_config.k8s_metrics_enabled
+    )
+        or bool(self.k8s_config.loki_enabled);
 }
 
 impl MonitoringDeployer.deploy(

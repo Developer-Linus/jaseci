@@ -27,6 +27,7 @@ obj MonitoringDeployer {
     def _deploy_tempo(app_name: str, namespace: str, apps_v1: any, core_v1: any);
     def _deploy_loki(app_name: str, namespace: str, apps_v1: any, core_v1: any);
     def _deploy_alloy(app_name: str, namespace: str, apps_v1: any, core_v1: any);
+    def needs_privileged_namespace -> bool;
     def deploy(
         app_name: str,
         namespace: str,

@@ -369,6 +369,56 @@ impl privileged_pss_labels(existing: dict[str, str]) -> dict[str, str] | None {
 }
 
 
+impl released_pss_labels(
+    namespace: str, existing: dict[str, str]
+) -> dict[str, str | None] {
+    if existing.get(PSS_ENFORCE_LABEL, "") != "privileged"
+        or existing.get(PSS_SOURCE_LABEL, "") != "privileged" {
+        return {};
+    }
+    if namespace == "default" {
+        return {PSS_ENFORCE_LABEL: None, PSS_SOURCE_LABEL: None};
+    }
+    return {PSS_ENFORCE_LABEL: "baseline", PSS_SOURCE_LABEL: "baseline"};
+}
+
+
+impl pod_spec_escapes_baseline(spec: any) -> bool {
+    if spec is None {
+        return False;
+    }
+    if getattr(spec, "host_network", False)
+        or getattr(spec, "host_pid", False)
+        or getattr(spec, "host_ipc", False) {
+        return True;
+    }
+    for volume in spec?.volumes or [] {
+        if volume?.host_path is not None {
+            return True;
+        }
+    }
+    containers = list(spec?.containers or []) + list(spec?.init_containers or []);
+    for container in containers {
+        ctx = container?.security_context;
+        if ctx is not None {
+            if getattr(ctx, "privileged", False) {
+                return True;
+            }
+            caps = ctx?.capabilities;
+            if caps is not None and caps?.add {
+                return True;
+            }
+        }
+        for port in container?.ports or [] {
+            if port?.host_port {
+                return True;
+            }
+        }
+    }
+    return False;
+}
+
+
 impl ensure_namespace_exists(namespace: str, owner: str) -> None {
     if (namespace == 'default') {
         return;

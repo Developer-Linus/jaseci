@@ -18,6 +18,12 @@ def default_pss_labels -> dict[str, str];
 
 def privileged_pss_labels(existing: dict[str, str]) -> dict[str, str] | None;
 
+def released_pss_labels(
+    namespace: str, existing: dict[str, str]
+) -> dict[str, str | None];
+
+def pod_spec_escapes_baseline(spec: any) -> bool;
+
 glob COMPANION_DEFS: list[tuple[str, str, bool]] = [
          ("", "Jaseci App", False),
          ("-postgres", "PostgreSQL", True),

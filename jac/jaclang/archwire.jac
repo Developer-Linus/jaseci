@@ -30984,6 +30984,9 @@ graph import scale {
             with_config_revision
         },
     ]
+    deploy.target.kubernetes.monitoring ++> tests.deploy.test_monitoring_switch {
+        MonitoringDeployer
+    }
     deploy.target.kubernetes.ops_rbac ++> tests.deploy.test_ops_rbac {
         build_ops_rbac,
         ops_role_name,
@@ -31054,7 +31057,9 @@ graph import scale {
             PSS_SOURCE_LABEL,
             PSS_WARN_LABEL,
             default_pss_labels,
-            privileged_pss_labels
+            pod_spec_escapes_baseline,
+            privileged_pss_labels,
+            released_pss_labels
         },
     ]
     deploy.target.registry ++> config.validation { DeploymentTargetRegistry }
@@ -32079,7 +32084,9 @@ graph import scale.deploy.target.kubernetes {
             ensure_namespace_exists,
             get_cluster_provider,
             namespace_is_owned,
+            pod_spec_escapes_baseline,
             privileged_pss_labels,
+            released_pss_labels,
             resolve_minted_secret
         },
         target.KubernetesTarget._pod_failure_detail { describe_pod_status },
