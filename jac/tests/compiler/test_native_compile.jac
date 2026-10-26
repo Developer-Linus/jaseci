@@ -242,9 +242,9 @@ test "a module wired by the arch file compiles in the kernel" {
     with TemporaryDirectory() as td {
         base = Path(os.path.realpath(td));
         (base / 'jac.toml').write_text(CONFIG);
-        (base / 'arch.jac').write_text(
-            'impl import {\n    edge CoreInternal: core.* --> core.*;\n}\n\n'
-                + 'impl import core {\n    util --> core.svc { Spark }\n}\n'
+        (base / 'archwire.jac').write_text(
+            'graph import {\n    edge CoreInternal: core.* --> core.*;\n}\n\n'
+                + 'graph import core {\n    util ++> svc { Spark }\n}\n'
         );
         (base / 'core').mkdir();
         (base / 'core' / 'util.jac').write_text(
@@ -261,7 +261,7 @@ test "a module wired by the arch file compiles in the kernel" {
         emitted = outcome.unit(entry_file);
         assert emitted is not None;
         assert_same_products(emitted, expected);
-        arch_file = str(base / 'arch.jac');
+        arch_file = str(base / 'archwire.jac');
         checked = compile_in_process(arch_file);
         assert checked.analysis.status == ANALYSIS_OK , checked.analysis.message;
         assert not checked.analysis.misses , checked.analysis.misses;
@@ -327,6 +327,40 @@ test "an import of a stdlib package with an empty stub compiles in the kernel" {
     }
 }
 
+"""A typed package whose compiled extension ships only a `.pyi` stub
+(`cryptography`'s `_rust` bindings do). The host serves the kernel an
+interface for the stub as it does for a `.py` module, so the kernel neither
+misses it nor hands the compile back."""
+test "an import of a third-party package whose module is only a stub compiles in the kernel" {
+    import sys;
+    with TemporaryDirectory() as td {
+        base = Path(os.path.realpath(td));
+        site = base / 'venv' / 'lib' / 'site-packages';
+        pkg = site / 'stubbed_ext';
+        pkg.mkdir(parents=True);
+        (pkg / 'py.typed').write_text('');
+        (pkg / '__init__.py').write_text('from stubbed_ext._native import ping\n');
+        (pkg / '_native.pyi').write_text('def ping(x: int) -> int: ...\n');
+        app = base / 'app';
+        app.mkdir();
+        (app / 'jac.toml').write_text(CONFIG);
+        (app / 'main.jac').write_text(
+            'import from stubbed_ext { ping }\n\n'
+                + 'def call -> int {\n    return ping(1);\n}\n'
+        );
+        entry_file = str(app / 'main.jac');
+        sys.path.insert(0, str(site));
+        try {
+            outcome = compile_in_process(entry_file);
+        } finally {
+            sys.path.remove(str(site));
+        }
+        assert outcome.analysis.status == ANALYSIS_OK , outcome.analysis.message;
+        assert not outcome.analysis.misses , outcome.analysis.misses;
+        assert outcome.unit(entry_file) is not None;
+    }
+}
+
 def write_application(base: Path) {
     (base / 'jac.toml').write_text(CONFIG);
     (base / 'util.jac').write_text(
@@ -334,9 +368,12 @@ def write_application(base: Path) {
             + 'walker:pub Ping { can go with Root entry { report helper(1); } }\n'
     );
     (base / 'deep.jac').write_text('def:pub twice(x: int) -> int { return x * 2; }\n');
-    (base / 'arch.jac').write_text(
-        'impl import {\n    edge SideInternal: side.* --> side.*;\n}\n\n'
-            + 'impl import side {\n    tool --> side.user { Wrench }\n}\n'
+    (base / 'archwire.jac').write_text(
+        'graph import {\n    edge Deep: deep --> main;\n'
+            + '    edge SideInternal: side.* --> side.*;\n'
+            + '    edge Util: util --> main;\n\n'
+            + '    util ++> main { helper }\n    include deep ++> main;\n}\n\n'
+            + 'graph import side {\n    tool ++> user { Wrench }\n}\n'
     );
     (base / 'side').mkdir();
     (base / 'side' / 'tool.jac').write_text(
@@ -346,8 +383,7 @@ def write_application(base: Path) {
         'def turn -> int {\n    return Wrench(size=1).size;\n}\n'
     );
     (base / 'main.jac').write_text(
-        'import from util { helper }\ninclude deep;\n'
-            + 'node Item { has label: str = ""; }\n'
+        'node Item { has label: str = ""; }\n'
             + 'def:pub go(n: int) -> int { return helper(n) + twice(n); }\n'
             + 'def quiet(n: int) -> int { return n; }\n'
             + 'with entry { print(go(3)); }\n'
@@ -490,7 +526,7 @@ code is generated in the kernel too. Otherwise the kernel emitted nothing
 because it handed the module back (an integer literal past a native int) or
 there is nothing to emit (an empty package `__init__`), and the host
 compiles it."""
-test "a kernel compile with no unit is final only when it reported errors" {
+test "a kernel compile with no unit is final, and an error when it reported none" {
     import from unittest.mock { patch }
     import from jaclang.compiler.frontend.kernel_analyze {
         AnalysisDiag,
@@ -505,11 +541,11 @@ test "a kernel compile with no unit is final only when it reported errors" {
         program = JacProgram();
         compiler = program._get_compiler();
         failed = [AnalysisDiag(code="E1001", message="x", path=entry_file, line=1)];
-        for (placed_native, errors, expect_handled) in [
-            (True, [], False),
-            (False, [], False),
-            (False, failed, True),
-            (True, failed, True)
+        for (placed_native, errors) in [
+            (True, []),
+            (False, []),
+            (False, failed),
+            (True, failed)
         ] {
             canned = CompileReport(
                 analysis=AnalysisReport(
@@ -521,13 +557,55 @@ test "a kernel compile with no unit is final only when it reported errors" {
             with patch.object(
                 kernel_compile_mod, "host_kernel_compile", _answering(canned)
             ) {
-                (handled, code) = compiler._adopt_kernel_compile(
-                    entry_file, program, compile_options()
-                );
+                if errors {
+                    (handled, code) = compiler._adopt_kernel_compile(
+                        entry_file, program, compile_options()
+                    );
+                    assert handled , (placed_native, "the kernel's errors are final");
+                    assert code is None;
+                } else {
+                    with testraises(RuntimeError, `match="returned no unit") {
+                        compiler._adopt_kernel_compile(
+                            entry_file, program, compile_options()
+                        );
+                    }
+                }
             }
-            assert handled == expect_handled , (placed_native, len(errors), handled);
-            assert code is None;
         }
+    }
+}
+
+"""JCIR the bytecode assembler rejects is a compile error in the module, the
+E5043 the host's own compile reports, not an internal failure of the run."""
+test "a kernel unit the assembler rejects reports the host's E5043" {
+    import from unittest.mock { patch }
+    with TemporaryDirectory() as td {
+        base = Path(os.path.realpath(td));
+        (base / 'jac.toml').write_text(CONFIG);
+        entry_file = str(base / 'early_exit.jac');
+        Path(entry_file).write_text(
+            'with entry {\n    x = 1;\n    if x {\n        return;\n    }\n    print(x);\n}\n'
+        );
+        program = JacProgram();
+        with patch("jaclang.project.kernel_compile._IN_PROCESS", [True]) {
+            code = program._get_compiler().get_bytecode(entry_file, program);
+        }
+        assert code is None;
+        kernel_msgs = [
+            e.msg
+            for e in program.errors_had
+            if e.code is not None and e.code.code == "E5043"
+        ];
+        assert kernel_msgs , [str(e) for e in program.errors_had];
+        assert "'return' outside function" in kernel_msgs[0] , kernel_msgs;
+        host = JacProgram();
+        host.compile(entry_file, options=compile_options());
+        host_msgs = [
+            e.msg
+            for e in host.errors_had
+            if e.code is not None and e.code.code == "E5043"
+        ];
+        assert kernel_msgs == host_msgs , (kernel_msgs, host_msgs);
     }
 }
 
@@ -550,12 +628,12 @@ test "a kernel compile that misses only native stdlib answers defers to the host
     assert not native_stdlib_misses([inside, "resolve_module: 0 | sys | /tmp/x.jac"]);
     import from jaclang.compiler.frontend.kernel_analyze { ANALYSIS_CRASHED }
     import from jaclang.project.kernel_snapshot { host_deferred }
-    assert host_deferred(
+    assert not host_deferred(
         AnalysisReport(
             status=ANALYSIS_CRASHED,
-            message=": integer overflow (in TypeCheckPass at /tmp/x.jac:67:17)"
+            message="OverflowError: integer overflow (in TypeCheckPass at /tmp/x.jac:67:17)"
         )
-    ) , "a literal past a native int is the host's to check";
+    ) , "a kernel crash is the kernel's error, never the host's to redo";
     assert not host_deferred(
         AnalysisReport(status=ANALYSIS_CRASHED, message="KeyError: 'code'")
     );
@@ -591,9 +669,7 @@ test "a kernel compile that misses only native stdlib answers defers to the host
                 in_process=True
             );
         }
-        placed = deferred.analysis.module(entry_file);
-        assert placed is not None and placed.native;
-        assert not deferred.units;
+        assert deferred is None , "a host-only miss hands the compile to the host";
     }
 }
 
@@ -762,6 +838,7 @@ test "a kernel compile asks the host for what it lacks and runs once" {
         assert len(runs) == 1 , runs;
         assert "resolve_module" in asked , asked;
         assert "compile_module" in asked , asked;
+        assert outcome is not None;
         assert not outcome.analysis.misses , outcome.analysis.misses;
         assert outcome.analysis.status == ANALYSIS_OK , outcome.analysis.message;
         emitted = outcome.unit(entry_file);
@@ -865,6 +942,7 @@ test "a dependency outside the project compiles in the same kernel run" {
                 );
             }
         }
+        assert outcome is not None;
         assert outcome.analysis.status == ANALYSIS_OK , outcome.analysis.message;
         assert not outcome.analysis.misses , outcome.analysis.misses;
         emitted = outcome.unit(entry_file);
@@ -916,9 +994,7 @@ test "a module importing another copy of the compiler is handed to the host" {
             );
         }
         assert not runs , runs;
-        assert not outcome.units;
-        placed = outcome.analysis.module(entry_file);
-        assert placed is not None and placed.native , outcome.analysis.modules;
+        assert outcome is None , "another compiler copy is the host's to compile";
     }
 }
 
@@ -956,6 +1032,7 @@ test "each unit of a kernel session carries only its own module's MTIR" {
             in_process=True,
             emit_closure=True
         );
+        assert outcome is not None;
         assert outcome.analysis.status == ANALYSIS_OK , outcome.analysis.message;
         alpha = outcome.unit(str(pkg / 'module_alpha.jac'));
         beta = outcome.unit(str(pkg / 'module_beta.jac'));
@@ -992,6 +1069,7 @@ test "an empty package init compiles in the session that reaches it" {
             in_process=True,
             emit_closure=True
         );
+        assert outcome is not None;
         assert outcome.analysis.status == ANALYSIS_OK , outcome.analysis.message;
         named = sorted(os.path.relpath(u.path, str(base)) for u in outcome.units);
         assert named == ["main.jac", "pkg/__init__.jac", "pkg/util.jac"] , named;
@@ -1039,6 +1117,7 @@ test "a typed third-party package reaches the kernel as interfaces" {
         } finally {
             sys.path.remove(str(site));
         }
+        assert outcome is not None;
         assert outcome.analysis.status == ANALYSIS_OK , outcome.analysis.message;
         assert not outcome.analysis.misses , outcome.analysis.misses;
         emitted = outcome.unit(entry_file);

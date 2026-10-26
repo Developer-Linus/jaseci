@@ -6,9 +6,10 @@ first), then counts the vote on the poll node. It commits once before any of
 that, so the poll it holds was read by an earlier transaction than the one
 that writes it. Two switches, each consumed by the run that honours it:
 
-- `rival_commits`: right after that commit, a second connection commits a
-  change to the poll row, so this request's write of the poll is stale and
-  the upsert reports a `WriteConflict` after the edge was already flushed.
+- `rival_commits`: once this transaction has read the poll and its voters, a
+  second connection commits a change to the poll row, so this request's write
+  of the poll is stale and the upsert reports a `WriteConflict` after the edge
+  was already flushed.
 - `commit_faults`: each entry is taken by one run and makes that many of the
   request's following COMMITs fail the way Postgres fails a serializable
   transaction at commit (rolled back, SQLSTATE 40001).
@@ -16,11 +17,19 @@ that writes it. Two switches, each consumed by the run that honours it:
 `runs` counts how many times the walker body ran, `failed_commits` how many
 COMMITs were made to fail.
 
+`ReadPoll` reads the poll through a typed hop. With `lock_exhaustions`
+armed, that many of the request's following queries first make Postgres
+itself fail the transaction the way an exhausted predicate-lock table does
+(SQLSTATE 53200); `exhausted_queries` counts them.
+
 `Bump` is a read-modify-write of one `Counter` that holds its transaction
 open for `hold` seconds, the shape of a real update handler; many of them
 at once on the same counter is the contention case. With `busy` the hold
 is CPU work instead of a sleep, so the requests compete for the process as
 well as for the row, the way a saturated server does.
+
+`Deliver` reports a status dict that its own `on_commit` callback marks as
+sent, the shape of a send-then-confirm handler.
 """
 
 import from jaclang.data.pgwire { PgWireError }
@@ -30,7 +39,9 @@ import from jaclang.runtime.runtime { JacRuntimeInterface as Jac }
 glob runs: list[int] = [],
      rival_commits: list[int] = [],
      commit_faults: list[int] = [],
-     failed_commits: list[int] = [];
+     failed_commits: list[int] = [],
+     lock_exhaustions: list[int] = [],
+     exhausted_queries: list[int] = [];
 
 node Poll {
     has total: int = 0;
@@ -86,6 +97,37 @@ def fail_commits(times: int) {
 }
 
 
+def exhaust_queries(times: int) {
+    store: any = request_store();
+    real_rows = store.rows;
+    left = [times];
+    def exhausting_rows(sql: str, params: dict[str, any]) -> list[tuple[any, ...]] {
+        if left[0] > 0 and store.in_txn() {
+            left[0] -= 1;
+            exhausted_queries.append(1);
+            real_rows(
+                "DO $$ BEGIN RAISE EXCEPTION 'out of shared memory' "
+                "USING ERRCODE = '53200'; END $$",
+                {}
+            );
+        }
+        return real_rows(sql, params);
+    }
+    store.rows = exhausting_rows;
+}
+
+
+walker:pub ReadPoll {
+    can read_total with Root entry {
+        if lock_exhaustions {
+            exhaust_queries(lock_exhaustions.pop());
+        }
+        polls = [here-->[?:Poll]];
+        report polls[0].total;
+    }
+}
+
+
 walker:pub Seed {
     can plant with Root entry {
         here +>:Ballot():+> Poll();
@@ -99,10 +141,6 @@ walker:pub Vote {
         polls = [here-->[?:Poll]];
         poll = polls[0];
         commit();
-        if rival_commits {
-            rival_commits.pop();
-            rival_bump(jid(poll));
-        }
         if commit_faults {
             fail_commits(commit_faults.pop());
         }
@@ -110,6 +148,10 @@ walker:pub Vote {
             if not ballot.cast {
                 ballot.cast = True;
                 voters = [poll<--];
+                if rival_commits {
+                    rival_commits.pop();
+                    rival_bump(jid(poll));
+                }
                 poll.total += len(voters);
             }
         }
@@ -165,5 +207,16 @@ walker:pub Bump {
 walker:pub ReadCounter {
     can read with Root entry {
         report [here-->[?:Counter]][0].n;
+    }
+}
+
+walker:pub Deliver {
+    can go with Root entry {
+        status = {"sent": False};
+        def mark_sent {
+            status["sent"] = True;
+        }
+        Jac.on_commit(mark_sent);
+        report status;
     }
 }
