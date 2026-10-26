@@ -198,6 +198,7 @@ graph import {
         },
     ]
     cache.registry --> [
+        compiler.backends.native.link_plan._write_glue_symbols { maybe_sweep },
         compiler.driver.jir._sweep_once { bucket, maybe_sweep },
         compiler.driver.jir._touch_generation
             | compiler.types.stubcat.locate.StubcatArtifact.probe_checkout { bucket },
@@ -5968,6 +5969,11 @@ graph import compiler {
         backends.native.link_plan { unit_source_digest },
         backends.native.link_plan.LinkPlan.plan_digest { native_producer_digest },
         backends.native.link_plan._build_link_plan.walk_unit { module_cache_key },
+        backends.native.link_plan._glue_symbols_store {
+            cache_mode,
+            compiler_generation,
+            get_jir_cache_dir
+        },
         backends.native.link_plan._jit_image_path { cache_mode, get_jir_cache_dir },
         backends.native.link_plan._reuse_artifact { cache_mode },
         backends.native.link_plan._write_sidecar { native_producer_digest },
