@@ -4473,7 +4473,9 @@ graph import byllm {
     _optdeps.pillow ++> types { PILImageCls, open_image }
     _optdeps.pydantic ++> schema | types { TypeAdapter }
     config_loader ++> llm | mtir { get_byllm_config }
+    deadline ++> llm | mtir { CallDeadline }
     exceptions ++> [
+        deadline { LLMTimeout },
         lib {
             AuthenticationError,
             ByLLMError,
