@@ -2057,10 +2057,10 @@ impl TypeEvaluator._get_type_of_expression_core(
                             if arch := method.signature.arch_tag_info {
                                 if isinstance(arch, TupleVal) {
                                     member_insts: list[TypeBase] = [];
-                                    for member in self._annotation_args(arch) {
+                                    for arch_member in self._annotation_args(arch) {
                                         member_insts.append(
                                             self._convert_to_instance(
-                                                self.get_type_of_expression(member)
+                                                self.get_type_of_expression(arch_member)
                                             )
                                         );
                                     }

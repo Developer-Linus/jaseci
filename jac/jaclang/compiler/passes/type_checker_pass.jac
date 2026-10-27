@@ -92,6 +92,9 @@ walker TypeCheckPass(TreePass) {
     can exit_sub_tag with SubTag exit;
     def _eval_unpacking_names(container: Expr) -> None;
     def _write_leaves(target: (Expr | None)) -> list[Expr];
+    def _is_unannotated_rebind(prior: Symbol, target: Name) -> bool;
+    def _is_exempt_rebind(prior: Symbol, target: Name, declared: TypeBase) -> bool;
+    def _check_for_target_rebinds(nd: InForStmt) -> None;
     def _check_immutable_write(
         target: (Expr | None), rebind_scope: (UniNode | None) = None
     ) -> None;
