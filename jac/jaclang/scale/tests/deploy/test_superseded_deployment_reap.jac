@@ -661,7 +661,8 @@ def _pod(
     deleting: bool = False,
     labeled: bool = True,
     statuses: bool = True,
-    init_statuses: (list[any] | None) = None
+    init_statuses: (list[any] | None) = None,
+    phase: str = "Running"
 ) -> any {
     return SimpleNamespace(
         metadata=SimpleNamespace(
@@ -670,6 +671,7 @@ def _pod(
             deletion_timestamp="2026-01-01T00:00:00Z" if deleting else None
         ),
         status=SimpleNamespace(
+            phase=phase,
             init_container_statuses=init_statuses,
             container_statuses=[_container(ready, restarts, waiting, last_terminated)]
                 if statuses
@@ -742,6 +744,13 @@ test "status reads a container's current state, not its lifetime restart count" 
                 restarts=5,
                 waiting="CrashLoopBackOff",
                 deleting=True
+            ),
+            "activating"
+        ),
+        (
+            "an evicted pod whose container had restarted",
+            _pod(
+                "standup", ready=False, restarts=1, last_terminated=True, phase="Failed"
             ),
             "activating"
         ),

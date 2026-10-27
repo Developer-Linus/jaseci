@@ -31234,7 +31234,11 @@ graph import scale {
         deploy.target.kubernetes.manifest_builder
             | tests.deploy.test_ops_deploy
             | tests.microservices.test_fleet_rollout { REPLICA_FLOOR_ANNOTATION },
-        deploy.target.kubernetes.target { ResourceStatus, assess_workload },
+        deploy.target.kubernetes.target {
+            ResourceStatus,
+            assess_workload,
+            container_crashlooping
+        },
         sdk { ResourceStatus, ResourceStatusInfo },
         tests.deploy.test_http_activation_microservices {
             REPLICA_FLOOR_ANNOTATION,
