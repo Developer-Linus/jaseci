@@ -907,6 +907,7 @@ impl KubernetesTarget._release_privileged_namespace(
 impl KubernetesTarget._workloads_escaping_baseline(namespace: str) -> list[str] {
     apps_v1 = client.AppsV1Api();
     batch_v1 = client.BatchV1Api();
+    core_v1 = client.CoreV1Api();
     listings: list[tuple[str, any, any]] = [
         (
             "DaemonSet",
@@ -922,6 +923,18 @@ impl KubernetesTarget._workloads_escaping_baseline(namespace: str) -> list[str] 
             "StatefulSet",
             apps_v1.list_namespaced_stateful_set,
             lambda (w: any) { w.spec.template.spec; }
+        ),
+        (
+            "ReplicaSet",
+            apps_v1.list_namespaced_replica_set,
+            lambda (w: any) { None
+                if w.metadata.owner_references
+                else w.spec.template.spec; }
+        ),
+        (
+            "ReplicationController",
+            core_v1.list_namespaced_replication_controller,
+            lambda (w: any) { w.spec.template?.spec; }
         ),
         (
             "CronJob",

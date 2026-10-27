@@ -485,6 +485,17 @@ impl pod_spec_escapes_baseline(spec: any) -> bool {
                 return True;
             }
         }
+        for handler in [
+            container?.liveness_probe,
+            container?.readiness_probe,
+            container?.startup_probe,
+            container?.lifecycle?.post_start,
+            container?.lifecycle?.pre_stop
+        ] {
+            if handler?.http_get?.host or handler?.tcp_socket?.host {
+                return True;
+            }
+        }
     }
     return False;
 }

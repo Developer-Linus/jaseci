@@ -90,7 +90,12 @@ test "a workload holds the namespace exactly while it can ask the node for somet
         V1Container,
         V1ContainerPort,
         V1HostPathVolumeSource,
+        V1HTTPGetAction,
+        V1Lifecycle,
+        V1LifecycleHandler,
         V1PodSpec,
+        V1Probe,
+        V1TCPSocketAction,
         V1SecurityContext,
         V1Volume
     }
@@ -299,6 +304,52 @@ test "a workload holds the namespace exactly while it can ask the node for somet
                     V1Container(
                         name="x",
                         ports=[V1ContainerPort(container_port=80, host_port=80)]
+                    )
+                ]
+            ),
+            True
+        ),
+        (
+            "readiness probe on the pod's own address",
+            V1PodSpec(
+                containers=[
+                    V1Container(
+                        name="x",
+                        readiness_probe=V1Probe(
+                            http_get=V1HTTPGetAction(path="/healthz", port=80)
+                        )
+                    )
+                ]
+            ),
+            False
+        ),
+        (
+            "liveness probe sent to another host",
+            V1PodSpec(
+                containers=[
+                    V1Container(
+                        name="x",
+                        liveness_probe=V1Probe(
+                            http_get=V1HTTPGetAction(
+                                path="/healthz", port=80, host="10.0.0.1"
+                            )
+                        )
+                    )
+                ]
+            ),
+            True
+        ),
+        (
+            "preStop hook sent to another host",
+            V1PodSpec(
+                containers=[
+                    V1Container(
+                        name="x",
+                        lifecycle=V1Lifecycle(
+                            pre_stop=V1LifecycleHandler(
+                                tcp_socket=V1TCPSocketAction(port=80, host="10.0.0.1")
+                            )
+                        )
                     )
                 ]
             ),

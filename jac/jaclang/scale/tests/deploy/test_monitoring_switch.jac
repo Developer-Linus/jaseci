@@ -220,3 +220,66 @@ test "kube-state-metrics reads no secrets or configmaps and watches only what it
     assert binding["roleRef"]["name"] == rbac["cluster_role"]["metadata"]["name"];
     assert binding["subjects"][0]["namespace"] == "t-ns";
 }
+
+
+test "every controller that can recreate a host-path pod holds the namespace" {
+    import unittest.mock;
+    import from types { SimpleNamespace }
+    import from kubernetes.client {
+        V1Container,
+        V1HostPathVolumeSource,
+        V1PodSpec,
+        V1Volume
+    }
+    import from jaclang.scale.deploy.target.kubernetes { target as target_mod }
+
+    escaping = V1PodSpec(
+        containers=[V1Container(name="x")],
+        volumes=[V1Volume(name="h", host_path=V1HostPathVolumeSource(path="/proc"))]
+    );
+    def _workload(name: str, owned: bool = False) -> any {
+        return SimpleNamespace(
+            metadata=SimpleNamespace(
+                name=name,
+                owner_references=[SimpleNamespace(kind="Deployment")] if owned else None
+            ),
+            spec=SimpleNamespace(template=SimpleNamespace(spec=escaping))
+        );
+    }
+    def _lister(items: list[any]) -> any {
+        def list_fn(namespace: str) -> any {
+            return SimpleNamespace(items=items);
+        }
+        return list_fn;
+    }
+    apps = SimpleNamespace(
+        list_namespaced_daemon_set=_lister([_workload("ds")]),
+        list_namespaced_deployment=_lister([_workload("dep")]),
+        list_namespaced_stateful_set=_lister([_workload("sts")]),
+        list_namespaced_replica_set=_lister(
+            [_workload("rs"), _workload("dep-5d8f", owned=True)]
+        )
+    );
+    batch = SimpleNamespace(
+        list_namespaced_cron_job=_lister([]), list_namespaced_job=_lister([])
+    );
+    core = SimpleNamespace(
+        list_namespaced_replication_controller=_lister([_workload("rc")])
+    );
+    fake_client = SimpleNamespace(
+        AppsV1Api=lambda { apps; },
+        BatchV1Api=lambda { batch; },
+        CoreV1Api=lambda { core; }
+    );
+    with unittest.mock.patch.object(target_mod, "client", fake_client) {
+        holders = _target(monitoring=False)._workloads_escaping_baseline("t-ns");
+    }
+    assert sorted(holders)
+        == [
+            "DaemonSet/ds",
+            "Deployment/dep",
+            "ReplicaSet/rs",
+            "ReplicationController/rc",
+            "StatefulSet/sts"
+        ] , holders;
+}
