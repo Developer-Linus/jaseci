@@ -30967,6 +30967,9 @@ graph import scale {
     ]
     deploy.target.kubernetes.kubernetes_target ++> runtime.realizer.kubernetes_realizer.KubernetesRealizer.realize
         | tests.deploy.test_database_intent { KubernetesTargetBase }
+    deploy.target.kubernetes.kubernetes_target --> tests.microservices.test_pvc_injector {
+        KubernetesTargetBase
+    }
     deploy.target.kubernetes.manifest_builder ++> [
         runtime.cli.diagnostics | runtime.cli.plan { ScalingMode },
         tests.apps.test_app_scale_overrides
@@ -31062,6 +31065,7 @@ graph import scale {
     ]
     deploy.target.kubernetes.target as target_mod --> tests.deploy.test_superseded_deployment_reap;
     deploy.target.kubernetes.utils.kubernetes_utils ++> [
+        injector.injector | injector.pvc_injector { KubectlCluster },
         injector.pvc_injector.PvcInjector.seed {
             run_kubectl_command,
             wait_for_pod_deletion,
@@ -31078,6 +31082,9 @@ graph import scale {
             privileged_pss_labels
         },
     ]
+    deploy.target.kubernetes.utils.kubernetes_utils --> tests.deploy.test_dry_run_purity {
+        KubectlCluster
+    }
     deploy.target.registry ++> config.validation { DeploymentTargetRegistry }
     deploy.target.registry --> tests.misc.test_config_validation {
         BUILTIN_TARGET_TYPES
@@ -32081,12 +32088,17 @@ graph import scale.deploy.target.kubernetes {
     ]
     utils.kubernetes_utils ++> [
         database_provisioner { ensure_namespace_exists },
-        ingress { delete_if_exists },
+        ingress { KubectlCluster, delete_if_exists },
         kubernetes_target {
             COMPANION_DEFS,
+            KubectlCluster,
             create_k8s_secret,
             get_cluster_provider,
             resize_pvc_if_needed
+        },
+        kubernetes_target.KubernetesTargetBase._load_cluster_config {
+            in_cluster_kubectl,
+            kubectl_cluster
         },
         monitoring { delete_if_exists, delete_k8s_secret },
         target {
