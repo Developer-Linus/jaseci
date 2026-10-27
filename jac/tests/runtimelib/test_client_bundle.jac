@@ -302,6 +302,11 @@ test "vite commands address vite's js entry, not the bunx shim" {
         assert "x" not in dev_cmd;
         assert dev_cmd[1].endswith("vite.js");
         assert "--port" in dev_cmd;
+        assert "--host" not in dev_cmd , dev_cmd;
+        pinned = _build_vite_dev_command(
+            build_dir, Path("configs/vite.dev.config.js"), 3000, "127.0.0.1"
+        );
+        assert pinned[pinned.index("--host") + 1] == "127.0.0.1" , pinned;
     }
 }
 

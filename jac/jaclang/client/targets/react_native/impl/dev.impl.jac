@@ -1,5 +1,5 @@
-impl backend_bind_host(visible_host: str) -> str {
-    host = (visible_host or "").strip();
+impl backend_bind_host(packager_host: str) -> str {
+    host = (packager_host or "").strip();
     if not host or is_loopback_host(host) {
         return "";
     }

@@ -2413,7 +2413,7 @@ test "mobile dev binds the backend to an interface the device can reach" {
     import from jaclang.client.targets.react_native.dev { backend_bind_host }
     import from jaclang.client.targets.client_dev_common { start_backend_server_common }
 
-    # (device-visible host, bind the backend must be given)
+    # (Expo packager host, empty under --tunnel; bind the backend must be given)
     cases = [
         ("192.168.1.7", "0.0.0.0"),
         ("10.0.0.4", "0.0.0.0"),
