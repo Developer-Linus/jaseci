@@ -31349,12 +31349,17 @@ graph import scale {
         deploy.target.kubernetes.kubernetes_target {
             ResourceStatus,
             ResourceStatusInfo,
-            assess_workload
+            assess_workload,
+            container_crashlooping
         },
         deploy.target.kubernetes.manifest_builder
             | tests.deploy.test_ops_deploy
             | tests.microservices.test_fleet_rollout { REPLICA_FLOOR_ANNOTATION },
-        deploy.target.kubernetes.target { ResourceStatus, assess_workload },
+        deploy.target.kubernetes.target {
+            ResourceStatus,
+            assess_workload,
+            container_crashlooping
+        },
         sdk { ResourceStatus, ResourceStatusInfo },
         tests.deploy.test_http_activation_microservices {
             REPLICA_FLOOR_ANNOTATION,
@@ -31362,7 +31367,8 @@ graph import scale {
         },
         tests.deploy.test_superseded_deployment_reap {
             REPLICA_FLOOR_ANNOTATION,
-            assess_workload
+            assess_workload,
+            container_crashlooping
         },
     ]
     observability.factory ++> plugin

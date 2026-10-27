@@ -358,8 +358,7 @@ impl KubernetesTarget._scan_for_crash_loop(
 
                 crashing = (
                     owned
-                    and restarts >= 3
-                    and not cs.ready
+                    and container_crashlooping(cs, 3)
                     and reason not in imagepull_reasons
                 );
                 if crashing and not pod_crash {
