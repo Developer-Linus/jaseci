@@ -116,6 +116,7 @@ graph import {
             NATIVE_LOWERED_PATHS,
             is_native_lowered,
             is_roster_input,
+            is_staging_rewritten,
             read_input_rules
         },
         dist.payload.fsutil.skip_jaclang
@@ -198,6 +199,7 @@ graph import {
         },
     ]
     cache.registry --> [
+        compiler.backends.native.link_plan._write_glue_symbols { maybe_sweep },
         compiler.driver.jir._sweep_once { bucket, maybe_sweep },
         compiler.driver.jir._touch_generation
             | compiler.types.stubcat.locate.StubcatArtifact.probe_checkout { bucket },
@@ -920,7 +922,7 @@ graph import {
     compiler.driver.program ++> [
         cli.commands.analysis._annex_moves
             | cli.commands.architecture
-            | cli.commands.fix._format_source
+            | cli.commands.fix._client_imports
             | cli.commands.native_build.native_build
             | cli.commands.transform.jac2js
             | cli.mcp.compiler_bridge.CompilerBridge.get_ast_snippet._do_ast
@@ -943,12 +945,13 @@ graph import {
             | testing.cl_test_runner.compile_cl_module
             | testing.test_runner._fresh_jac_state { JacProgram },
         cli.commands.analysis._check_file_job
-            | cli.commands.fix._verify_claims
+            | cli.commands.fix._format_source
             | cli.commands.transform.jac2py
             | cli.mcp.compiler_bridge.CompilerBridge.jac_to_js._do_jac2js
             | dist.precompile_bytecode.prebuild_native_closure
             | testing.cl_test_runner.module_is_client { JacProgram },
         cli.commands.analysis._float_impls_to_annex
+            | cli.commands.fix._verify_claims
             | cli.commands.transform.py2jac
             | cli.mcp.compiler_bridge.CompilerBridge.jac_to_py._do_jac2py
             | dist.precompile_bytecode.precompile_native_unit { JacProgram },
@@ -1310,6 +1313,7 @@ graph import {
             | studio.gate
             | studio.intel_server
             | studio.model,
+        cli.commands.fix._client_imports,
         cli.commands.fix._imported_names,
         cli.commands.fix._module_has_jsx,
         cli.commands.fix._plain_top_decls,
@@ -3967,10 +3971,12 @@ graph import {
         scale.admin.ops._loki_recent_count { arequest },
         scale.admin.ops._tempo_recent_count { arequest },
         scale.runtime.gateway.microservice_gateway.MicroserviceGateway.forward_to {
-            ClientReadTimeout
+            ClientReadTimeout,
+            ClientRequestNotSent
         },
         scale.runtime.gateway.microservice_gateway.MicroserviceGateway.probe_services {
-            ClientReadTimeout
+            ClientReadTimeout,
+            ClientRequestNotSent
         },
         scale.runtime.middleware.ws_forward { ClientConnectionError, aws_connect },
         scale.runtime.rpc.rpc._rpc_with_retries {
@@ -3982,10 +3988,12 @@ graph import {
         scale.runtime.transport.http_forward {
             ClientConnectionError,
             ClientReadTimeout,
+            ClientRequestNotSent,
             arequest
         },
         scale.tests.server.test_serve | testing.testing { run_blocking },
-        scale.tests.server.test_sv_auth_forward._install_unreachable_transport {
+        scale.tests.server.test_stream_ws
+            | scale.tests.server.test_sv_auth_forward._install_unreachable_transport {
             ClientRequestNotSent
         },
         scale.tests.server.test_sv_auth_forward._install_unreachable_walker_transport {
@@ -4473,7 +4481,9 @@ graph import byllm {
     _optdeps.pillow ++> types { PILImageCls, open_image }
     _optdeps.pydantic ++> schema | types { TypeAdapter }
     config_loader ++> llm | mtir { get_byllm_config }
+    deadline ++> llm | mtir { CallDeadline }
     exceptions ++> [
+        deadline { LLMTimeout },
         lib {
             AuthenticationError,
             ByLLMError,
@@ -5800,7 +5810,7 @@ graph import compiler {
             module_app
         },
         passes.boundary_analysis_pass.BoundaryAnalysisPass._parsed_provider_of {
-            bridgeable_import_target
+            parsed_import_source
         },
         passes.boundary_analysis_pass.BoundaryAnalysisPass._provider_module_of {
             bridgeable_import_target,
@@ -5814,6 +5824,7 @@ graph import compiler {
             ClientImportVerdict,
             classify_client_import_item,
             import_crosses_apps,
+            import_item_declaration,
             import_provider_app,
             import_provider_route,
             is_client_boundary_import
@@ -5966,6 +5977,11 @@ graph import compiler {
         backends.native.link_plan { unit_source_digest },
         backends.native.link_plan.LinkPlan.plan_digest { native_producer_digest },
         backends.native.link_plan._build_link_plan.walk_unit { module_cache_key },
+        backends.native.link_plan._glue_symbols_store {
+            cache_mode,
+            compiler_generation,
+            get_jir_cache_dir
+        },
         backends.native.link_plan._jit_image_path { cache_mode, get_jir_cache_dir },
         backends.native.link_plan._reuse_artifact { cache_mode },
         backends.native.link_plan._write_sidecar { native_producer_digest },
@@ -7052,6 +7068,7 @@ graph import compiler {
             E0071,
             E0075,
             E0076,
+            E0078,
             E0082,
             E0083,
             E2019,
@@ -7222,6 +7239,7 @@ graph import compiler {
             E1157,
             E1158,
             E1159,
+            E1161,
             E2015,
             W1036,
             W1037,
@@ -8113,8 +8131,9 @@ graph import compiler {
     ]
     frontend.srcloc --> driver.compiler.assemble_jcir { Span }
     frontend.unitree ++> [
-        backends.native.na_ir_gen_pass.NaIRGenPass._binds_variable
-            | driver.program.JacProgram.stamp_boundary_facts { ability_of_symbol },
+        backends.native.na_ir_gen_pass.NaIRGenPass._binds_variable {
+            ability_of_symbol
+        },
         backends.native.na_ir_gen_pass.NaIRGenPass._record_generic_definition {
             definition_qualname
         },
@@ -8424,6 +8443,7 @@ graph import compiler {
             DeleteStmt,
             ElseStmt,
             Enum,
+            EventSignature,
             ExprAsItem,
             ExprStmt,
             ForeverStmt,
@@ -10729,6 +10749,7 @@ graph import compiler {
             ClassType,
             FunctionType,
             ModuleType,
+            NeverType,
             TypeBase,
             TypeVarType,
             UnionType,
@@ -11768,6 +11789,7 @@ graph import compiler.driver {
             _default_codespace_for,
             classify_client_import_item,
             import_declares_native_target,
+            import_item_declaration,
             is_client_boundary_import,
             is_client_native_edge_import
         },
@@ -12071,7 +12093,7 @@ graph import compiler.driver {
             | ifacecache.IfaceRegistry._ensure_in_context { require },
         compiler.JacCompiler.jac_file_linter { require },
         ifacecache.IfaceRegistry._prepare { product_facts },
-        nativecache.NativeBuildSession.lower { invalidate, require },
+        nativecache.NativeBuildSession.lower { invalidate, require, unavailable },
     ]
     pipeline_runner --> [
         application._prepare_revision { compile_application },
@@ -15082,7 +15104,7 @@ graph import packages {
     api ++> [
         artifact.build_package { package_surface },
         artifact.package_manifest { surface_digest },
-        verify._verify_library { package_surface, surface_digest },
+        verify._verify_library { API_FORMAT, package_surface, surface_digest },
     ]
     apidiff ++> [
         publish { ApiChange, check_bump, diff_surfaces, minimum_next },
@@ -30949,6 +30971,9 @@ graph import scale {
     ]
     deploy.target.kubernetes.kubernetes_target ++> runtime.realizer.kubernetes_realizer.KubernetesRealizer.realize
         | tests.deploy.test_database_intent { KubernetesTargetBase }
+    deploy.target.kubernetes.kubernetes_target --> tests.microservices.test_pvc_injector {
+        KubernetesTargetBase
+    }
     deploy.target.kubernetes.manifest_builder ++> [
         runtime.cli.diagnostics | runtime.cli.plan { ScalingMode },
         tests.apps.test_app_scale_overrides
@@ -30956,6 +30981,7 @@ graph import scale {
             | tests.deploy.test_alb_zero_downtime
             | tests.deploy.test_client_build_deps
             | tests.deploy.test_client_build_fail_fast
+            | tests.deploy.test_destroy_reclaim
             | tests.deploy.test_dry_run_purity
             | tests.deploy.test_gateway_config_isolation
             | tests.deploy.test_memory_trigger_guard
@@ -31044,6 +31070,7 @@ graph import scale {
     ]
     deploy.target.kubernetes.target as target_mod --> tests.deploy.test_superseded_deployment_reap;
     deploy.target.kubernetes.utils.kubernetes_utils ++> [
+        injector.injector | injector.pvc_injector { KubectlCluster },
         injector.pvc_injector.PvcInjector.seed {
             run_kubectl_command,
             wait_for_pod_deletion,
@@ -31063,6 +31090,9 @@ graph import scale {
             released_pss_labels
         },
     ]
+    deploy.target.kubernetes.utils.kubernetes_utils --> tests.deploy.test_dry_run_purity {
+        KubectlCluster
+    }
     deploy.target.registry ++> config.validation { DeploymentTargetRegistry }
     deploy.target.registry --> tests.misc.test_config_validation {
         BUILTIN_TARGET_TYPES
@@ -31322,12 +31352,17 @@ graph import scale {
         deploy.target.kubernetes.kubernetes_target {
             ResourceStatus,
             ResourceStatusInfo,
-            assess_workload
+            assess_workload,
+            container_crashlooping
         },
         deploy.target.kubernetes.manifest_builder
             | tests.deploy.test_ops_deploy
             | tests.microservices.test_fleet_rollout { REPLICA_FLOOR_ANNOTATION },
-        deploy.target.kubernetes.target { ResourceStatus, assess_workload },
+        deploy.target.kubernetes.target {
+            ResourceStatus,
+            assess_workload,
+            container_crashlooping
+        },
         sdk { ResourceStatus, ResourceStatusInfo },
         tests.deploy.test_http_activation_microservices {
             REPLICA_FLOOR_ANNOTATION,
@@ -31335,7 +31370,8 @@ graph import scale {
         },
         tests.deploy.test_superseded_deployment_reap {
             REPLICA_FLOOR_ANNOTATION,
-            assess_workload
+            assess_workload,
+            container_crashlooping
         },
     ]
     observability.factory ++> plugin
@@ -31503,7 +31539,8 @@ graph import scale {
             k8s_service_dns_url
         },
         deploy.target.kubernetes.runtime_resolver { DEFAULT_GATEWAY_PORT },
-        tests.deploy.test_http_activation_microservices
+        tests.deploy.test_destroy_reclaim
+            | tests.deploy.test_http_activation_microservices
             | tests.deploy.test_memory_trigger_guard
             | tests.deploy.test_ops_rbac
             | tests.deploy.test_pod_env { GATEWAY_NAME },
@@ -31661,6 +31698,7 @@ graph import scale {
             _owns_group,
             _signal_group
         },
+        tests.support.stop_server { _signal_group },
     ]
     runtime.planner.planner ++> tests.microservices.test_planner { plan_realization }
     runtime.provider ++> [
@@ -32066,12 +32104,17 @@ graph import scale.deploy.target.kubernetes {
     ]
     utils.kubernetes_utils ++> [
         database_provisioner { ensure_namespace_exists },
-        ingress { delete_if_exists },
+        ingress { KubectlCluster, delete_if_exists },
         kubernetes_target {
             COMPANION_DEFS,
+            KubectlCluster,
             create_k8s_secret,
             get_cluster_provider,
             resize_pvc_if_needed
+        },
+        kubernetes_target.KubernetesTargetBase._load_cluster_config {
+            in_cluster_kubectl,
+            kubectl_cluster
         },
         monitoring { delete_if_exists, delete_k8s_secret },
         target {
@@ -32532,6 +32575,7 @@ graph import scale.tests {
         microservices.test_gateway
             | microservices.test_k8s_health_probe
             | server.test_examples { get_free_port },
+        microservices.test_stop_signal_scope { stop_server },
         microservices.test_typed_boundary { get_free_port, start_server, stop_server },
         server.test_metrics_workers | server.test_serve {
             cleanup_db_files,
