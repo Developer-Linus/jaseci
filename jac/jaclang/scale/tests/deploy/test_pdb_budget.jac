@@ -215,6 +215,12 @@ test "the plan validator rejects hpa.min below one only when nothing can wake th
             "triggers": [cron],
             "error": False
         },
+        {
+            "label": "a negative floor is rejected even with a real trigger",
+            "hpa": {"min": -1},
+            "triggers": [cron],
+            "error": True
+        },
         {"label": "keda with no triggers", "triggers": [], "error": True},
         {
             "label": "idle_replicas=0 does not stand in for a trigger",

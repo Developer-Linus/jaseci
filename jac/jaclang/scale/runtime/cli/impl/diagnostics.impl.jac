@@ -165,7 +165,15 @@ impl PlanValidator._check_hpa(
     hpa_max = iget(autoscaler, "max", iget(hpa, "max", 3));
     hpa_cpu = iget(autoscaler, "cpu_target", iget(hpa, "cpu_target", 70));
     engine = sget(scaling_entry, "engine") or "hpa";
-    if hpa_min < 1 and not triggers_can_reach_zero(autoscaler, engine) {
+    if hpa_min < 0 {
+        out.append(
+            Diagnostic(
+                severity="error",
+                service=svc_name,
+                message=f"HPA min={hpa_min}; a replica floor cannot be negative"
+            )
+        );
+    } elif hpa_min == 0 and not triggers_can_reach_zero(autoscaler, engine) {
         if engine == "keda" {
             reason = (
                 "scaling to zero needs an event trigger, since cpu and memory "
