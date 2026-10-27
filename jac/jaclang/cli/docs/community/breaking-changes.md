@@ -7,7 +7,7 @@ This page documents significant breaking changes in Jac and Jaseci that may affe
 
 ---
 
-### A local `jac run` listens on loopback, not every interface (unreleased)
+### A local `jac run` listens on loopback, not every interface ([#9819](https://github.com/jaseci-labs/jac/pull/9819), unreleased)
 
 `jac run --serve` and `jac run --dev` used to bind `0.0.0.0` and print every LAN address as a "Network" URL, which published a development server (and anything reachable without a login) to every network the machine was on. The default is now `127.0.0.1`. A pod, the official Docker image and mobile dev against a LAN address keep binding every interface.
 
@@ -18,6 +18,24 @@ This page documents significant breaking changes in Jac and Jaseci that may affe
 | a Kubernetes pod | nothing | nothing: the manifest sets `JAC_SERVE_HOST` |
 
 The startup banner lists "Network" URLs only for interfaces the server is bound to, and says when it is listening on this machine only. The dev Vite server and the local fleet gateway (`[scale.gateway] gateway_host`, now unset by default) follow the same default instead of always listening on every interface. A pod never inherits a loopback `[serve] host`: the manifest emits `0.0.0.0` unless the pinned host is a real address.
+
+---
+
+### The Ops Console's Role is bound to its own `<app>-ops` ServiceAccount ([#10023](https://github.com/jaseci-labs/jac/pull/10023), unreleased)
+
+With `[scale.kubernetes] ops_console = true` and no `service_account_name`, the Ops Console's Role was bound to the namespace's `default` ServiceAccount, so every pod that names no account of its own (the app's other containers and any co-tenant workload) received the console's read rights, and its patch and delete rights when `ops_console_mutations` was set. The Role is now bound to a ServiceAccount named `<app>-ops` that jac-scale creates, and only the gateway pod runs as it.
+
+With the console on, three things change for an app that is already deployed:
+
+| Before | Now | What to do |
+|---|---|---|
+| The gateway ran as `service_account_name` | The gateway runs as `<app>-ops`; microservice pods still run as `service_account_name` | If the gateway got a cloud identity (IRSA, Workload Identity) from `service_account_name`, create `<app>-ops` with the same annotations before the next deploy. jac-scale uses an existing account as is and never overwrites it. |
+| `service_account_name = "<app>-ops"` was accepted | The deploy fails, since every pod would run as the account the Role is bound to | Choose a different `service_account_name`, or leave it empty. |
+| Creating ServiceAccounts was needed only for the in-cluster database or monitoring | Every deploy with the console on creates `<app>-ops` | Grant the identity that runs `jac scale deploy` `create` on `serviceaccounts` in the namespace. |
+
+The next deploy rolls the gateway pods once and replaces the old RoleBinding in place, which revokes the grant to `default`. A deployment that has already switched the console off keeps that old binding until it is deleted by hand (`kubectl delete rolebinding <app>-ops-console -n <namespace>`). See [Ops Console ServiceAccount](../reference/plugins/jac-scale-kubernetes.md#ops-console-serviceaccount).
+
+---
 
 ### A closure created in a loop body keeps its own iteration's values (unreleased)
 

@@ -41,8 +41,8 @@ impl _inventory(
             result[path] = _stamp(path, previous.get(path));
         }
     }
-    for path in Path(`root).`glob('jac*.toml') {
-        result[str(path)] = _stamp(str(path), previous.get(str(path)));
+    for toml_path in Path(`root).`glob('jac*.toml') {
+        result[str(toml_path)] = _stamp(str(toml_path), previous.get(str(toml_path)));
     }
     return result;
 }
@@ -123,7 +123,7 @@ impl _context_sections(path: any) -> dict[int, bytes] {
     if not cache.exists() {
         return {};
     }
-    data = cache.read_bytes();
+    data = read_jir(cache);
     pos = data.find(SECTIONS_MAGIC, HEADER_SIZE);
     return read_sections(data, (pos + len(SECTIONS_MAGIC))) if (pos >= 0) else {};
 }
@@ -628,6 +628,7 @@ impl _prepare(
     dev: any,
     console: any
 ) -> PreparedApplication {
+    program.forget_failed_modules();
     inputs: dict[str, str] = {};
     selfhost = program._get_compiler().selfhost;
     def capture(path: str) {
@@ -800,7 +801,7 @@ impl _kernel_units(
     seeds = _reusable_interfaces(previous, entries, specs, `root);
     warned = len(program.warnings_had);
     units: dict[str, ManifestSource] = {};
-    def compile_target(path: str) -> bool {
+    def compile_target(path: str) -> (bool | None) {
         options = copy.copy(program.options);
         options.project_root = `root;
         options.no_cgen = False;
@@ -809,7 +810,7 @@ impl _kernel_units(
             active_host(), program, path, options, seeds=list(seeds.values())
         );
         if compiled is None {
-            return False;
+            return None;
         }
         for reached in compiled.analysis.modules {
             if not selfhost.is_selfhost(selfhost.resolve(reached.path, program)) {
@@ -835,7 +836,12 @@ impl _kernel_units(
         failed = False;
         while targets and not failed {
             for path in targets {
-                if not compile_target(path) {
+                landed = compile_target(path);
+                if landed is None {
+                    forget_application_units();
+                    return None;
+                }
+                if not landed {
                     failed = True;
                     break;
                 }
@@ -848,7 +854,11 @@ impl _kernel_units(
             if not seeds {
                 forget_application_units();
                 if failed {
-                    return None;
+                    _check(program, before);
+                    raise RuntimeError(
+                        "the native compiler kernel compiled the application "
+                        "but returned no unit for an entry and reported no error"
+                    );
                 }
                 break;
             }
