@@ -1716,19 +1716,12 @@ impl KubernetesTarget._destroy_fleet_workloads(
     ms_selector: str = "managed=jac-scale";
 
     fleet_apps: list[str] = self._fleet_app_labels(apps_v1, namespace);
-
-    for fleet_app in fleet_apps {
-        delete_if_exists(
-            core_v1.delete_namespaced_service,
-            f"{fleet_app}-service",
+    if fleet_apps {
+        self._sweep_budgets_and_services(
             namespace,
-            "Service"
-        );
-        delete_if_exists(
-            policy_v1.delete_namespaced_pod_disruption_budget,
-            f"{fleet_app}-pdb",
-            namespace,
-            "PodDisruptionBudget"
+            core_v1,
+            policy_v1,
+            f"managed=jac-scale,!jac-scale.role,app in ({','.join(fleet_apps)})"
         );
     }
 
@@ -1772,16 +1765,6 @@ impl KubernetesTarget._destroy_fleet_workloads(
     }
 
     try {
-        policy_v1.delete_collection_namespaced_pod_disruption_budget(
-            namespace=namespace, label_selector=FLEET_SELECTOR
-        );
-    } except ApiException as e {
-        if e.status != 404 {
-            raise;
-        }
-    }
-
-    try {
         networking_v1.delete_collection_namespaced_ingress(
             namespace=namespace, label_selector=FLEET_SELECTOR
         );
@@ -1791,9 +1774,36 @@ impl KubernetesTarget._destroy_fleet_workloads(
         }
     }
 
+    self._sweep_budgets_and_services(namespace, core_v1, policy_v1, FLEET_SELECTOR);
+
+    try {
+        core_v1.delete_collection_namespaced_config_map(
+            namespace=namespace,
+            label_selector="managed=jac-scale,jac-scale.role=source"
+        );
+    } except ApiException as e {
+        if e.status != 404 {
+            raise;
+        }
+    }
+}
+
+impl KubernetesTarget._sweep_budgets_and_services(
+    namespace: str, core_v1: any, policy_v1: any, selector: str
+) {
+    try {
+        policy_v1.delete_collection_namespaced_pod_disruption_budget(
+            namespace=namespace, label_selector=selector
+        );
+    } except ApiException as e {
+        if e.status != 404 {
+            raise;
+        }
+    }
+
     try {
         services = core_v1.list_namespaced_service(
-            namespace=namespace, label_selector=FLEET_SELECTOR
+            namespace=namespace, label_selector=selector
         );
         service_items: list[any] = services.items;
         for svc in service_items {
@@ -1807,17 +1817,6 @@ impl KubernetesTarget._destroy_fleet_workloads(
                 }
             }
         }
-    } except ApiException as e {
-        if e.status != 404 {
-            raise;
-        }
-    }
-
-    try {
-        core_v1.delete_collection_namespaced_config_map(
-            namespace=namespace,
-            label_selector="managed=jac-scale,jac-scale.role=source"
-        );
     } except ApiException as e {
         if e.status != 404 {
             raise;

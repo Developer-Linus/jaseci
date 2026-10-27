@@ -386,6 +386,7 @@ test "removing the application spares the database and monitoring beside it" {
 
 
 test "removing the application also removes the fleet's Services and PDBs built before they carried a role" {
+    legacy: str = "managed=jac-scale,!jac-scale.role,app in (orders-app,gateway)";
     apps_v1 = unittest.mock.MagicMock();
     apps_v1.list_namespaced_deployment.return_value = SimpleNamespace(
         items=[
@@ -394,46 +395,37 @@ test "removing the application also removes the fleet's Services and PDBs built 
             SimpleNamespace(metadata=SimpleNamespace(labels={"app": "orders-app"}))
         ]
     );
-    core_v1 = unittest.mock.MagicMock();
-    core_v1.list_namespaced_service.return_value = SimpleNamespace(items=[]);
-    policy_v1 = unittest.mock.MagicMock();
 
     for component in ["application", ""] {
-        core_v1.reset_mock();
-        policy_v1.reset_mock();
-        _run_destroy(
-            apps_v1,
-            core_v1,
-            unittest.mock.MagicMock(),
-            component=component,
-            policy_v1=policy_v1
+        events: list[tuple[str, str]] = [];
+        def list_services(namespace: str, label_selector: str) -> any {
+            events.append(("list services", label_selector));
+            names: list[str] = [];
+            if label_selector == legacy {
+                names = ["orders-app-service", "gateway-service"];
+            }
+            return SimpleNamespace(
+                items=[SimpleNamespace(metadata=SimpleNamespace(name=n)) for n in names]
+            );
+        }
+        def delete_budgets(namespace: str, label_selector: str) {
+            events.append(("delete budgets", label_selector));
+            if label_selector == target_mod.FLEET_SELECTOR {
+                raise ApiException(status=403);
+            }
+        }
+        def delete_deployments(namespace: str, label_selector: str) {
+            events.append(("delete deployments", label_selector));
+        }
+        apps_v1.delete_collection_namespaced_deployment.side_effect = delete_deployments;
+        core_v1 = unittest.mock.MagicMock();
+        core_v1.list_namespaced_service.side_effect = list_services;
+        core_v1.list_namespaced_persistent_volume_claim.return_value = SimpleNamespace(
+            items=[]
         );
+        policy_v1 = unittest.mock.MagicMock();
+        policy_v1.delete_collection_namespaced_pod_disruption_budget.side_effect = delete_budgets;
 
-        services = sorted(
-            call.args[0] for call in core_v1.delete_namespaced_service.call_args_list
-        );
-        budgets = sorted(
-            call.args[0]
-            for call in policy_v1.delete_namespaced_pod_disruption_budget.call_args_list
-        );
-        assert services == ["gateway-service", "orders-app-service"] , (
-            f"destroy (component '{component}') left a pre-role fleet Service "
-            f"behind, or removed another: {services}"
-        );
-        assert budgets == ["gateway-pdb", "orders-app-pdb"] , (
-            f"destroy (component '{component}') left a pre-role fleet PDB "
-            f"behind, or removed another: {budgets}"
-        );
-    }
-
-    # A sweep that fails after the Deployments are gone must not strand them:
-    # the next destroy finds no fleet Deployment to name them from.
-    for component in ["application", ""] {
-        core_v1.reset_mock();
-        policy_v1.reset_mock();
-        policy_v1.delete_collection_namespaced_pod_disruption_budget.side_effect = (
-            ApiException(status=403)
-        );
         failed = False;
         try {
             _run_destroy(
@@ -447,20 +439,20 @@ test "removing the application also removes the fleet's Services and PDBs built 
             failed = True;
         }
         assert failed , f"the 403 on the PDB sweep (component '{component}') was swallowed";
-        services = sorted(
-            call.args[0] for call in core_v1.delete_namespaced_service.call_args_list
+
+        swept_first = events.index(("delete deployments", target_mod.FLEET_SELECTOR));
+        assert ("delete budgets", legacy) in events[:swept_first]
+            and ("list services", legacy) in events[:swept_first] , (
+            f"destroy (component '{component}') swept the pre-role objects after "
+            f"the Deployments they are named from were gone: {events}"
         );
-        budgets = sorted(
-            call.args[0]
-            for call in policy_v1.delete_namespaced_pod_disruption_budget.call_args_list
+        services = sorted(
+            call.kwargs["name"]
+            for call in core_v1.delete_namespaced_service.call_args_list
         );
         assert services == ["gateway-service", "orders-app-service"] , (
-            f"a failed sweep (component '{component}') stranded a pre-role Service: "
-            f"{services}"
-        );
-        assert budgets == ["gateway-pdb", "orders-app-pdb"] , (
-            f"a failed sweep (component '{component}') stranded a pre-role PDB: "
-            f"{budgets}"
+            f"destroy (component '{component}') left a pre-role fleet Service "
+            f"behind, or removed another: {services}"
         );
     }
 }

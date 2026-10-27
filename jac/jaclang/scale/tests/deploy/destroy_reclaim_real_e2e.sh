@@ -14,8 +14,9 @@
 #   E  sibling app         a PVC belonging to an app sharing a name prefix is
 #                          never deleted
 #   F  application only    destroying just the application leaves the database
-#                          and its Service in place, and still clears the
-#                          Service and PDB of an app deployed before roles
+#                          and its Service in place, still clears the Service
+#                          and PDB of an app deployed before roles, and never
+#                          touches an object jac-scale does not manage
 #
 # Requires a reachable cluster (kind/minikube/microk8s/EKS) on the current
 # kubeconfig context and the scale deploy deps installed for `jac`.
@@ -381,9 +382,12 @@ kubectl label service "${APP}-service" -n "${ADOPTED_NS}" jac-scale.role- >/dev/
 kubectl delete pdb "${APP}-pdb" -n "${ADOPTED_NS}" --ignore-not-found >/dev/null
 kubectl create pdb "${APP}-pdb" -n "${ADOPTED_NS}" --selector="app=${APP}" --max-unavailable=1 >/dev/null \
     || fail "${ADOPTED_NS}" "could not seed a pre-role pdb/${APP}-pdb"
-kubectl label pdb "${APP}-pdb" -n "${ADOPTED_NS}" managed=jac-scale >/dev/null
+kubectl label pdb "${APP}-pdb" -n "${ADOPTED_NS}" managed=jac-scale "app=${APP}" >/dev/null
 require_present "${ADOPTED_NS}" pdb "${APP}-pdb"
 require_present "${ADOPTED_NS}" service "${APP}-postgres-service"
+kubectl create service clusterip "${APP}-operator" -n "${ADOPTED_NS}" --tcp=80:80 >/dev/null \
+    || fail "${ADOPTED_NS}" "could not seed the operator's own service/${APP}-operator"
+kubectl label service "${APP}-operator" -n "${ADOPTED_NS}" "app=${APP}" --overwrite >/dev/null
 
 SDK_DEPLOY_COMPONENT=application destroy_app "${APP}" "${ADOPTED_NS}"
 
@@ -393,7 +397,9 @@ require_absent  "${ADOPTED_NS}" pdb "${APP}-pdb"
 require_absent  "${ADOPTED_NS}" service gateway-service
 require_present "${ADOPTED_NS}" statefulset "${APP}-postgres"
 require_present "${ADOPTED_NS}" service "${APP}-postgres-service"
-echo "  application and its pre-role Service removed, database and its Service kept"
+require_present "${ADOPTED_NS}" service "${APP}-operator"
+echo "  application and its pre-role Service removed, database and an unmanaged Service kept"
+kubectl delete service "${APP}-operator" -n "${ADOPTED_NS}" >/dev/null
 
 # The database is still deployed; a full destroy clears it before C starts.
 destroy_app "${APP}" "${ADOPTED_NS}"
