@@ -2023,11 +2023,50 @@ impl MonitoringDeployer._deploy_alloy(
     }
 }
 
-impl MonitoringDeployer.needs_privileged_namespace -> bool {
+impl MonitoringDeployer._node_exporter_wanted -> bool {
     return bool(
         self.k8s_config.monitoring_enabled and self.k8s_config.k8s_metrics_enabled
-    )
-        or bool(self.k8s_config.loki_enabled);
+    );
+}
+
+impl MonitoringDeployer._alloy_wanted -> bool {
+    return bool(self.k8s_config.loki_enabled or self.k8s_config.tracing_enabled);
+}
+
+impl MonitoringDeployer.needs_privileged_namespace -> bool {
+    return self._node_exporter_wanted() or bool(self.k8s_config.loki_enabled);
+}
+
+impl MonitoringDeployer.retire_unwanted_node_daemonsets(
+    app_name: str, namespace: str, apps_v1: any, core_v1: any
+) {
+    retired: list[str] = [];
+    if not self._node_exporter_wanted() {
+        retired.append(f"{app_name}-node-exporter");
+    }
+    if not self._alloy_wanted() {
+        retired.append(f"{app_name}-alloy");
+    }
+    for name in retired {
+        try {
+            delete_if_exists(
+                apps_v1.delete_namespaced_daemon_set, name, namespace, 'DaemonSet'
+            );
+            delete_if_exists(
+                core_v1.delete_namespaced_service,
+                f"{name}-service",
+                namespace,
+                'Service'
+            );
+        } except ApiException as e {
+            if self.logger {
+                self.logger.warn(
+                    f"Could not remove DaemonSet '{name}', which is no longer "
+                    f"enabled; while it stays it holds host access. Cause: {e}"
+                );
+            }
+        }
+    }
 }
 
 impl MonitoringDeployer.deploy(
@@ -2039,7 +2078,7 @@ impl MonitoringDeployer.deploy(
     scrape_target_service: str = ""
 ) {
     if self.k8s_config.monitoring_enabled {
-        if self.k8s_config.k8s_metrics_enabled {
+        if self._node_exporter_wanted() {
             self._deploy_kube_state_metrics(app_name, namespace, apps_v1, core_v1);
             self._deploy_node_exporter(app_name, namespace, apps_v1, core_v1);
         }
@@ -2054,7 +2093,7 @@ impl MonitoringDeployer.deploy(
         self._deploy_loki(app_name, namespace, apps_v1, core_v1);
     }
 
-    if self.k8s_config.loki_enabled or self.k8s_config.tracing_enabled {
+    if self._alloy_wanted() {
         self._deploy_alloy(app_name, namespace, apps_v1, core_v1);
     }
     if self.k8s_config.monitoring_enabled

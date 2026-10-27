@@ -729,16 +729,18 @@ impl KubernetesTarget._deploy_observability(app_name: str) -> None {
     requested = self._observability_requested();
     self._load_cluster_config();
     core_v1 = client.CoreV1Api();
-    if not requested {
-        self._release_privileged_namespace(core_v1, self.k8s_config.namespace);
-        return;
-    }
     apps_v1 = client.AppsV1Api();
-
-    provider = get_cluster_provider();
-
     obs_config = self._build_observability_config();
     monitoring = MonitoringDeployer(obs_config, self.logger);
+    monitoring.retire_unwanted_node_daemonsets(
+        app_name, obs_config.namespace, apps_v1, core_v1
+    );
+    if not requested {
+        self._release_privileged_namespace(core_v1, obs_config.namespace);
+        return;
+    }
+
+    provider = get_cluster_provider();
     needs_privileged = monitoring.needs_privileged_namespace();
 
     if needs_privileged {

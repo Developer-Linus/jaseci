@@ -68,6 +68,67 @@ test "nothing enabled requests nothing" {
 }
 
 
+obj _DeleteLog {
+    has deleted: list[str] = [],
+        forbidden: bool = False;
+
+    def delete_namespaced_daemon_set(name: str, namespace: str) {
+        import from kubernetes.client.exceptions { ApiException }
+        if self.forbidden {
+            raise ApiException(status=403);
+        }
+        self.deleted.append(f"DaemonSet/{name}");
+    }
+
+    def delete_namespaced_service(name: str, namespace: str) {
+        self.deleted.append(f"Service/{name}");
+    }
+}
+
+
+obj _WarnLog {
+    has warnings: list[str] = [];
+
+    def warn(message: str, *args: any) {
+        self.warnings.append(message);
+    }
+}
+
+
+test "a host-path DaemonSet that is switched off is removed on the next deploy" {
+    node_exporter = ["DaemonSet/t-node-exporter", "Service/t-node-exporter-service"];
+    alloy = ["DaemonSet/t-alloy", "Service/t-alloy-service"];
+    for (label, target, expected) in [
+        ("everything off", _target(monitoring=False), node_exporter + alloy),
+        (
+            "k8s metrics off",
+            _target(monitoring=True, k8s_metrics=False),
+            node_exporter + alloy
+        ),
+        ("tracing keeps Alloy", _target(monitoring=False, tracing=True), node_exporter),
+        ("all on", _target(monitoring=True, logs=True), [])
+    ] {
+        log = _DeleteLog();
+        MonitoringDeployer(
+            target._build_observability_config(), None
+        ).retire_unwanted_node_daemonsets(
+            "t", "t-ns", log, log
+        );
+        assert log.deleted == expected , (label, log.deleted);
+    }
+
+    denied = _DeleteLog(forbidden=True);
+    warned = _WarnLog();
+    MonitoringDeployer(
+        _target(monitoring=False)._build_observability_config(), warned
+    ).retire_unwanted_node_daemonsets(
+        "t", "t-ns", denied, denied
+    );
+    assert denied.deleted == [] , denied.deleted;
+    assert len(warned.warnings) == 2 , warned.warnings;
+}
+
+
 test "Alloy mounts host paths only for logs, and a redeploy replaces it" {
     import unittest.mock;
     import from kubernetes.client.exceptions { ApiException }
