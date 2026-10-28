@@ -3360,9 +3360,17 @@ impl NaIRGenPass._codegen_plain_trailer(nd: uni.AtomTrailer) -> (ir.Value | None
                             idx_val = self._codegen_expr(idx_node.start);
                         }
                         if idx_val is not None {
-                            return self._codegen_tuple_index(
+                            _tup_item = self._codegen_tuple_index(
                                 target_val, idx_val, tsub_struct
                             );
+
+                            if _tup_item is not None
+                                and isinstance(target_val.type, ir.PointerType) {
+                                return self._finish_borrowed_read(
+                                    target_val, _tup_item
+                                );
+                            }
+                            return _tup_item;
                         }
                     }
                 }

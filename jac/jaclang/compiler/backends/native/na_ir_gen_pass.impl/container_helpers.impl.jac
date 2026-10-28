@@ -825,7 +825,7 @@ impl NaIRGenPass._emit_release_header_free(
 
     _cl_aid_ptr = b.bitcast(_cont_raw, _i64_ptr_c, name="cl.aid.ptr");
     _cl_aid_raw = b.load(_cl_aid_ptr, name="cl.aid.raw");
-    _cl_aid = b.and_(_cl_aid_raw, ir.Constant(_i64c, 4294967295), name="cl.aid");
+    _cl_aid = b.and_(_cl_aid_raw, ir.Constant(_i64c, ALLOC_ID_MASK), name="cl.aid");
     _cl_tag_raw = b.gep(_cont_i8, [ir.Constant(_i64c, HDR_TAG_OFF)], name="cl.tag.raw");
     _cl_tag_pp = b.bitcast(_cl_tag_raw, _i8pc.as_pointer(), name="cl.tag.pp");
     _cl_tag = b.load(_cl_tag_pp, name="cl.tag");
@@ -844,7 +844,7 @@ impl NaIRGenPass._emit_release_header_free(
         _cl_tag
     );
     b = ir.IRBuilder(actual_free_cont_bb);
-    b.call(self.rc_safe_free_fn, [_cont_raw]);
+    b.call(self.rc_free_block_fn, [_cont_raw]);
     b.branch(done_bb);
     b = ir.IRBuilder(done_bb);
     b.ret_void();
@@ -1203,7 +1203,7 @@ impl NaIRGenPass._tuple_box_release_fn(
     free_bb = release_fn.append_basic_block("tup_free");
     self._emit_live_list_remove(b, tup_i8, i8_ptr, i64_ptr, free_bb, free_bb);
     b = ir.IRBuilder(free_bb);
-    b.call(self.rc_safe_free_fn, [tup_raw]);
+    b.call(self.rc_free_block_fn, [tup_raw]);
     b.branch(done_bb);
     b = ir.IRBuilder(done_bb);
     b.ret_void();

@@ -11250,6 +11250,7 @@ graph import compiler.backends.native {
             FACT_TARGET
         },
         na_ir_gen_pass {
+            ALLOC_ID_MASK,
             CLASS_DISPLAY_OFF,
             CLASS_RECORD_ANCESTRY,
             CLASS_RECORD_STATICS,
@@ -11273,6 +11274,8 @@ graph import compiler.backends.native {
             NATIVE_COPY_FUNCS,
             NATIVE_OSPATH_FUNCS,
             NATIVE_OS_FUNCS,
+            POOL_CLASS_MASK,
+            POOL_CLASS_SHIFT,
             RC_BUFFERED_BIT,
             RC_COLOR_BLACK,
             RC_COLOR_GRAY,

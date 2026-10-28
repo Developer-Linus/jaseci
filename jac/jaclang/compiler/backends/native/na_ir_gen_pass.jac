@@ -375,6 +375,7 @@ walker NaIRGenPass(CompilerPass) {
         malloc_fn: (ir.Function | None) = None,
         free_fn: (ir.Function | None) = None,
         rc_safe_free_fn: (ir.Function | None) = None,
+        rc_free_block_fn: (ir.Function | None) = None,
         _list_anchors: dict[int, tuple[ir.Value, ir.Value]] = {},
         str_len_fn: (ir.Function | None) = None,
         str_truthy_fn: (ir.Function | None) = None,
