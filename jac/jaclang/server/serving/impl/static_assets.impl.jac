@@ -22,7 +22,23 @@ impl _public_dirs(project_root: Path) -> list[Path] {
     return dirs;
 }
 
-impl asset_root_table(project_root: Path, client_dist: Path) -> list[AssetRoot] {
+impl asset_root_table(
+    project_root: Path, client_dist: Path, mounts: (list[dict[str, str]] | None) = None
+) -> list[AssetRoot] {
+    mount_roots: list[AssetRoot] = [];
+    for m in mounts or [] {
+        prefix = str(m.get("url_prefix", "")).strip("/");
+        local = str(m.get("local_path", ""));
+        if prefix and local {
+            mount_roots.append(
+                AssetRoot(
+                    url_prefix=prefix,
+                    resolved_dir=_resolve_root(Path(local)),
+                    is_mount=True
+                )
+            );
+        }
+    }
     assets = _assets_dir(project_root);
     roots: list[tuple[str, Path]] = [("static/assets", assets)];
     if str(client_dist) not in ("", ".") {
@@ -30,10 +46,11 @@ impl asset_root_table(project_root: Path, client_dist: Path) -> list[AssetRoot] 
     }
     roots += [("", public) for public in _public_dirs(project_root)];
     roots.append(("", assets));
-    return [
-        AssetRoot(url_prefix=prefix, resolved_dir=_resolve_root(base))
-        for (prefix, base) in roots
-    ];
+    return mount_roots
+        + [
+            AssetRoot(url_prefix=prefix, resolved_dir=_resolve_root(base))
+            for (prefix, base) in roots
+        ];
 }
 
 impl _remainder(url_path: str, prefix: str) -> (str | None) {
@@ -56,7 +73,11 @@ impl _remainder(url_path: str, prefix: str) -> (str | None) {
 }
 
 impl resolve_asset(table: list[AssetRoot], url_path: str) -> (Path | None) {
+    exclusive = mount_claims(table, url_path);
     for r in table {
+        if exclusive and not r.is_mount {
+            continue;
+        }
         rel = _remainder(url_path, r.url_prefix);
         if not rel {
             continue;
@@ -71,6 +92,17 @@ impl resolve_asset(table: list[AssetRoot], url_path: str) -> (Path | None) {
         }
     }
     return None;
+}
+
+impl mount_claims(table: list[AssetRoot], url_path: str) -> bool {
+    for r in table {
+        if r.is_mount
+            and r.url_prefix != "static"
+            and _remainder(url_path, r.url_prefix) is not None {
+            return True;
+        }
+    }
+    return False;
 }
 
 impl asset_cache_policy(target: Path) -> str {

@@ -10,6 +10,7 @@ import from jaclang.server.serving.static_assets {
     AssetRoot,
     asset_root_table,
     resolve_asset,
+    mount_claims,
     asset_cache_policy
 }
 
@@ -134,5 +135,57 @@ test "asset_cache_policy revalidates every asset and never caches an HTML shell"
         ("app.js", "public, max-age=3600, must-revalidate")
     ] {
         assert asset_cache_policy(Path(name)) == expected , name;
+    }
+}
+
+
+test "a static mount owns its prefix: a miss under it never reaches another root" {
+    with TemporaryDirectory() as tmp {
+        proj = Path(tempfile.mkdtemp(dir=tmp));
+        for (rel, data) in [
+            ("public/files/data.json", b"PUBLIC"),
+            ("public/downloads.json", b"PUBLIC"),
+            (".jac/client/dist/brand/logo.png", b"DIST"),
+            ("assets/logo.svg", b"SVG")
+        ] {
+            _write(proj, rel, data);
+        }
+        empty = tempfile.mkdtemp(dir=tmp);
+        full = Path(tempfile.mkdtemp(dir=tmp));
+        _write(full, "data.json", b"MOUNT");
+        # (mounts as (url_prefix, local_path), URL, expected bytes or None,
+        # whether a mount claims the URL)
+        for (mounts, url, expected, claimed) in [
+            ([("files", str(full))], "/files/data.json", b"MOUNT", True),
+            ([("files", empty)], "/files/data.json", None, True),
+            # a mount nested under static/ is as exclusive as any other
+            ([("static/brand", empty)], "/static/brand/logo.png", None, True),
+            # a mount at exactly "static" only adds files to /static/*
+            ([("static", empty)], "/static/assets/logo.svg", b"SVG", False),
+            # the bare prefix is owned too, even when public/ has that name
+            ([("downloads.json", empty)], "/downloads.json", None, True),
+            ([("docs", empty)], "/docs/", None, True),
+            # a broader "static" overlay listed first does not mask a nested claim
+            (
+                [("static", empty), ("static/brand", empty)],
+                "/static/brand/logo.png",
+                None,
+                True
+            ),
+            ([("files", empty)], "/brand/logo.png", b"DIST", False)
+        ] {
+            table = asset_root_table(
+                proj,
+                proj / ".jac" / "client" / "dist",
+                [{"url_prefix": p, "local_path": d} for (p, d) in mounts]
+            );
+            hit = resolve_asset(table, url);
+            assert (hit.read_bytes() if hit is not None else None) == expected , (
+                mounts,
+                url,
+                hit
+            );
+            assert mount_claims(table, url) == claimed , (mounts, url);
+        }
     }
 }
