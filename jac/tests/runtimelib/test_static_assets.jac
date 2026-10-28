@@ -14,6 +14,7 @@ import os;
 import tempfile;
 import from pathlib { Path }
 import from tempfile { TemporaryDirectory }
+import from jaclang.runtime.runtime { JacRuntime as Jac }
 import from jaclang.server.serving.static_assets {
     AssetRoot,
     asset_root_table,
@@ -61,6 +62,37 @@ test "public/ files resolve at the web root with no extension allowlist" {
             assert result is not None , f"public/ file must be reachable at {url}";
             (path, _) = result;
             assert path.read_bytes() == expected;
+        }
+        # A workspace app keeps its own public/ ahead of the workspace's, so
+        # web/public/ serves at the web root and wins a name both contain.
+        ws = _project(tmp);
+        _write(
+            ws,
+            "jac.toml",
+            b'[project]\nname = "acme"\ndefault-app = "web"\n\n[apps.web]\nkind = "web-app"\nentry-point = "web.main"\n'
+        );
+        _write(ws, "web/main.jac", b'with entry {\n    print("hi");\n}\n');
+        _write(ws, "web/public/app-logo.png", b"APP_PUBLIC");
+        _write(ws, "web/public/shared.txt", b"FROM_APP");
+        _write(ws, "public/shared.txt", b"FROM_WORKSPACE");
+        _write(ws, "public/site.txt", b"WORKSPACE_ONLY");
+        # The app is the one being served, as `jac start web/main.jac` sets it.
+        previous = Jac.get_full_target_path();
+        Jac.set_full_target_path(str(ws / "web" / "main.jac"));
+        try {
+            ws_tbl = _table(ws);
+        } finally {
+            Jac.set_full_target_path(previous or "");
+        }
+        for (url, expected) in [
+            ("/app-logo.png", b"APP_PUBLIC"),
+            ("/shared.txt", b"FROM_APP"),
+            ("/site.txt", b"WORKSPACE_ONLY")
+        ] {
+            result = resolve_asset(ws_tbl, url);
+            assert result is not None , f"workspace public/ file must be reachable at {url}";
+            (path, _) = result;
+            assert path.read_bytes() == expected , f"{url} resolved to the wrong public/";
         }
     }
 }
@@ -163,6 +195,12 @@ test "asset_cache_policy revalidates html shells and static files, never caches 
         png = _write(proj, "public/logo.png", b"PNG_DATA");
         html = _write(proj, "public/index.html", b"<html></html>");
         assert asset_cache_policy(html) == "no-cache";
+        # mimetypes serves .htm and any-case .html as text/html, so they are
+        # HTML shells too
+        for name in ("public/offline.htm", "public/help.HTML") {
+            page = _write(proj, name, b"<html></html>");
+            assert asset_cache_policy(page) == "no-cache" , f"{name} must not be cached";
+        }
         policy = asset_cache_policy(png);
         assert "max-age=3600" in policy;
         assert "must-revalidate" in policy;

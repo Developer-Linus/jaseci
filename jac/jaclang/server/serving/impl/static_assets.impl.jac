@@ -15,13 +15,19 @@ impl _assets_dir(project_root: Path) -> Path {
     return client_assets_dir(cfg, project_root);
 }
 
+impl _public_dirs(project_root: Path) -> list[Path] {
+    cfg = get_config_for_dir(str(project_root));
+    app_root = Path(client_app_root(cfg, project_root));
+    dirs = [app_root / "public"] if app_root != project_root else [];
+    dirs.append(project_root / "public");
+    return dirs;
+}
+
 impl asset_root_table(project_root: Path, client_dist: Path) -> list[AssetRoot] {
     table: list[AssetRoot] = [];
     dist = str(client_dist);
     assets = str(_assets_dir(project_root));
-    public = str(project_root / "public");
     assets_resolved = _resolve_root(assets);
-    public_resolved = _resolve_root(public);
 
     table.append(
         AssetRoot(
@@ -48,14 +54,17 @@ impl asset_root_table(project_root: Path, client_dist: Path) -> list[AssetRoot] 
             )
         );
     }
-    table.append(
-        AssetRoot(
-            url_prefix="",
-            local_dir=public,
-            source="public",
-            resolved_dir=public_resolved
-        )
-    );
+    for public_dir in _public_dirs(project_root) {
+        public = str(public_dir);
+        table.append(
+            AssetRoot(
+                url_prefix="",
+                local_dir=public,
+                source="public",
+                resolved_dir=_resolve_root(public)
+            )
+        );
+    }
     table.append(
         AssetRoot(
             url_prefix="",
@@ -113,6 +122,6 @@ impl resolve_asset(
 }
 
 impl asset_cache_policy(target: Path) -> str {
-    cacheable = target.suffix not in (".html", "");
+    cacheable = target.suffix.lower() not in (".html", ".htm", "");
     return "public, max-age=3600, must-revalidate" if cacheable else "no-cache";
 }

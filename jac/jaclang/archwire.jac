@@ -2002,6 +2002,7 @@ graph import {
         client.targets.react_native.scaffold._project_native_deps {
             client_workspace_app
         },
+        server.serving.static_assets._public_dirs { client_app_root },
     ]
     project.client_paths --> [
         client.jac_client_compiler.JacClientCompiler._app_root { client_app_root },
@@ -2152,6 +2153,7 @@ graph import {
             | scale.runtime.realizer.kubernetes_realizer.KubernetesRealizer._resolve_fleet
             | server.endpoints.colocated.served_app_route
             | server.serving.static_assets._assets_dir
+            | server.serving.static_assets._public_dirs
             | studio.app { get_config_for_dir },
         dist.publish.metadata | dist.publish.package_json { JacConfig, PersonConfig },
         packages.migrate { serialize_toml, toml_minimal_update },

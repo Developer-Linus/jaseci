@@ -18,6 +18,9 @@ def _resolve_root(local_dir: str) -> Path;
 def _assets_dir(project_root: Path) -> Path;
 
 
+def _public_dirs(project_root: Path) -> list[Path];
+
+
 def asset_root_table(project_root: Path, client_dist: Path) -> list[AssetRoot];
 
 
