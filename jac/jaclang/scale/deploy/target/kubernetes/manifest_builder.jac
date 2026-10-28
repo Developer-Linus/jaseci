@@ -139,6 +139,7 @@ obj ManifestBuilder {
     def _user_secret_name -> str;
     def _owner_labels -> dict[str, str];
     def _service_account_name -> str;
+    def _pod_service_account(svc_name: str) -> str;
     def _peer_dns_url(peer_name: str) -> str;
     def _build_env(svc_name: str, svc_cfg: dict[str, any]) -> list[dict[str, any]];
     def _configured_memory_request(svc_cfg: dict[str, any]) -> str | None;
@@ -152,6 +153,7 @@ obj ManifestBuilder {
     def _build_startup_probe -> dict[str, any];
     def _alb_deregistration_cushion -> int;
     def _build_prestop_hook -> dict[str, any];
+    def _fleet_role(svc_name: str) -> str;
     def _build_deployment_manifest(
         svc_name: str, pod_spec: dict[str, any]
     ) -> dict[str, any];
