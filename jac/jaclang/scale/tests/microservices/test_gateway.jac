@@ -1169,6 +1169,11 @@ test "serve admin asset returns static file" {
     assert resp is not None;
     assert resp.status_code == 200;
     assert b"var admin = true;" in resp.body;
+    # Admin assets go through the shared file_response, so the one cache policy
+    # and its validators hold here as on every other asset root.
+    cache = resp.headers.get("Cache-Control") or "";
+    assert "must-revalidate" in cache , f"got Cache-Control: {cache}";
+    assert resp.headers.get("ETag") , "file_response must set an ETag for admin assets";
 
     import shutil;
     shutil.rmtree(tmp);
@@ -1211,31 +1216,6 @@ test "serve admin asset blocks path traversal" {
         _admin_get("/admin/../../etc/passwd"), "../../etc/passwd"
     );
     assert resp is None;
-
-    import shutil;
-    shutil.rmtree(tmp);
-}
-
-test "serve admin asset responses go through the shared file_response policy" {
-    tmp = tempfile.mkdtemp();
-    admin_dir = Path(tmp) / "admin";
-    assets = admin_dir / "assets";
-    assets.mkdir(parents=True);
-    (assets / "admin.js").write_text("var admin = true;");
-
-    reg = ServiceRegistry();
-    gw = MicroserviceGateway(registry=reg, admin_dist_dir=str(admin_dir));
-
-    resp = gw.serve_admin_asset(
-        _admin_get("/admin/assets/admin.js"), "assets/admin.js"
-    );
-    assert resp is not None;
-    cache = resp.headers.get("Cache-Control") or "";
-    assert "must-revalidate" in cache , (
-        "admin assets must be built through the shared file_response so the "
-        f"one response policy holds everywhere; got Cache-Control: {cache}"
-    );
-    assert resp.headers.get("ETag") , "file_response must set an ETag for admin assets";
 
     import shutil;
     shutil.rmtree(tmp);
@@ -1640,19 +1620,23 @@ test "ProcessGateway.setup resolves base_path from the Jac context, not the '.' 
     # No project markers above /tmp, so find_project_root falls back to this dir
     # (same fallback asset_base_path relies on in test_static_fallback.jac).
     project_root = tempfile.mkdtemp();
-    Jac.get_context().base_path_dir = project_root;
+    ctx = Jac.get_context();
+    previous = ctx.base_path_dir;
+    ctx.base_path_dir = project_root;
+    try {
+        gw = ProcessGateway(registry=ServiceRegistry());
+        gw.setup();
 
-    gw = ProcessGateway(registry=ServiceRegistry());
-    gw.setup();
-
-    assert gw._gateway is not None;
-    assert gw._gateway.base_path == project_root , (
-        "local `jac start` must resolve base_path the same way every other "
-        f"asset consumer does, not fall back to '.'; got {gw._gateway.base_path}"
-    );
-
-    import shutil;
-    shutil.rmtree(project_root);
+        assert gw._gateway is not None;
+        assert gw._gateway.base_path == project_root , (
+            "local `jac start` must resolve base_path the same way every other "
+            f"asset consumer does, not fall back to '.'; got {gw._gateway.base_path}"
+        );
+    } finally {
+        ctx.base_path_dir = previous;
+        import shutil;
+        shutil.rmtree(project_root);
+    }
 }
 
 import socket;

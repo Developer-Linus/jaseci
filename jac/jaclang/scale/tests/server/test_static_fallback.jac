@@ -29,7 +29,9 @@ def _make_gateway(
     gw = MicroserviceGateway(registry=ServiceRegistry());
     gw.base_path = project_root;
     gw.client_dist_dir = dist;
-    gw.static_mounts = [{"url_prefix": "static", "local_path": shadow_mount}];
+    if shadow_mount {
+        gw.static_mounts = [{"url_prefix": "static", "local_path": shadow_mount}];
+    }
     return gw;
 }
 
@@ -45,10 +47,10 @@ test "project /static asset resolves even when a static mount claims the prefix"
     empty_dist = tempfile.mkdtemp();
 
     gw = _make_gateway(project_root, shadow_mount, empty_dist);
-    # project assets/ is served under /static/assets/ (the #6872 URL space):
-    # assets/logo.svg resolves at /static/assets/logo.svg. A static mount claiming
-    # the 'static' prefix must not shadow that real project asset (#7020) -- the
-    # static/assets->assets root still serves it past the mount miss.
+    # project assets/ is served under /static/assets/: assets/logo.svg resolves
+    # at /static/assets/logo.svg. A static mount claiming the 'static' prefix
+    # must not shadow that real project asset -- the static/assets->assets root
+    # still serves it past the mount miss.
     resp = gw.handle_static(_get_request(), "/static/assets/logo.svg");
 
     assert resp is not None , "a /static/* project asset must still resolve when a static mount "
@@ -57,16 +59,15 @@ test "project /static asset resolves even when a static mount claims the prefix"
 }
 
 
-test "a mount-owned asset miss 404s through full gateway dispatch (no leak, no SPA, no root fallthrough)" {
+test "a mount-owned miss 404s through full gateway dispatch (no leak, no SPA, no root fallthrough)" {
     import shutil;
+    import from jaclang.testing.testkit { ServingTestClient as TestClient }
     project_root = tempfile.mkdtemp();
-    empty_dist = tempfile.mkdtemp();
+    dist = tempfile.mkdtemp();
     mount_dir = tempfile.mkdtemp();
-    # A real root member, like `jac start --fleet` always has: the one this
-    # PR's fix must stop dispatch from ever reaching for a mount-owned miss.
-    # Without that fix, forward_to_root would forward the request to this
-    # stub, which (like the monolith's own asset table) knows nothing about
-    # the gateway's static_mounts and would serve its own public/media hit.
+    # A real root member, like `jac start --fleet` always has: dispatch must
+    # never reach it for a mount-owned miss. It knows nothing about the
+    # gateway's static_mounts and would serve its own public/media hit.
     (root_stop, root_port) = _spawn_root_stub(b"FROM_ROOT_SERVICE");
     try {
         # a project public/ file at the exact path the mount claims: must NOT leak
@@ -76,12 +77,21 @@ test "a mount-owned asset miss 404s through full gateway dispatch (no leak, no S
             f.write(b"FROM_PUBLIC");
         }
         # an index.html so the SPA fallback is available -- to prove it is NOT used
-        with open(os.path.join(empty_dist, "index.html"), "w") as f {
+        with open(os.path.join(dist, "index.html"), "w") as f {
             f.write("<html>SPA</html>");
         }
 
-        reg = ServiceRegistry();
-        reg.register(
+        def _gateway(reg: ServiceRegistry, mounts: list[dict[str, str]]) -> any {
+            gw = MicroserviceGateway(
+                registry=reg, client_dist_dir=dist, static_mounts=mounts
+            );
+            gw.base_path = project_root;
+            gw.setup();
+            return TestClient(gw.app);
+        }
+
+        fleet = ServiceRegistry();
+        fleet.register(
             ServiceEntry(
                 name="app",
                 file="main.jac",
@@ -93,84 +103,46 @@ test "a mount-owned asset miss 404s through full gateway dispatch (no leak, no S
                 serves_client=True
             )
         );
-        gw = MicroserviceGateway(
-            registry=reg,
-            client_dist_dir=empty_dist,
-            static_mounts=[{"url_prefix": "media", "local_path": mount_dir}]
+        with_root = _gateway(fleet, [{"url_prefix": "media", "local_path": mount_dir}]);
+        # No root member owns "/", so /docs takes the client-page branch, which
+        # must check mount ownership before answering with the SPA shell.
+        client_pages = _gateway(
+            ServiceRegistry(), [{"url_prefix": "docs", "local_path": mount_dir}]
         );
-        gw.base_path = project_root;
-        gw.setup();
+        # Positive control: with no mount, /docs is the client app's own page.
+        plain = _gateway(ServiceRegistry(), []);
 
-        import from jaclang.testing.testkit { ServingTestClient as TestClient }
-        client = TestClient(gw.app);
-        resp = client.get("/media/logo.png", headers={"accept": "image/png"});
-
-        assert resp.status_code == 404 , (
-            "the 'media' mount owns /media exclusively; a miss must 404 through "
-            "the full dispatch -- not serve public/media/logo.png, not the SPA "
-            f"shell, and not the root service; got {resp.status_code}"
-        );
-        assert b"FROM_PUBLIC" not in resp.content;
-        assert b"SPA" not in resp.content;
-        assert b"FROM_ROOT_SERVICE" not in resp.content , (
-            "a mount-owned miss must 404 in handle_static itself, before dispatch "
-            "ever reaches forward_to_root"
-        );
-
-        head_resp = client.head("/media/logo.png", headers={"accept": "image/png"});
-        assert head_resp.status_code == 404 , (
-            "a HEAD to the same mount-owned miss must 404 the same way GET does -- "
-            "handle_static must not let HEAD skip mount_claims and fall through to "
-            f"forward_to_root; got {head_resp.status_code}"
-        );
+        png = {"accept": "image/png"};
+        html = {"accept": "text/html"};
+        # (client, method, path, headers, expected status)
+        cases = [
+            (plain, "GET", "/docs", html, 200),
+            (with_root, "GET", "/media/logo.png", png, 404),
+            # HEAD must not skip mount_claims and fall through to forward_to_root
+            (with_root, "HEAD", "/media/logo.png", png, 404),
+            (client_pages, "GET", "/docs", html, 404),
+            (client_pages, "GET", "/docs/", html, 404)
+        ];
+        for (client, method, path, headers, expected) in cases {
+            resp = client.get(path, headers=headers)
+                if method == "GET"
+                else client.head(path, headers=headers);
+            assert resp.status_code == expected , (
+                f"{method} {path}: expected {expected}, got {resp.status_code}"
+            );
+            if expected == 200 {
+                assert b"SPA" in resp.content , f"{path} must be the SPA page";
+                continue;
+            }
+            for leaked in (b"FROM_PUBLIC", b"SPA", b"FROM_ROOT_SERVICE") {
+                assert leaked not in resp.content , (
+                    f"{method} {path} is mount-owned; it must 404 in the gateway, "
+                    f"not serve {leaked}"
+                );
+            }
+        }
     } finally {
         root_stop();
-        shutil.rmtree(project_root, ignore_errors=True);
-        shutil.rmtree(empty_dist, ignore_errors=True);
-        shutil.rmtree(mount_dir, ignore_errors=True);
-    }
-}
-
-
-test "a mount on a client-page path owns that exact path too (no early SPA shell)" {
-    import shutil;
-    project_root = tempfile.mkdtemp();
-    dist = tempfile.mkdtemp();
-    mount_dir = tempfile.mkdtemp();
-    try {
-        with open(os.path.join(dist, "index.html"), "w") as f {
-            f.write("<html>SPA</html>");
-        }
-        html = {"accept": "text/html"};
-        import from jaclang.testing.testkit { ServingTestClient as TestClient }
-
-        # Positive control: with no mount, /docs is the client app's own page,
-        # so the gateway answers it with the SPA shell.
-        plain = MicroserviceGateway(registry=ServiceRegistry(), client_dist_dir=dist);
-        plain.base_path = project_root;
-        plain.setup();
-        control = TestClient(plain.app).get("/docs", headers=html);
-        assert control.status_code == 200 and b"SPA" in control.content , (
-            f"without a mount /docs must be the SPA page; got {control.status_code}"
-        );
-
-        gw = MicroserviceGateway(
-            registry=ServiceRegistry(),
-            client_dist_dir=dist,
-            static_mounts=[{"url_prefix": "docs", "local_path": mount_dir}]
-        );
-        gw.base_path = project_root;
-        gw.setup();
-        client = TestClient(gw.app);
-        for path in ("/docs", "/docs/") {
-            resp = client.get(path, headers=html);
-            assert resp.status_code == 404 , (
-                f"the 'docs' mount owns {path} exclusively; the client-page branch "
-                f"must not answer it with the SPA shell; got {resp.status_code}"
-            );
-            assert b"SPA" not in resp.content;
-        }
-    } finally {
         shutil.rmtree(project_root, ignore_errors=True);
         shutil.rmtree(dist, ignore_errors=True);
         shutil.rmtree(mount_dir, ignore_errors=True);
@@ -191,7 +163,7 @@ test "a genuinely missing /static asset still 404s (no false-positive serving)" 
 }
 
 
-test "public/ asset is served at the web root like vite and next serve it (#8124)" {
+test "public/ asset is served at the web root like vite and next serve it" {
     import shutil;
     project_root = tempfile.mkdtemp();
     empty_dist = tempfile.mkdtemp();
@@ -202,15 +174,12 @@ test "public/ asset is served at the web root like vite and next serve it (#8124
             f.write(b"PNG_DATA");
         }
 
-        gw = MicroserviceGateway(registry=ServiceRegistry());
-        gw.base_path = project_root;
-        gw.client_dist_dir = empty_dist;
-
+        gw = _make_gateway(project_root, "", empty_dist);
         import from jaclang.server.serving.datatypes { URL }
         req = Request(method="GET", url=URL(path="/brand/logo.png"));
         resp = gw.handle_static(req, "/brand/logo.png");
 
-        assert resp is not None , "public/brand/logo.png must be reachable at /brand/logo.png (the amplify bug #6876)";
+        assert resp is not None , "public/brand/logo.png must be reachable at /brand/logo.png";
         assert resp.status_code == 200;
         assert resp.body_bytes() == b"PNG_DATA";
     } finally {
