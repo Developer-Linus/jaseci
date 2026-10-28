@@ -668,6 +668,14 @@ impl NaIRGenPass._emit_optional_str(
     return _phi;
 }
 
+impl NaIRGenPass._fstr_none_select(val: ir.Value) -> ir.Value {
+    _none_s = self._make_global_string("None", name_prefix=".repr.none");
+    _is_null = self.builder.icmp_unsigned(
+        "==", val, ir.Constant(val.type, None), name="fstr.isnull"
+    );
+    return self.builder.select(_is_null, _none_s, val, name="fstr.none");
+}
+
 impl NaIRGenPass._codegen_fstring(nd: uni.FString) -> (ir.Value | None) {
     fmt_parts: list[str] = [];
     args: list[ir.Value] = [];
@@ -680,11 +688,17 @@ impl NaIRGenPass._codegen_fstring(nd: uni.FString) -> (ir.Value | None) {
             text = text.replace("%", "%%");
             fmt_parts.append(text);
         } elif isinstance(part, uni.FormattedValue) {
+            _refusals_before = len(self.ctx.errors_had);
             val = self._str_norm_optional(self._codegen_expr(part.format_part));
             if val is None {
                 continue;
             }
             _conv = part.conversion if part.conversion is not None else -1;
+            if _conv != 114
+                and len(self.ctx.errors_had) == _refusals_before
+                and self._type_key_of(part.format_part) in ("None", "NoneType") {
+                val = self._make_global_string("None", name_prefix=".repr.none");
+            }
             if self._opt_payload_of(val.type) is not None {
                 _opt_s = self._emit_optional_str(
                     val, part.format_part, repr_mode=(_conv == 114)
@@ -825,6 +839,12 @@ impl NaIRGenPass._codegen_fstring(nd: uni.FString) -> (ir.Value | None) {
                             return None;
                         }
                     }
+                    if val.type == ir.IntType(8).as_pointer() {
+                        if self._is_owned(val) and val not in obj_strs {
+                            obj_strs.append(val);
+                        }
+                        val = self._fstr_none_select(val);
+                    }
                     (fit_directive, fit_args) = self._fstring_str_fit(val, directive);
                     fmt_parts.append(fit_directive);
                     args.extend(fit_args);
@@ -858,6 +878,8 @@ impl NaIRGenPass._codegen_fstring(nd: uni.FString) -> (ir.Value | None) {
                     }
                     val = obj_s;
                     obj_strs.append(obj_s);
+                } elif self._is_null_ptr_const(val) {
+                    val = self._make_global_string("None", name_prefix=".repr.none");
                 } elif val.type != ir.IntType(8).as_pointer() {
                     self.emit(
                         E5092,
@@ -866,6 +888,11 @@ impl NaIRGenPass._codegen_fstring(nd: uni.FString) -> (ir.Value | None) {
                         name=type(part.format_part).__name__
                     );
                     return None;
+                } else {
+                    if self._is_owned(val) and val not in obj_strs {
+                        obj_strs.append(val);
+                    }
+                    val = self._fstr_none_select(val);
                 }
                 fmt_parts.append("%s");
                 args.append(val);
@@ -1970,6 +1997,12 @@ impl NaIRGenPass._emit_dyn_spec_format(
         }
     } elif isinstance(val.type, ir.PointerType) and val.type == i8p {
         kname = "jac_fmt_str";
+        if self._is_owned(val) {
+            sval = self._fstr_none_select(val);
+        } else {
+            val = self._fstr_none_select(val);
+            sval = val;
+        }
     } elif isinstance(val.type, (ir.PointerType, ir.LiteralStructType)) {
         _s: (ir.Value | None) = None;
         if isinstance(val.type, ir.PointerType) {

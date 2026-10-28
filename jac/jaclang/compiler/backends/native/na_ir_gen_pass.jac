@@ -571,6 +571,7 @@ walker NaIRGenPass(CompilerPass) {
     def _codegen_multistring(nd: uni.MultiString) -> (ir.Value | None);
     def _codegen_string(nd: uni.String) -> (ir.Value | None);
     def _codegen_fstring(nd: uni.FString) -> (ir.Value | None);
+    def _fstr_none_select(val: ir.Value) -> ir.Value;
     def _fstring_spec_text(spec: uni.Expr) -> (str | None);
     def _fstring_spec_to_printf(spec: str, kind: str) -> (tuple[str, str] | None);
     def _bool_text(b: ir.IRBuilder, flag: ir.Value, name: str) -> ir.Value;
