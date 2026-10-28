@@ -52,7 +52,7 @@ test "static requests find shared assets from source, nested paths intact" {
         (shared / "media").mkdir(parents=True);
         (shared / "logo.svg").write_text("<svg/>");
         (shared / "media" / "diagram.png").write_bytes(b"png");
-        table = asset_root_table(base, base / ".jac" / "client" / "dist");
+        table = asset_root_table(base, base / ".jac" / "client" / "dist", []);
         static_hit = resolve_asset(table, "/static/assets/logo.svg");
         assert static_hit is not None and static_hit[0] == shared / "logo.svg";
         nested_hit = resolve_asset(table, "/static/assets/media/diagram.png");

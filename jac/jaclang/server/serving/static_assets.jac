@@ -18,7 +18,9 @@ def _resolve_root(local_dir: str) -> Path;
 def _assets_dir(project_root: Path) -> Path;
 
 
-def asset_root_table(project_root: Path, client_dist: Path) -> list[AssetRoot];
+def asset_root_table(
+    project_root: Path, client_dist: Path, mounts: list[dict[str, any]]
+) -> list[AssetRoot];
 
 
 def _remainder(url_path: str, prefix: str) -> (str | None);
@@ -27,6 +29,9 @@ def _remainder(url_path: str, prefix: str) -> (str | None);
 def resolve_asset(
     table: list[AssetRoot], url_path: str
 ) -> (tuple[Path, AssetRoot] | None);
+
+
+def mount_claims(table: list[AssetRoot], url_path: str) -> bool;
 
 
 def asset_cache_policy(target: Path) -> str;

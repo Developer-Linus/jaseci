@@ -1,7 +1,7 @@
 """Unit tests for the shared static-asset resolver.
 
 Every run mode (monolith, gateway, embedded, dev) consumes `asset_root_table` /
-`resolve_asset` / `asset_cache_policy` from
+`resolve_asset` / `mount_claims` / `asset_cache_policy` from
 `jaclang/server/serving/static_assets.jac`. Because there is exactly one
 resolver, every resolution invariant is asserted here, once; host wiring and
 cross-mode parity live in the gateway, embedded gateway and real-boot tests.
@@ -18,6 +18,7 @@ import from jaclang.server.serving.static_assets {
     AssetRoot,
     asset_root_table,
     resolve_asset,
+    mount_claims,
     asset_cache_policy
 }
 
@@ -39,7 +40,7 @@ def _write(proj: Path, rel: str, data: bytes) -> Path {
 
 # The standard table for a project whose client build is at .jac/client/dist.
 def _table(proj: Path) -> list[AssetRoot] {
-    return asset_root_table(proj, proj / ".jac" / "client" / "dist");
+    return asset_root_table(proj, proj / ".jac" / "client" / "dist", []);
 }
 
 
@@ -125,21 +126,107 @@ test "exact path only: no basename flattening, one URL maps to one file" {
 
 # ---- table ordering (first hit wins) -------------------------------------
 
-test "table order: built dist beats public/, which still serves what dist lacks" {
+test "table order: built dist beats public/, a mount wins first, a static overlay shadows nothing" {
     with TemporaryDirectory() as tmp {
         proj = _project(tmp);
         _write(proj, ".jac/client/dist/index.html", b"DIST");
         _write(proj, "public/index.html", b"PUBLIC");
         _write(proj, "public/data.json", b"FROM_PUBLIC");
-        tbl = _table(proj);
+        _write(proj, "assets/logo.svg", b"<svg/>");
+        mount_dir = _project(tmp);
+        _write(mount_dir, "data.json", b"FROM_MOUNT");
+        # A mount at exactly "static" is an additive overlay: a miss in it must
+        # still let the static/assets -> assets root serve the project asset.
+        table = asset_root_table(
+            proj,
+            proj / ".jac" / "client" / "dist",
+            [
+                {"url_prefix": "files", "local_path": str(mount_dir)},
+                {"url_prefix": "static", "local_path": str(_project(tmp))}
+            ]
+        );
         for (url, expected) in [
             ("/index.html", b"DIST"),
-            ("/data.json", b"FROM_PUBLIC")
+            ("/files/data.json", b"FROM_MOUNT"),
+            ("/static/assets/logo.svg", b"<svg/>")
         ] {
-            result = resolve_asset(tbl, url);
+            result = resolve_asset(table, url);
             assert result is not None , f"{url} must resolve";
             (path, _) = result;
             assert path.read_bytes() == expected , f"{url} resolved to the wrong root";
+        }
+    }
+}
+
+
+test "a mount miss is exclusive: it never falls through to public/, assets/, or the static tier" {
+    # (mount url_prefix, a real file placed where the leak would be served
+    # from, the request path that misses in the mount and should 404 rather
+    # than reach that file)
+    cases = [
+        ("files", "public/files/data.json", "/files/data.json"),
+        # a mount nested under the reserved static/ tier (unlike a mount at
+        # exactly "static", which is an additive overlay) must be just as
+        # exclusive as any other prefix -- a miss must not fall through to
+        # the built-in static->dist root three entries down.
+        ("static/brand", ".jac/client/dist/brand/logo.png", "/static/brand/logo.png"),
+
+    ];
+    with TemporaryDirectory() as tmp {
+        for (prefix, leak_rel, request_path) in cases {
+            proj = _project(tmp);
+            _write(proj, leak_rel, b"LEAK");
+            mount_dir = _project(tmp);
+
+            table = asset_root_table(
+                proj,
+                proj / ".jac" / "client" / "dist",
+                [{"url_prefix": prefix, "local_path": str(mount_dir)}]
+            );
+            result = resolve_asset(table, request_path);
+            assert result is None , (
+                f"a static_mount at '{prefix}' owns its prefix exclusively; a miss "
+                f"must not fall through to {leak_rel}"
+            );
+            assert mount_claims(table, request_path) , (
+                f"mount_claims must agree that '{prefix}' owns {request_path} "
+                "exclusively, so a host can turn this miss into a hard 404 instead "
+                "of falling through to its own asset table or the SPA shell"
+            );
+        }
+    }
+}
+
+
+test "mount_claims separates a claimed prefix from a path nobody claims" {
+    with TemporaryDirectory() as tmp {
+        proj = _project(tmp);
+        mount_dir = _project(tmp);
+        dist = proj / ".jac" / "client" / "dist";
+        # (mounts, request path, expected claim)
+        cases = [
+            # outside every mount's prefix: a host may keep looking elsewhere
+            (["files"], "/brand/logo.png", False),
+            # the bare mount prefix itself is owned, with or without a trailing
+            # slash, or a client-page fallback could serve the SPA at the mount root
+            (["docs"], "/docs", True),
+            (["docs"], "/docs/", True),
+            # a mount at exactly "static" is an additive overlay, not an
+            # exclusive owner, so a miss under it must not become a hard 404
+            (["static"], "/static/assets/logo.svg", False),
+            # a broader additive "static" overlay listed first must not mask a
+            # nested exclusive mount's claim
+            (["static", "static/brand"], "/static/brand/logo.png", True)
+        ];
+        for (prefixes, request_path, expected) in cases {
+            table = asset_root_table(
+                proj,
+                dist,
+                [{"url_prefix": p, "local_path": str(mount_dir)} for p in prefixes]
+            );
+            assert mount_claims(table, request_path) == expected , (
+                f"mount_claims({prefixes}, {request_path}) must be {expected}"
+            );
         }
     }
 }

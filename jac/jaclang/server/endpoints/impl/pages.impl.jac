@@ -69,7 +69,7 @@ impl register_page_endpoints(server: JacAPIServer) {
         }
     }
     asset_table: list[AssetRoot] = asset_root_table(
-        Path(_static_base(server)), Path(asset_dist)
+        Path(_static_base(server)), Path(asset_dist), []
     );
 
     def render_page(
