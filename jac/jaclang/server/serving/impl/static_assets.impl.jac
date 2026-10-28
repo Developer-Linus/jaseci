@@ -15,28 +15,8 @@ impl _assets_dir(project_root: Path) -> Path {
     return client_assets_dir(cfg, project_root);
 }
 
-impl asset_root_table(
-    project_root: Path, client_dist: Path, mounts: list[dict[str, any]]
-) -> list[AssetRoot] {
+impl asset_root_table(project_root: Path, client_dist: Path) -> list[AssetRoot] {
     table: list[AssetRoot] = [];
-
-    for m in mounts {
-        prefix = str(m.get("url_prefix", "")).strip("/");
-        local = str(m.get("local_path", ""));
-        if prefix and local {
-            table.append(
-                AssetRoot(
-                    url_prefix=prefix,
-                    local_dir=local,
-                    source="mount",
-                    resolved_dir=_resolve_root(local),
-                )
-            );
-        } else {
-            _logger.debug(f"static mount missing url_prefix/local_path, dropped: {m}");
-        }
-    }
-
     dist = str(client_dist);
     assets = str(_assets_dir(project_root));
     public = str(project_root / "public");
@@ -110,20 +90,10 @@ impl _remainder(url_path: str, prefix: str) -> (str | None) {
 impl resolve_asset(
     table: list[AssetRoot], url_path: str
 ) -> (tuple[Path, AssetRoot] | None) {
-    mount_claimed = False;
-
-    mount_is_static_overlay = False;
     for r in table {
-        if mount_claimed and not (mount_is_static_overlay and r.url_prefix != "") {
-            continue;
-        }
         rel = _remainder(url_path, r.url_prefix);
         if rel is None or rel == "" {
             continue;
-        }
-        if r.source == "mount" {
-            mount_claimed = True;
-            mount_is_static_overlay = r.url_prefix == "static";
         }
         base = r.resolved_dir;
         target = base / rel;
@@ -140,22 +110,6 @@ impl resolve_asset(
         }
     }
     return None;
-}
-
-impl mount_claims(table: list[AssetRoot], url_path: str) -> bool {
-    for r in table {
-        if r.source != "mount" {
-            continue;
-        }
-        rel = _remainder(url_path, r.url_prefix);
-        if rel is None {
-            continue;
-        }
-        if r.url_prefix != "static" {
-            return True;
-        }
-    }
-    return False;
 }
 
 impl asset_cache_policy(target: Path) -> str {

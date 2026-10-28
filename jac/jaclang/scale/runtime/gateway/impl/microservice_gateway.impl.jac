@@ -25,6 +25,104 @@ impl MicroserviceGateway.resolve_target_url(
     return target;
 }
 
+impl MicroserviceGateway.serve_static(file_path: str) -> Response | None {
+    dist = Path(self.client_dist_dir);
+    target = dist / file_path;
+
+    try {
+        resolved = target.resolve();
+        dist_resolved = dist.resolve();
+
+        if not resolved.is_relative_to(dist_resolved) {
+            return None;
+        }
+    } except OSError {
+        return None;
+    }
+
+    if not target.is_file() {
+        return None;
+    }
+
+    (content_type, _) = mimetypes.guess_type(str(target));
+    if content_type is None {
+        content_type = "application/octet-stream";
+    }
+
+    if content_type.startswith("text/")
+        or content_type in ("application/javascript", "application/json") {
+        return Response(
+            content=target.read_text(encoding="utf-8"), media_type=content_type
+        );
+    }
+    return Response(content=target.read_bytes(), media_type=content_type);
+}
+
+impl MicroserviceGateway.serve_project_static(rest: str) -> Response | None {
+    if not rest {
+        return None;
+    }
+    project_root = Path(self.base_path);
+    file_name: str = Path(rest).name;
+    candidate_dirs: list[str] = [
+        "assets",
+        "dist",
+        "public",
+        ".jac/client/dist",
+        ".jac/client/compiled",
+        ".jac/client/compiled/assets"
+    ];
+    for d in candidate_dirs {
+        local_dir: str = str(project_root / d);
+
+        for candidate in (rest, file_name) {
+            resp = self.serve_extra_static(local_dir, candidate);
+            if resp {
+                return resp;
+            }
+        }
+    }
+    return None;
+}
+
+impl MicroserviceGateway.serve_extra_static(
+    local_dir: str, file_path: str
+) -> Response | None {
+    if not local_dir {
+        return None;
+    }
+    base = Path(local_dir);
+    target = base / file_path;
+
+    try {
+        resolved = target.resolve();
+        base_resolved = base.resolve();
+        if not resolved.is_relative_to(base_resolved) {
+            return None;
+        }
+    } except OSError {
+        return None;
+    }
+
+    if not target.is_file() {
+        return None;
+    }
+
+    (content_type, _) = mimetypes.guess_type(str(target));
+    if content_type is None {
+        content_type = "application/octet-stream";
+    }
+
+    if content_type.startswith("text/")
+        or content_type in ("application/javascript", "application/json") {
+        return Response(
+            content=target.read_text(encoding="utf-8"), media_type=content_type
+        );
+    }
+    return Response(content=target.read_bytes(), media_type=content_type);
+}
+
+
 impl MicroserviceGateway.has_client_bundle -> bool {
     if (Path(self.client_dist_dir) / "index.html").is_file() {
         return True;
@@ -32,7 +130,6 @@ impl MicroserviceGateway.has_client_bundle -> bool {
     root_svc = self.root_member();
     return root_svc is not None and root_svc.owns_root();
 }
-
 
 impl MicroserviceGateway.serve_spa_fallback -> Response | None {
     index = Path(self.client_dist_dir) / "index.html";
@@ -51,9 +148,7 @@ impl MicroserviceGateway.bootstrap_admin_ui -> None {
     );
 }
 
-impl MicroserviceGateway.serve_admin_asset(
-    request: Request, asset_path: str
-) -> Response | None {
+impl MicroserviceGateway.serve_admin_asset(asset_path: str) -> Response | None {
     admin_dist = resolve_console(Path(self.admin_dist_dir), self.admin_console);
     if isinstance(admin_dist, Response) {
         return admin_dist;
@@ -75,21 +170,26 @@ impl MicroserviceGateway.serve_admin_asset(
         return None;
     }
 
-    import from jaclang.server.serving.static_assets { asset_cache_policy }
-    import from jaclang.server.serving.files { file_response }
     if not target.is_file() {
         index = admin_dist / "index.html";
         if index.is_file() {
-            return file_response(
-                request, str(index), cache_control=asset_cache_policy(index)
-            );
+            return HTMLResponse(content=index.read_text(encoding="utf-8"));
         }
         return None;
     }
 
-    return file_response(
-        request, str(target), cache_control=asset_cache_policy(target)
-    );
+    (content_type, _) = mimetypes.guess_type(str(target));
+    if content_type is None {
+        content_type = "application/octet-stream";
+    }
+
+    if content_type.startswith("text/")
+        or content_type in ("application/javascript", "application/json") {
+        return Response(
+            content=target.read_text(encoding="utf-8"), media_type=content_type
+        );
+    }
+    return Response(content=target.read_bytes(), media_type=content_type);
 }
 
 glob _BUILTIN_PREFIXES: tuple[str, ...] = GATEWAY_BUILTIN_PREFIXES,
@@ -530,14 +630,14 @@ impl MicroserviceGateway.probe_services(
     return not_found(path, message="Not found on any service");
 }
 
-impl MicroserviceGateway.handle_admin(request: Request, path: str) -> Response | None {
+impl MicroserviceGateway.handle_admin(path: str) -> Response | None {
     if path == "/admin" {
         import from jaclang.server.serving.datatypes { RedirectResponse }
         return RedirectResponse(url="/admin/", status_code=302);
     }
     if path.startswith("/admin/") {
         asset_path: str = path[7:];
-        return self.serve_admin_asset(request, asset_path);
+        return self.serve_admin_asset(asset_path);
     }
     return None;
 }
@@ -645,43 +745,45 @@ impl MicroserviceGateway.handle_metrics -> Response {
     return Response(content=body, media_type=ctype);
 }
 
-impl MicroserviceGateway._get_asset_table -> list[AssetRoot] {
-    if self._asset_table is None {
-        import from jaclang.server.serving.static_assets { asset_root_table }
-        self._asset_table = asset_root_table(
-            Path(self.base_path), Path(self.client_dist_dir), self.static_mounts
-        );
-    }
-    return self._asset_table;
-}
-
 impl MicroserviceGateway.handle_static(request: Request, path: str) -> Response | None {
-    if request.method not in ("GET", "HEAD") {
-        return None;
-    }
-    if not path.lstrip("/") {
+    if request.method != "GET" {
         return None;
     }
 
-    import from jaclang.server.serving.static_assets {
-        resolve_asset,
-        mount_claims,
-        asset_cache_policy
-    }
-    import from jaclang.server.serving.files { file_response }
-    table = self._get_asset_table();
-    hit = resolve_asset(table, path);
-    if hit is None {
-        if mount_claims(table, path) {
-            import from jaclang.scale.runtime.context.errors { not_found }
-            return not_found(path);
-        }
+    file_path: str = path.lstrip("/");
+    if not file_path {
         return None;
     }
-    (target, _) = hit;
-    return file_response(
-        request, str(target), cache_control=asset_cache_policy(target)
-    );
+
+    mount_matched = False;
+    for mount in self.static_mounts {
+        prefix = str(mount.get("url_prefix", "")).lstrip("/").rstrip("/");
+        if not prefix or file_path == prefix {
+            continue;
+        }
+        if file_path.startswith(prefix + "/") {
+            mount_matched = True;
+            sub_path = file_path[len(prefix) + 1:];
+            local_dir = str(mount.get("local_path", ""));
+            mounted_resp = self.serve_extra_static(local_dir, sub_path);
+            if mounted_resp {
+                return mounted_resp;
+            }
+            break;
+        }
+    }
+
+    if not mount_matched {
+        static_resp = self.serve_static(file_path);
+        if static_resp {
+            return static_resp;
+        }
+    }
+
+    if file_path.startswith("static/") {
+        return self.serve_project_static(file_path[len("static/"):]);
+    }
+    return None;
 }
 
 impl MicroserviceGateway.handle_spa_fallback(
@@ -703,8 +805,6 @@ impl MicroserviceGateway.setup -> ServingApp {
     import time;
     self.app = ServingApp(title="Jac Gateway");
     gw = self;
-
-    self._get_asset_table();
 
     self.bootstrap_admin_ui();
 
@@ -794,10 +894,7 @@ impl MicroserviceGateway.setup -> ServingApp {
             } elif decision.kind == ROUTE_CLIENT_PAGE {
                 page_resp: Response | None = None;
                 root_svc = gw.root_member();
-                import from jaclang.server.serving.static_assets { mount_claims }
-                mount_owned: bool = mount_claims(gw._get_asset_table(), path);
                 if request.method == "GET"
-                    and not mount_owned
                     and (root_svc is None or not root_svc.owns_root()) {
                     page_resp = gw.serve_spa_fallback();
                     if page_resp is None {
@@ -815,7 +912,7 @@ impl MicroserviceGateway.setup -> ServingApp {
                 if gw.server is not None {
                     admin_resp = await next_fn(request);
                 } else {
-                    admin_resp = gw.handle_admin(request, path);
+                    admin_resp = gw.handle_admin(path);
                 }
                 if admin_resp is None {
                     import from jaclang.scale.runtime.context.errors { not_found }

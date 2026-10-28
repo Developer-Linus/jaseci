@@ -52,7 +52,7 @@ test "static requests find shared assets from source, nested paths intact" {
         (shared / "media").mkdir(parents=True);
         (shared / "logo.svg").write_text("<svg/>");
         (shared / "media" / "diagram.png").write_bytes(b"png");
-        table = asset_root_table(base, base / ".jac" / "client" / "dist", []);
+        table = asset_root_table(base, base / ".jac" / "client" / "dist");
         static_hit = resolve_asset(table, "/static/assets/logo.svg");
         assert static_hit is not None and static_hit[0] == shared / "logo.svg";
         nested_hit = resolve_asset(table, "/static/assets/media/diagram.png");
@@ -155,7 +155,12 @@ test "GET /static/ with dot segments, literal or percent-encoded, cannot read th
             for target in probes {
                 (status, body) = _raw_get(server.bound_port, target);
                 assert status == 404 , (target, status);
-                for leaked in (b"TOP-SECRET", b"[project]", b"outside the project", b"console.log") {
+                for leaked in (
+                    b"TOP-SECRET",
+                    b"[project]",
+                    b"outside the project",
+                    b"console.log"
+                ) {
                     assert leaked not in body , (target, leaked);
                 }
             }

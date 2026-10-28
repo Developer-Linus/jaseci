@@ -4,16 +4,10 @@ impl ProcessGateway.setup {
         port=self.port,
         host=self.host,
         client_dist_dir=self.client_dist_dir,
-        static_mounts=self.static_mounts,
-        port_pinned=self.port_pinned,
-        base_path=str(self._resolve_base_path())
+        port_pinned=self.port_pinned
     );
     gw.setup();
     self._gateway = gw;
-}
-
-impl ProcessGateway._resolve_base_path -> Path {
-    return resolve_base_path();
 }
 
 impl ProcessGateway.serve(on_ready: any = None) {
