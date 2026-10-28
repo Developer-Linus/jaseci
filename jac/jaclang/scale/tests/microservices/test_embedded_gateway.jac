@@ -99,36 +99,31 @@ test "embedded gateway resolves dist and public/ files, and the SPA shell only f
     project_root = tempfile.mkdtemp();
     dist = tempfile.mkdtemp();
     try {
-        brand = os.path.join(project_root, "public", "brand");
-        os.makedirs(brand, exist_ok=True);
-        with open(os.path.join(brand, "logo.png"), "wb") as f {
-            f.write(b"PNG_DATA");
+        for (base, rel, data) in [
+            (project_root, "public/brand/logo.png", b"PNG"),
+            (dist, "app.js", b"BUNDLE"),
+            (dist, "index.html", b"<title>spa-shell</title>")
+        ] {
+            os.makedirs(os.path.dirname(os.path.join(base, rel)), exist_ok=True);
+            with open(os.path.join(base, rel), "wb") as f {
+                f.write(data);
+            }
         }
-        with open(os.path.join(dist, "app.js"), "wb") as f {
-            f.write(b"CONSOLE_LOG");
-        }
-        with open(os.path.join(dist, "index.html"), "w") as f {
-            f.write("<!doctype html><title>spa-shell</title>");
-        }
-
-        gw = _make_gateway(dist=dist, base_path=project_root);
-        client = TestClient(getattr(gw, "app"));
+        client = TestClient(
+            getattr(_make_gateway(dist=dist, base_path=project_root), "app")
+        );
         # (path, accept, expected status, expected body fragment)
-        cases = [
-            # the resolver serves the physical files, not the SPA shell
-            ("/app.js", "*/*", 200, b"CONSOLE_LOG"),
-            ("/brand/logo.png", "image/png", 200, b"PNG_DATA"),
-            # an extensionless html navigation with no matching file gets index.html
+        for (path, accept, status, fragment) in [
+            ("/app.js", "*/*", 200, b"BUNDLE"),
+            ("/brand/logo.png", "image/png", 200, b"PNG"),
             ("/dashboard", "text/html", 200, b"spa-shell"),
-            # a non-html asset miss is an honest 404, never the SPA shell
             ("/missing.png", "image/png", 404, b"NOT_FOUND")
-        ];
-        for (path, accept, status, fragment) in cases {
+        ] {
             resp = client.get(path, headers={"accept": accept});
-            assert resp.status_code == status , (
-                f"{path}: expected {status}, got {resp.status_code}"
+            assert resp.status_code == status and fragment in resp.content , (
+                path,
+                resp.status_code
             );
-            assert fragment in resp.content , f"{path}: expected {fragment!r} in the body";
         }
     } finally {
         shutil.rmtree(project_root, ignore_errors=True);

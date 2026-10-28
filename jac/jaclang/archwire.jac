@@ -4109,7 +4109,6 @@ graph import {
         },
         scale.tests.data.test_gateway_owned_identity { Request, Response },
         scale.tests.server.test_build_status_endpoint { Request },
-        scale.tests.server.test_static_fallback { URL },
         scale.tests.server.test_stream_ws { WebSocketDisconnect },
         scale.tests.server.test_stream_ws._spawn_upstream.big { StreamingResponse },
         scale.tests.server.test_stream_ws._spawn_upstream.sse { StreamingResponse },

@@ -1169,19 +1169,14 @@ test "serve admin asset returns static file" {
     assert resp is not None;
     assert resp.status_code == 200;
     assert b"var admin = true;" in resp.body;
-    # Admin assets go through the shared file_response, so the one cache policy
-    # and its validators hold here as on every other asset root.
-    cache = resp.headers.get("Cache-Control") or "";
-    assert "must-revalidate" in cache , f"got Cache-Control: {cache}";
-    assert resp.headers.get("ETag") , "file_response must set an ETag for admin assets";
-
-    # The same asset through the route the installed admin API registers,
-    # which is what a browser loading the console actually hits.
+    # the shared file_response: one cache policy, with an ETag to revalidate
+    assert "must-revalidate" in (resp.headers.get("Cache-Control") or "");
+    assert resp.headers.get("ETag");
+    # the route a browser loading the console hits
     gw.setup();
     import from jaclang.testing.testkit { ServingTestClient as TestClient }
     routed = TestClient(gw.app).get("/admin/assets/admin.js");
-    assert routed.status_code == 200 , f"got {routed.status_code}: {routed.text[:200]}";
-    assert b"var admin = true;" in routed.content;
+    assert routed.status_code == 200 and b"var admin = true;" in routed.content , routed.text[:200];
 
     import shutil;
     shutil.rmtree(tmp);
@@ -1200,11 +1195,8 @@ test "serve admin asset spa fallback for unknown route" {
     resp = gw.serve_admin_asset(_admin_get("/admin/users/list"), "users/list");
     assert resp is not None;
     assert b"Admin SPA" in resp.body;
-    cache = resp.headers.get("Cache-Control") or "";
-    assert cache == "no-cache" , (
-        "the admin shell must never be cached, so a redeploy's hashed bundles "
-        f"are never served stale from an hour-old cached shell; got Cache-Control: {cache}"
-    );
+    # the shell is never cached, so a redeploy's bundles are never served stale
+    assert resp.headers.get("Cache-Control") == "no-cache";
 
     import shutil;
     shutil.rmtree(tmp);
@@ -1625,8 +1617,7 @@ test "bare /jobs (create + list) is forwarded as a built-in route, not 404'd" {
 }
 
 test "ProcessGateway.setup resolves base_path from the Jac context, not the '.' default" {
-    # No project markers above /tmp, so find_project_root falls back to this dir
-    # (same fallback asset_base_path relies on in test_static_fallback.jac).
+    # no project markers above /tmp, so find_project_root falls back to this dir
     project_root = tempfile.mkdtemp();
     ctx = Jac.get_context();
     previous = ctx.base_path_dir;
@@ -1635,11 +1626,7 @@ test "ProcessGateway.setup resolves base_path from the Jac context, not the '.' 
         gw = ProcessGateway(registry=ServiceRegistry());
         gw.setup();
 
-        assert gw._gateway is not None;
-        assert gw._gateway.base_path == project_root , (
-            "local `jac start` must resolve base_path the same way every other "
-            f"asset consumer does, not fall back to '.'; got {gw._gateway.base_path}"
-        );
+        assert gw._gateway is not None and gw._gateway.base_path == project_root;
     } finally {
         ctx.base_path_dir = previous;
         import shutil;
