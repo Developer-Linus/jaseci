@@ -1221,6 +1221,8 @@ test "serve admin asset responses go through the shared file_response policy" {
     admin_dir = Path(tmp) / "admin";
     assets = admin_dir / "assets";
     assets.mkdir(parents=True);
+    (admin_dir / "index.html").write_text("<html>Admin</html>");
+    (admin_dir / ".staged").touch();
     (assets / "admin.js").write_text("var admin = true;");
 
     reg = ServiceRegistry();
