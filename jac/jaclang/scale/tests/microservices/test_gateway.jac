@@ -1170,6 +1170,14 @@ test "serve admin asset returns static file" {
     assert resp.status_code == 200;
     assert b"var admin = true;" in resp.body;
 
+    # The same asset through the route the installed admin API registers,
+    # which is what a browser loading the console actually hits.
+    gw.setup();
+    import from jaclang.testing.testkit { ServingTestClient as TestClient }
+    routed = TestClient(gw.app).get("/admin/assets/admin.js");
+    assert routed.status_code == 200 , f"got {routed.status_code}: {routed.text[:200]}";
+    assert b"var admin = true;" in routed.content;
+
     import shutil;
     shutil.rmtree(tmp);
 }
