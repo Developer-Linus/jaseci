@@ -1,12 +1,11 @@
-impl _resolve_root(local_dir: str) -> Path {
-    p = Path(local_dir);
+impl _resolve_root(local_dir: Path) -> Path {
     try {
-        return p.resolve();
+        return local_dir.resolve();
     } except (OSError, ValueError) {
         _logger.warning(
-            f"could not resolve asset root {local_dir!r}, using unresolved path"
+            f"could not resolve asset root {str(local_dir)!r}, using unresolved path"
         );
-        return p;
+        return local_dir;
     }
 }
 
@@ -24,57 +23,17 @@ impl _public_dirs(project_root: Path) -> list[Path] {
 }
 
 impl asset_root_table(project_root: Path, client_dist: Path) -> list[AssetRoot] {
-    table: list[AssetRoot] = [];
-    dist = str(client_dist);
-    assets = str(_assets_dir(project_root));
-    assets_resolved = _resolve_root(assets);
-
-    table.append(
-        AssetRoot(
-            url_prefix="static/assets",
-            local_dir=assets,
-            source="assets",
-            resolved_dir=assets_resolved,
-        )
-    );
-
-    if dist and dist != "." {
-        dist_resolved = _resolve_root(dist);
-        table.append(
-            AssetRoot(
-                url_prefix="static",
-                local_dir=dist,
-                source="dist",
-                resolved_dir=dist_resolved
-            )
-        );
-        table.append(
-            AssetRoot(
-                url_prefix="", local_dir=dist, source="dist", resolved_dir=dist_resolved
-            )
-        );
+    assets = _assets_dir(project_root);
+    roots: list[tuple[str, Path]] = [("static/assets", assets)];
+    if str(client_dist) not in ("", ".") {
+        roots += [("static", client_dist), ("", client_dist)];
     }
-    for public_dir in _public_dirs(project_root) {
-        public = str(public_dir);
-        table.append(
-            AssetRoot(
-                url_prefix="",
-                local_dir=public,
-                source="public",
-                resolved_dir=_resolve_root(public)
-            )
-        );
-    }
-    table.append(
-        AssetRoot(
-            url_prefix="",
-            local_dir=assets,
-            source="assets",
-            resolved_dir=assets_resolved
-        )
-    );
-
-    return table;
+    roots += [("", public) for public in _public_dirs(project_root)];
+    roots.append(("", assets));
+    return [
+        AssetRoot(url_prefix=prefix, resolved_dir=_resolve_root(base))
+        for (prefix, base) in roots
+    ];
 }
 
 impl _remainder(url_path: str, prefix: str) -> (str | None) {
@@ -96,26 +55,19 @@ impl _remainder(url_path: str, prefix: str) -> (str | None) {
     return None;
 }
 
-impl resolve_asset(
-    table: list[AssetRoot], url_path: str
-) -> (tuple[Path, AssetRoot] | None) {
+impl resolve_asset(table: list[AssetRoot], url_path: str) -> (Path | None) {
     for r in table {
         rel = _remainder(url_path, r.url_prefix);
-        if rel is None or rel == "" {
+        if not rel {
             continue;
         }
-        base = r.resolved_dir;
-        target = base / rel;
         try {
-            resolved = target.resolve();
-            if not resolved.is_relative_to(base) {
-                continue;
-            }
+            resolved = (r.resolved_dir / rel).resolve();
         } except (OSError, ValueError) {
             continue;
         }
-        if resolved.is_file() {
-            return (resolved, r);
+        if resolved.is_relative_to(r.resolved_dir) and resolved.is_file() {
+            return resolved;
         }
     }
     return None;

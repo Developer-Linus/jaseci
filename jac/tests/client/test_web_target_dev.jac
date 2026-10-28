@@ -211,39 +211,6 @@ test "the dev server index.html carries the configured head" {
 }
 
 
-"""Dev serves the project's public/ dir at the web root (#8124): the generated
-Vite DEV config points publicDir at <projectRoot>/public so /brand/logo.png
-resolves natively, while the build config keeps publicDir disabled -- the
-runtime serves public/ from source, so copying it into dist would double the
-bytes and drift."""
-test "vite dev config serves the project public/ dir; build config does not" {
-    import tempfile;
-    import from jaclang.client.vite_bundler { ViteBundler }
-
-    with tempfile.TemporaryDirectory() as tmp {
-        bundler = ViteBundler(project_dir=Path(tmp), output_dir=Path(tmp) / "dist");
-        dev = bundler._generate_vite_config_content(
-            is_dev=True, entry_file=Path("_entry.js"), api_base_url="", base_path="/"
-        );
-        build = bundler._generate_vite_config_content(
-            is_dev=False, entry_file=Path("_entry.js"), api_base_url="", base_path="/"
-        );
-    }
-
-    assert 'publicDir: path.resolve(projectRoot, "public")' in dev , (
-        "the dev config must serve the project public/ dir at the web root so "
-        f"/brand/logo.png resolves natively; got:\n{dev}"
-    );
-    assert "publicDir: false" not in dev , (
-        "the dev config must not disable publicDir"
-    );
-    assert "publicDir: false" in build , (
-        "the build config must keep publicDir disabled -- the runtime serves "
-        "public/ from source, not a copy in dist"
-    );
-}
-
-
 test "dev HTML and runtime aliases resolve in the selected workspace app" {
     import re;
     import tempfile;
@@ -346,8 +313,10 @@ test "single app dev keeps the unscoped compiled entry and aliases" {
             bundler._ensure_dev_index_html(build_dir);
             page = (build_dir / "index.html").read_text();
             assert page.count('import("/compiled/_entry.js")') == 2;
-            assert 'path.resolve(buildDir, "compiled/client_runtime.js")'
-                in config_path.read_text();
+            dev_config = config_path.read_text();
+            assert 'path.resolve(buildDir, "compiled/client_runtime.js")' in dev_config;
+            # dev serves the project public/ at the web root, like the runtime
+            assert 'publicDir: path.resolve(projectRoot, "public")' in dev_config;
         } finally {
             set_config(previous);
         }

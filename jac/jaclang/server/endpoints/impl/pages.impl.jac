@@ -207,13 +207,12 @@ impl register_page_endpoints(server: JacAPIServer) {
     );
 
     def static_file(request: Request, file_path: str) -> Response {
-        hit = resolve_asset(asset_table, '/static/' + file_path);
-        if hit is None {
+        target = resolve_asset(asset_table, '/static/' + file_path);
+        if target is None {
             return JSONResponse(
                 content={'error': 'Static file not found'}, status_code=404
             );
         }
-        (target, _) = hit;
         return file_response(
             request, str(target), cache_control=asset_cache_policy(target)
         );
@@ -243,9 +242,8 @@ impl register_page_endpoints(server: JacAPIServer) {
         if file_path.startswith(API_PREFIXES) or file_path.startswith(CL_PREFIX) {
             return JSONResponse(content={'error': 'Not found'}, status_code=404);
         }
-        hit = resolve_asset(asset_table, '/' + file_path);
-        if hit is not None {
-            (target, _) = hit;
+        target = resolve_asset(asset_table, '/' + file_path);
+        if target is not None {
             return file_response(
                 request, str(target), cache_control=asset_cache_policy(target)
             );
