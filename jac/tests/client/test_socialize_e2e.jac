@@ -255,15 +255,62 @@ def _is_logged_in(page: any) -> bool {
 # ===========================================================================
 # Build / serve / HTTP (no browser)  -- maps to deleted test_it.jac
 # ===========================================================================
+"""GET a URL and return ``(status_code, body_bytes)`` without raising on 404.
+
+request_endpoint() raises on any non-503 error, which is what we want while
+waiting for boot, but the parity matrix asserts on 404s directly -- so this
+returns the code instead. Call request_endpoint() first to confirm the server
+is warm, then drive the matrix through this.
+"""
+def _get_status(url: str) -> tuple[int, bytes] {
+    try {
+        with urlopen(url, timeout=30) as resp {
+            return (resp.status, bytes(resp.read()));
+        }
+    } except HTTPError as exc {
+        body = b"";
+        try {
+            body = bytes(exc.read());
+        } except Exception {
+            body = b"";
+        }
+        exc.close();
+        return (exc.code, body);
+    }
+}
+
 """The site builds and serves / with its static JS bundle.
 
 Maps to test_it's "all in one app endpoints" / "default client app renders":
 the served page is HTML referencing /static/client.js, the JS bundle is real
 (not the "Static file not found" sentinel), and a bogus static path 404s.
+public/ files serve at the web root; project files, a project-root dist/ and a
+missing asset 404.
 """
 test "site builds and serves /" {
     with tempfile.TemporaryDirectory() as temp_dir {
         (project_dir, jac_cmd, env) = _setup_site_project(temp_dir);
+        # Static-asset fixtures in the temp copy (the site source is never
+        # touched). The served app's base_path is the workspace root, where
+        # jac.toml lives, so public/ and dist/ anchor there, not under web/.
+        public_brand = os.path.join(project_dir, "public", "brand");
+        os.makedirs(public_brand, exist_ok=True);
+        logo_bytes = b"\x89PNG\r\nBRAND-LOGO";
+        with open(os.path.join(public_brand, "logo.png"), "wb") as f {
+            f.write(logo_bytes);
+        }
+        with open(os.path.join(project_dir, "public", "site.webmanifest"), "wb") as f {
+            f.write(b"{\"name\":\"jaclang.org\"}");
+        }
+        legacy_dist = os.path.join(project_dir, "dist");
+        os.makedirs(legacy_dist, exist_ok=True);
+        with open(os.path.join(legacy_dist, "legacy-only.png"), "wb") as f {
+            f.write(b"LEGACY-DIST-ONLY");
+        }
+        assert os.path.isfile(os.path.join(project_dir, "jac.toml")) , (
+            "the site ships jac.toml at the workspace root -- a real source "
+            "file that must never be served; expected it in the copy"
+        );
         server: Popen | None = None;
         try {
             (server, port) = start_app_server(project_dir);
@@ -305,11 +352,29 @@ test "site builds and serves /" {
                 );
                 exc.close();
             }
+
+            # The one static-asset law over a real boot: public/ at the web
+            # root with no extension allowlist; project files, a project-root
+            # dist/ (absent under --scale) and a missing asset all 404.
+            (logo_status, logo_body) = _get_status(f"{base}/brand/logo.png");
+            assert logo_status == 200 and logo_body == logo_bytes , (
+                f"public/brand/logo.png must serve byte-for-byte at /brand/logo.png; got {logo_status}"
+            );
+            for (path, expected) in [
+                ("/site.webmanifest", 200),
+                ("/jac.toml", 404),
+                ("/legacy-only.png", 404),
+                ("/definitely-missing-asset.png", 404)
+            ] {
+                (status, _body) = _get_status(f"{base}{path}");
+                assert status == expected , f"{path}: expected {expected}, got {status}";
+            }
         } finally {
             stop_server(server);
         }
     }
 }
+
 
 """The site serves its compiled Tailwind CSS bundle.
 
