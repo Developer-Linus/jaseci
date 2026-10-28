@@ -1511,6 +1511,65 @@ impl NaIRGenPass._emit_str_cmp_helper -> None {
     self.str_cmp_fn = cmp_fn;
 }
 
+impl NaIRGenPass._one_byte_literal(val: ir.Value) -> (int | None) {
+    cur: any = val;
+    if isinstance(cur, ir.CastInstr) and cur.opname == "bitcast" {
+        cur = cur.operands[0];
+    }
+    if not isinstance(cur, ir.GEPInstr) {
+        return None;
+    }
+    text = self._str_literal_text.get(id(cur.pointer));
+    if text is None {
+        return None;
+    }
+    raw = text.encode("utf8");
+    if len(raw) != 1 or raw[0] == 0 {
+        return None;
+    }
+    return raw[0];
+}
+
+impl NaIRGenPass._emit_str_cmp_one_byte(val: ir.Value, byte: int) -> ir.Value {
+    b = self.builder;
+    i8p = ir.IntType(8).as_pointer();
+    i32 = ir.IntType(32);
+    fn = b.function;
+    start = b.block;
+    first_bb = fn.append_basic_block("s1.first");
+    tie_bb = fn.append_basic_block("s1.tie");
+    done_bb = fn.append_basic_block("s1.done");
+    b.cbranch(
+        b.icmp_unsigned("==", val, ir.Constant(i8p, None), name="s1.null"),
+        done_bb,
+        first_bb
+    );
+    b.position_at_end(first_bb);
+    first = b.zext(b.load(val, name="s1.byte"), i32, name="s1.byte32");
+    diff = b.sub(first, ir.Constant(i32, byte), name="s1.diff");
+    b.cbranch(
+        b.icmp_signed("==", diff, ir.Constant(i32, 0), name="s1.same"), tie_bb, done_bb
+    );
+    b.position_at_end(tie_bb);
+    longer = b.zext(
+        b.icmp_signed(
+            ">",
+            self._call_str_len(b, val, name="s1.len"),
+            ir.Constant(ir.IntType(64), 1),
+            name="s1.longer"
+        ),
+        i32,
+        name="s1.tail"
+    );
+    b.branch(done_bb);
+    b.position_at_end(done_bb);
+    result = b.phi(i32, name="s1.cmp");
+    result.add_incoming(ir.Constant(i32, -1), start);
+    result.add_incoming(diff, first_bb);
+    result.add_incoming(longer, tie_bb);
+    return result;
+}
+
 impl NaIRGenPass._call_str_cmp(
     b: ir.IRBuilder, lhs: ir.Value, rhs: ir.Value, name: str = "s.cmp"
 ) -> ir.Value {
