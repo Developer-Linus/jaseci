@@ -112,30 +112,46 @@ def _raw_get(port: int, target: str) -> tuple[int, bytes] {
 }
 
 
+# Serves `base` through the real transport, router and page handler, with the
+# Jac context pointed at it the way `jac start` points it at the project.
+def _serve_project(base: Path, module_file: str) -> tuple[int, any] {
+    app = ServingApp();
+    stub: any = SimpleNamespace(
+        add_endpoint=app.add_endpoint,
+        resolved_settings=_static_only_settings,
+        module=SimpleNamespace(__file__=module_file),
+        base_path=str(base),
+        introspector=None
+    );
+    ctx = Jac.get_context();
+    previous = ctx.base_path_dir;
+    ctx.base_path_dir = str(base);
+    server = ServingServer(app=app, host="127.0.0.1", port=0);
+    try {
+        register_page_endpoints(stub);
+        stop = server.serve_background();
+    } except Exception as e {
+        ctx.base_path_dir = previous;
+        raise e;
+    }
+    def _stop {
+        stop();
+        ctx.base_path_dir = previous;
+    }
+    return (server.bound_port, _stop);
+}
+
+
 test "GET /static/ with dot segments, literal or percent-encoded, cannot read the project tree" {
     # The path reaches the handler decoded and unnormalized, so this goes
     # through the real transport, router and handler rather than the finder.
     with TemporaryDirectory() as tmp {
         base = _served_project(tmp);
-        app = ServingApp();
-        stub: any = SimpleNamespace(
-            add_endpoint=app.add_endpoint,
-            resolved_settings=_static_only_settings,
-            module=SimpleNamespace(__file__=""),
-            base_path=str(base),
-            introspector=None
-        );
-        ctx = Jac.get_context();
-        previous = ctx.base_path_dir;
-        ctx.base_path_dir = str(base);
-        server = ServingServer(app=app, host="127.0.0.1", port=0);
-        stop = None;
+        (port, stop) = _serve_project(base, "");
         try {
-            register_page_endpoints(stub);
-            stop = server.serve_background();
             # The control is what makes the refusals mean something: if the
             # handler were not serving this project, it would fail first.
-            (status, body) = _raw_get(server.bound_port, "/static/bundle.js");
+            (status, body) = _raw_get(port, "/static/bundle.js");
             assert status == 200 and body == b"bundle" , (status, body);
 
             # The bundle is served from .jac/client/dist, three levels below
@@ -153,17 +169,40 @@ test "GET /static/ with dot segments, literal or percent-encoded, cannot read th
                 "/static/app.js"
             ];
             for target in probes {
-                (status, body) = _raw_get(server.bound_port, target);
+                (status, body) = _raw_get(port, target);
                 assert status == 404 , (target, status);
-                for leaked in (b"TOP-SECRET", b"[project]", b"outside the project", b"console.log") {
+                for leaked in (
+                    b"TOP-SECRET",
+                    b"[project]",
+                    b"outside the project",
+                    b"console.log"
+                ) {
                     assert leaked not in body , (target, leaked);
                 }
             }
         } finally {
-            if stop is not None {
-                stop();
-            }
-            ctx.base_path_dir = previous;
+            stop();
+        }
+        # A project with a custom [build] dir builds its client bundle there,
+        # not under .jac; the handler must serve that bundle, not a stale one.
+        custom = Path(tmp) / "custom";
+        custom.mkdir();
+        _project(custom, "");
+        with open(custom / "jac.toml", "a") as f {
+            f.write("\n[build]\ndir = \".custom-build\"\n");
+        }
+        (custom / ".custom-build" / "client" / "dist").mkdir(parents=True);
+        (custom / ".custom-build" / "client" / "dist" / "bundle.js").write_text(
+            "custom-bundle"
+        );
+        (custom / ".jac" / "client" / "dist").mkdir(parents=True);
+        (custom / ".jac" / "client" / "dist" / "bundle.js").write_text("stale");
+        (port, stop) = _serve_project(custom, str(custom / "main.jac"));
+        try {
+            (status, body) = _raw_get(port, "/static/bundle.js");
+            assert status == 200 and body == b"custom-bundle" , (status, body);
+        } finally {
+            stop();
         }
     }
 }

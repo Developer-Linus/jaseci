@@ -356,9 +356,10 @@ graph import {
     client as _client_pkg ++> client.runtime_source.resolve_client_runtime_cl_path;
     client as _client_pkg --> project.modresolver._resolve_jac_virtual_module;
     client.artifact ++> server.server { ClientBundleError }
-    client.artifact --> server.server.ModuleIntrospector.ensure_bundle {
-        prebuilt_bundle
-    }
+    client.artifact --> [
+        server.endpoints.pages.register_page_endpoints { client_output_dir },
+        server.server.ModuleIntrospector.ensure_bundle { prebuilt_bundle },
+    ]
     client.cli --> [
         cli.commands.build._build_app { run_client_build },
         cli.commands.execution.serve { run_client_start },
@@ -2012,7 +2013,6 @@ graph import {
         },
         client.targets.desktop.desktop_build.stage_program { client_assets_dir },
         compiler.driver.application._prepare_revision { client_input_dirs },
-        server.endpoints.pages.register_page_endpoints { client_app_dir_for },
     ]
     project.compiler_host ++> studio.gate | studio.model { ProjectHost }
     project.config ++> [
@@ -4042,8 +4042,7 @@ graph import {
             | scale.server.webhook_ext
             | scale.tests.server.test_firebase_auth_sso
             | scale.tests.server.test_oauth_providers
-            | scale.tests.server.test_registration_limits
-            | scale.tests.server.test_static_fallback { Request },
+            | scale.tests.server.test_registration_limits { Request },
         scale.admin.console_build { HTMLResponse, Response },
         scale.admin.deploy_health
             | scale.admin.llm_telemetry
@@ -32843,7 +32842,6 @@ graph import server {
         server.ModuleIntrospector._load_spa_routes { serve_manifest_for },
         server.ModuleIntrospector._load_surface { serve_manifest_for },
     ]
-    sealed_serve --> endpoints.pages.register_page_endpoints { client_dist_for }
     server ++> [
         endpoints.auth | endpoints.second_factor { EndpointHost, JsonValue },
         endpoints.colocated { JacAPIServer, JsonValue, ModuleIntrospector },

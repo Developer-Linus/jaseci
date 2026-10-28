@@ -47,19 +47,13 @@ impl register_page_endpoints(server: JacAPIServer) {
     root_app = "" if settings.static_only else server.introspector.resolve_root_app();
     asset_dist = settings.client_dist;
     if not asset_dist {
-        import from jaclang.server.sealed_serve { client_dist_for }
-        source_path = getattr(server.module, '__file__', '') or '';
-        sealed_dist = client_dist_for(source_path) if source_path else None;
-        if sealed_dist is not None {
-            asset_dist = str(sealed_dist);
-        }
-    }
-    if not asset_dist and config is not None and config.is_workspace {
-        import from jaclang.project.client_paths { client_app_dir_for }
-        entry_path = Jac.get_full_target_path() or '';
-        workspace_dist = client_app_dir_for(config, entry_path) / 'dist';
-        if workspace_dist.is_dir() {
-            asset_dist = str(workspace_dist);
+        import from jaclang.client.artifact { client_output_dir }
+        source_path = getattr(server.module, '__file__', '')
+            or Jac.get_full_target_path()
+            or '';
+        built_dist = client_output_dir(Path(source_path)) if source_path else None;
+        if built_dist is not None and built_dist.is_dir() {
+            asset_dist = str(built_dist);
         }
     }
     if not asset_dist {
