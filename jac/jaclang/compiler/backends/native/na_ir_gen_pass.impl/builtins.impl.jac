@@ -721,12 +721,19 @@ impl NaIRGenPass._codegen_fstring(nd: uni.FString) -> (ir.Value | None) {
                 }
             }
             if _conv == 114 {
+                _repr_src = val;
                 val = self._emit_value_repr(val, part.format_part);
                 if val is None {
                     return None;
                 }
                 if self._is_owned(val) {
                     obj_strs.append(val);
+                }
+                if _repr_src.type == ir.IntType(8).as_pointer()
+                    and self._is_owned(_repr_src)
+                    and not self._nogc_headerless()
+                    and not any(_t is _repr_src for _t in obj_strs) {
+                    obj_strs.append(_repr_src);
                 }
             } elif _conv not in (-1, 115) {
                 self.emit(
@@ -762,7 +769,8 @@ impl NaIRGenPass._codegen_fstring(nd: uni.FString) -> (ir.Value | None) {
                 }
                 if _conv != 114
                     and isinstance(val.type, ir.PointerType)
-                    and self._is_owned(val) {
+                    and self._is_owned(val)
+                    and not any(_t is val for _t in obj_strs) {
                     obj_strs.append(val);
                 }
                 obj_strs.append(_spec_val);
@@ -794,7 +802,8 @@ impl NaIRGenPass._codegen_fstring(nd: uni.FString) -> (ir.Value | None) {
                     }
                     if _conv != 114
                         and isinstance(val.type, ir.PointerType)
-                        and self._is_owned(val) {
+                        and self._is_owned(val)
+                        and not any(_t is val for _t in obj_strs) {
                         obj_strs.append(val);
                     }
                     obj_strs.append(_sdyn);
@@ -839,11 +848,12 @@ impl NaIRGenPass._codegen_fstring(nd: uni.FString) -> (ir.Value | None) {
                             );
                             return None;
                         }
+                    } elif self._is_owned(val)
+                        and not self._nogc_headerless()
+                        and not any(_t is val for _t in obj_strs) {
+                        obj_strs.append(val);
                     }
                     if val.type == ir.IntType(8).as_pointer() {
-                        if self._is_owned(val) and val not in obj_strs {
-                            obj_strs.append(val);
-                        }
                         val = self._fstr_none_select(val);
                     }
                     (fit_directive, fit_args) = self._fstring_str_fit(val, directive);
@@ -890,7 +900,9 @@ impl NaIRGenPass._codegen_fstring(nd: uni.FString) -> (ir.Value | None) {
                     );
                     return None;
                 } else {
-                    if self._is_owned(val) and val not in obj_strs {
+                    if self._is_owned(val)
+                        and not self._nogc_headerless()
+                        and not any(_t is val for _t in obj_strs) {
                         obj_strs.append(val);
                     }
                     val = self._fstr_none_select(val);
