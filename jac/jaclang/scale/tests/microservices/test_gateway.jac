@@ -1175,6 +1175,14 @@ test "serve admin asset returns static file" {
     assert "must-revalidate" in cache , f"got Cache-Control: {cache}";
     assert resp.headers.get("ETag") , "file_response must set an ETag for admin assets";
 
+    # The same asset through the route the installed admin API registers,
+    # which is what a browser loading the console actually hits.
+    gw.setup();
+    import from jaclang.testing.testkit { ServingTestClient as TestClient }
+    routed = TestClient(gw.app).get("/admin/assets/admin.js");
+    assert routed.status_code == 200 , f"got {routed.status_code}: {routed.text[:200]}";
+    assert b"var admin = true;" in routed.content;
+
     import shutil;
     shutil.rmtree(tmp);
 }
