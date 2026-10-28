@@ -5197,13 +5197,7 @@ impl NativeBuiltinEmitter.emit_abs(
         if arg_val.type.width == 1 {
             return b.zext(arg_val, ir.IntType(64), name="abs.bool");
         }
-        if ctx.arg_nodes and ctx.pass_ref._is_sized_node(ctx.arg_nodes[0]) {
-            return ctx.pass_ref._emit_checked_abs(arg_val);
-        }
-        _zero = ir.Constant(arg_val.type, 0);
-        _is_neg = b.icmp_signed("<", arg_val, _zero, name="abs.neg");
-        _negv = b.neg(arg_val, name="abs.negv");
-        return b.select(_is_neg, _negv, arg_val, name="abs");
+        return ctx.pass_ref._emit_checked_abs(arg_val);
     }
     if isinstance(arg_val.type, ir.DoubleType) {
         fabs_fn = ctx.pass_ref._get_or_declare_extern(

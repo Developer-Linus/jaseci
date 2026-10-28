@@ -1920,8 +1920,8 @@ impl NaIRGenPass._apply_scalar_aug_op(
     aug_op: str,
     rhs_node: (uni.Expr | None) = None,
     unsigned: bool = False,
-    checked: bool = False,
-    target_type: any = None
+    target_type: any = None,
+    sized: bool = True
 ) -> (ir.Value | None) {
     (is_ptr_aug, stepped) = self._c_ptr_aug(current, rhs, aug_op, target_type);
     if is_ptr_aug {
@@ -1953,13 +1953,11 @@ impl NaIRGenPass._apply_scalar_aug_op(
         return None;
     }
     if aug_op == "**=" {
-        return self._codegen_pow(
-            current, rhs, rhs_node, unsigned=unsigned, checked=checked
-        );
+        return self._codegen_pow(current, rhs, rhs_node, unsigned=unsigned);
     }
     coerced = self._coerce_type(rhs, current.type);
     result = self._emit_binary_op(
-        op_toks[aug_op], current, coerced, unsigned=unsigned, checked=checked
+        op_toks[aug_op], current, coerced, unsigned=unsigned, sized=sized
     );
     if result is not None and result.type != current.type {
         result = self._coerce_type(result, current.type);
@@ -2401,8 +2399,7 @@ impl NaIRGenPass._codegen_assignment(nd: uni.Assignment) -> None {
                                             nd.aug_op.value,
                                             nd.value,
                                             target_type=target_expr.type,
-                                            checked=self._is_sized_node(target_expr)
-                                                or self._is_sized_node(nd.value)
+                                            sized=self._is_sized_node(target_expr)
                                         );
                                     }
                                 }
@@ -2445,8 +2442,7 @@ impl NaIRGenPass._codegen_assignment(nd: uni.Assignment) -> None {
                                             nd.aug_op.value,
                                             nd.value,
                                             target_type=target_expr.type,
-                                            checked=self._is_sized_node(target_expr)
-                                                or self._is_sized_node(nd.value)
+                                            sized=self._is_sized_node(target_expr)
                                         );
                                     }
                                 }
@@ -2601,8 +2597,7 @@ impl NaIRGenPass._codegen_assignment(nd: uni.Assignment) -> None {
                         nd.value,
                         target_type=target_expr.type,
                         unsigned=self._is_unsigned_node(target_expr),
-                        checked=self._is_sized_node(target_expr)
-                            or self._is_sized_node(nd.value)
+                        sized=self._is_sized_node(target_expr)
                     );
                 }
                 _is_cplx_lhs = current.type == self.complex_struct_type.as_pointer();
@@ -2626,8 +2621,8 @@ impl NaIRGenPass._codegen_assignment(nd: uni.Assignment) -> None {
                     value = _cplx_aug;
                 } elif aug_op_val == "+=" {
                     if isinstance(current.type, ir.IntType) {
-                        value = self.builder.add(
-                            current, coerced, name=f"{var_name}.add"
+                        value = self._emit_overflow_op(
+                            "add", current, coerced, self._is_unsigned_node(target_expr)
                         );
                     } elif isinstance(current.type, ir.DoubleType) {
                         value = self.builder.fadd(
@@ -2690,8 +2685,8 @@ impl NaIRGenPass._codegen_assignment(nd: uni.Assignment) -> None {
                     }
                 } elif aug_op_val == "-=" {
                     if isinstance(current.type, ir.IntType) {
-                        value = self.builder.sub(
-                            current, coerced, name=f"{var_name}.sub"
+                        value = self._emit_overflow_op(
+                            "sub", current, coerced, self._is_unsigned_node(target_expr)
                         );
                     } elif isinstance(current.type, ir.PointerType) {
                         _se = self._ensure_emitters().get("set");
@@ -2715,8 +2710,8 @@ impl NaIRGenPass._codegen_assignment(nd: uni.Assignment) -> None {
                     }
                 } elif aug_op_val == "*=" {
                     if isinstance(current.type, ir.IntType) {
-                        value = self.builder.mul(
-                            current, coerced, name=f"{var_name}.mul"
+                        value = self._emit_overflow_op(
+                            "mul", current, coerced, self._is_unsigned_node(target_expr)
                         );
                     } else {
                         value = self.builder.fmul(
@@ -2734,7 +2729,9 @@ impl NaIRGenPass._codegen_assignment(nd: uni.Assignment) -> None {
                             "ZeroDivisionError",
                             "integer division or modulo by zero"
                         );
-                        (q, _) = self._codegen_int_floor_divmod(current, coerced);
+                        (q, _) = self._emit_int_divmod(
+                            current, coerced, self._is_unsigned_node(target_expr)
+                        );
                         value = q;
                     } else {
                         fzero = ir.Constant(ir.DoubleType(), 0.0);
@@ -2757,7 +2754,12 @@ impl NaIRGenPass._codegen_assignment(nd: uni.Assignment) -> None {
                             "ZeroDivisionError",
                             "integer division or modulo by zero"
                         );
-                        (_, r) = self._codegen_int_floor_divmod(current, coerced);
+                        (_, r) = self._emit_int_divmod(
+                            current,
+                            coerced,
+                            self._is_unsigned_node(target_expr),
+                            trap_min=False
+                        );
                         value = r;
                     } else {
                         fzero = ir.Constant(ir.DoubleType(), 0.0);
@@ -2926,14 +2928,22 @@ impl NaIRGenPass._codegen_assignment(nd: uni.Assignment) -> None {
                     }
                 } elif aug_op_val == "<<=" {
                     if isinstance(current.type, ir.IntType) {
-                        value = self.builder.shl(
-                            current, coerced, name=f"{var_name}.shl"
+                        value = (
+                            self._emit_checked_shl(
+                                current, coerced, self._is_unsigned_node(target_expr)
+                            )
+                                if self._is_sized_node(target_expr)
+                                else self._emit_plain_int_shl(current, coerced)
                         );
                     }
                 } elif aug_op_val == ">>=" {
                     if isinstance(current.type, ir.IntType) {
-                        value = self.builder.ashr(
-                            current, coerced, name=f"{var_name}.ashr"
+                        value = (
+                            self._emit_shr(
+                                current, coerced, self._is_unsigned_node(target_expr)
+                            )
+                                if self._is_sized_node(target_expr)
+                                else self._emit_plain_int_shr(current, coerced)
                         );
                     }
                 } elif aug_op_val == "**=" {
@@ -2942,9 +2952,7 @@ impl NaIRGenPass._codegen_assignment(nd: uni.Assignment) -> None {
                         value,
                         "**=",
                         nd.value,
-                        unsigned=self._is_unsigned_node(target_expr),
-                        checked=self._is_sized_node(target_expr)
-                            or self._is_sized_node(nd.value)
+                        unsigned=self._is_unsigned_node(target_expr)
                     );
                     if pow_res is not None {
                         value = pow_res;
@@ -3159,8 +3167,8 @@ impl NaIRGenPass._codegen_assignment(nd: uni.Assignment) -> None {
                 coerced = self._coerce_type(value, current.type);
                 if aug_op_val == "+=" {
                     if isinstance(current.type, ir.IntType) {
-                        value = self.builder.add(
-                            current, coerced, name=f"glob.{var_name}.add"
+                        value = self._emit_overflow_op(
+                            "add", current, coerced, self._is_unsigned_node(target_expr)
                         );
                     } elif isinstance(current.type, ir.DoubleType) {
                         value = self.builder.fadd(
@@ -3191,8 +3199,8 @@ impl NaIRGenPass._codegen_assignment(nd: uni.Assignment) -> None {
                     }
                 } elif aug_op_val == "-=" {
                     if isinstance(current.type, ir.IntType) {
-                        value = self.builder.sub(
-                            current, coerced, name=f"glob.{var_name}.sub"
+                        value = self._emit_overflow_op(
+                            "sub", current, coerced, self._is_unsigned_node(target_expr)
                         );
                     } elif isinstance(current.type, ir.DoubleType) {
                         value = self.builder.fsub(
@@ -3215,8 +3223,8 @@ impl NaIRGenPass._codegen_assignment(nd: uni.Assignment) -> None {
                     }
                 } elif aug_op_val == "*=" {
                     if isinstance(current.type, ir.IntType) {
-                        value = self.builder.mul(
-                            current, coerced, name=f"glob.{var_name}.mul"
+                        value = self._emit_overflow_op(
+                            "mul", current, coerced, self._is_unsigned_node(target_expr)
                         );
                     } elif isinstance(current.type, ir.DoubleType) {
                         value = self.builder.fmul(
@@ -3225,9 +3233,22 @@ impl NaIRGenPass._codegen_assignment(nd: uni.Assignment) -> None {
                     }
                 } elif aug_op_val == "%=" {
                     if isinstance(current.type, ir.IntType) {
-                        value = self.builder.srem(
-                            current, coerced, name=f"glob.{var_name}.mod"
+                        izero = ir.Constant(current.type, 0);
+                        is_zero = self.builder.icmp_signed(
+                            "==", coerced, izero, name=f"glob.{var_name}.mod.zero.chk"
                         );
+                        self._emit_runtime_raise(
+                            is_zero,
+                            "ZeroDivisionError",
+                            "integer division or modulo by zero"
+                        );
+                        (_, r) = self._emit_int_divmod(
+                            current,
+                            coerced,
+                            self._is_unsigned_node(target_expr),
+                            trap_min=False
+                        );
+                        value = r;
                     }
                 } elif aug_op_val == "&=" {
                     if isinstance(current.type, ir.IntType) {
@@ -3286,6 +3307,62 @@ impl NaIRGenPass._codegen_assignment(nd: uni.Assignment) -> None {
                                 break;
                             }
                         }
+                    }
+                } elif aug_op_val == "//=" {
+                    if isinstance(current.type, ir.IntType) {
+                        izero = ir.Constant(current.type, 0);
+                        is_zero = self.builder.icmp_signed(
+                            "==", coerced, izero, name=f"glob.{var_name}.div.zero.chk"
+                        );
+                        self._emit_runtime_raise(
+                            is_zero,
+                            "ZeroDivisionError",
+                            "integer division or modulo by zero"
+                        );
+                        (q, _) = self._emit_int_divmod(
+                            current, coerced, self._is_unsigned_node(target_expr)
+                        );
+                        value = q;
+                    } else {
+                        fzero = ir.Constant(ir.DoubleType(), 0.0);
+                        is_zero = self.builder.fcmp_ordered(
+                            "==", coerced, fzero, name=f"glob.{var_name}.fdiv.zero.chk"
+                        );
+                        self._emit_runtime_raise(
+                            is_zero, "ZeroDivisionError", "float division by zero"
+                        );
+                        value = self._codegen_float_floor_div(current, coerced);
+                    }
+                } elif aug_op_val == "**=" {
+                    pow_res = self._apply_scalar_aug_op(
+                        current,
+                        value,
+                        "**=",
+                        nd.value,
+                        unsigned=self._is_unsigned_node(target_expr)
+                    );
+                    if pow_res is not None {
+                        value = pow_res;
+                    }
+                } elif aug_op_val == "<<=" {
+                    if isinstance(current.type, ir.IntType) {
+                        value = (
+                            self._emit_checked_shl(
+                                current, coerced, self._is_unsigned_node(target_expr)
+                            )
+                                if self._is_sized_node(target_expr)
+                                else self._emit_plain_int_shl(current, coerced)
+                        );
+                    }
+                } elif aug_op_val == ">>=" {
+                    if isinstance(current.type, ir.IntType) {
+                        value = (
+                            self._emit_shr(
+                                current, coerced, self._is_unsigned_node(target_expr)
+                            )
+                                if self._is_sized_node(target_expr)
+                                else self._emit_plain_int_shr(current, coerced)
+                        );
                     }
                 }
             }
