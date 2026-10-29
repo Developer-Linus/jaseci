@@ -556,6 +556,9 @@ impl prepare_application(
                     import from jaclang.runtime.prepared { publish }
                     applications: list[PreparedApplication] = [];
                     for path in entries {
+                        source_root = `root
+                            if Path(path).is_relative_to(`root)
+                            else os.path.dirname(path);
                         options = bind_options(
                             path,
                             program,
@@ -564,7 +567,8 @@ impl prepare_application(
                                 force_codespace=force_codespace,
                                 skip_native_engine=program.options.skip_native_engine,
                                 entry_point=path,
-                                project_root=`root
+                                project_root=`root,
+                                client_source_root=source_root if client else ''
                             )
                         );
                         actual = context_program(program, options);
