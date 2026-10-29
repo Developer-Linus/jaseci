@@ -2153,7 +2153,6 @@ graph import {
             | scale.runtime.realizer.kubernetes_realizer.KubernetesRealizer._resolve_fleet
             | server.endpoints.colocated.served_app_route
             | server.serving.static_assets._assets_dir
-            | server.serving.static_assets._public_dirs
             | studio.app { get_config_for_dir },
         dist.publish.metadata | dist.publish.package_json { JacConfig, PersonConfig },
         packages.migrate { serialize_toml, toml_minimal_update },
@@ -2175,6 +2174,7 @@ graph import {
         scale.tests.server.test_host_serving
             | scale.tests.server.test_served_app_route { set_config },
         server.endpoints.pages { get_config, resolve_base_path },
+        server.serving.static_assets._public_dirs { get_config_for_dir },
         server.session._database_config { DatabaseConfig, get_config_for_dir },
         testing.test_runner._fresh_jac_state { get_explicit_config, set_config },
         toolchains.host.use_system_tools { use_system_toolchains },
